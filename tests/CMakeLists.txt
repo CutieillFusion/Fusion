@@ -1,6 +1,7 @@
 add_executable(test_runner test_runner.c)
 target_link_libraries(test_runner PRIVATE runtime m)
-add_test(NAME test_runner COMMAND test_runner)
+add_test(NAME test_runner COMMAND $<TARGET_FILE:test_runner>)
+set_tests_properties(test_runner PROPERTIES REQUIRED_FILES "$<TARGET_FILE:test_runner>")
 
 add_executable(fusion_tests fusion_tests.cpp)
 target_link_libraries(fusion_tests PRIVATE fusion_compiler ${CMAKE_DL_LIBS})
@@ -9,6 +10,9 @@ target_link_options(fusion_tests PRIVATE
   "LINKER:--whole-archive,$<TARGET_FILE:runtime_static>,--no-whole-archive"
   "LINKER:--export-dynamic"
 )
+if(FUSION_LIBFFI_FOUND)
+  target_link_libraries(fusion_tests PRIVATE LibFFI::LibFFI)
+endif()
 target_include_directories(fusion_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../compiler ${CMAKE_CURRENT_SOURCE_DIR}/../compiler/src)
 if(LLVM_FOUND)
   target_include_directories(fusion_tests PRIVATE ${LLVM_INCLUDE_DIRS})

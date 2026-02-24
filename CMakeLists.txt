@@ -5,6 +5,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
 option(FUSION_REQUIRE_LLVM "Fail configure if LLVM is not available" OFF)
+option(FUSION_FETCH_LIBFFI "If libffi is not found, download and build it into the build tree (enables full FFI)" OFF)
 
 find_package(LLVM QUIET CONFIG)
 if(NOT LLVM_FOUND)
@@ -69,6 +70,21 @@ if(LLVM_FOUND)
 endif()
 
 enable_testing()
-add_subdirectory(compiler)
+# runtime_c first so FUSION_LIBFFI_FOUND and LibFFI::LibFFI exist for compiler/tests
 add_subdirectory(runtime_c)
+add_subdirectory(compiler)
 add_subdirectory(tests)
+# Ensure runtime_static is built before targets that link it via --whole-archive path.
+add_dependencies(fusion runtime_static)
+add_dependencies(fusion_tests runtime_static)
+# Build all test executables and run CTest (so "make check" works without a prior "make")
+add_custom_target(check
+  COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure
+  DEPENDS test_runner fusion_tests
+  WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+  COMMENT "Running tests..."
+)
+if(FUSION_LIBFFI_FOUND)
+  target_link_libraries(fusion PRIVATE LibFFI::LibFFI)
+  target_link_libraries(fusion_tests PRIVATE LibFFI::LibFFI)
+endif()

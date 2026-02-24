@@ -1,1 +1,4 @@
-/build
+build/
+CMakeFiles/
+deps/
+_deps/

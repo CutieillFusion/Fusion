@@ -1,9 +1,96 @@
-add_library(runtime SHARED src/stub.c src/dl.c)
+find_package(PkgConfig QUIET)
+set(FUSION_LIBFFI_FOUND FALSE)
+set(FUSION_LIBFFI_FETCHED FALSE)
+if(PkgConfig_FOUND)
+  pkg_check_modules(LibFFI QUIET libffi)
+  if(LibFFI_FOUND)
+    set(FUSION_LIBFFI_FOUND TRUE)
+    set(FUSION_LIBFFI_FOUND TRUE PARENT_SCOPE)
+  endif()
+endif()
+if(NOT FUSION_LIBFFI_FOUND)
+  find_path(LibFFI_INCLUDE_DIR ffi.h)
+  find_library(LibFFI_LIBRARY ffi)
+  if(LibFFI_INCLUDE_DIR AND LibFFI_LIBRARY)
+    set(FUSION_LIBFFI_FOUND TRUE)
+    set(FUSION_LIBFFI_FOUND TRUE PARENT_SCOPE)
+    add_library(LibFFI::LibFFI UNKNOWN IMPORTED)
+    set_target_properties(LibFFI::LibFFI PROPERTIES
+      IMPORTED_LOCATION "${LibFFI_LIBRARY}"
+      INTERFACE_INCLUDE_DIRECTORIES "${LibFFI_INCLUDE_DIR}")
+  endif()
+endif()
+if(NOT FUSION_LIBFFI_FOUND)
+  if(FUSION_FETCH_LIBFFI)
+    # Download and build libffi into the build tree (Option A via CMake).
+    set(LIBFFI_VERSION "3.4.6")
+    set(LIBFFI_INSTALL_DIR "${CMAKE_BINARY_DIR}/_deps/libffi-install")
+    file(MAKE_DIRECTORY "${LIBFFI_INSTALL_DIR}/include" "${LIBFFI_INSTALL_DIR}/lib")
+    include(ExternalProject)
+    ExternalProject_Add(libffi
+      URL "https://github.com/libffi/libffi/releases/download/v${LIBFFI_VERSION}/libffi-${LIBFFI_VERSION}.tar.gz"
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+      PREFIX "${CMAKE_BINARY_DIR}/_deps/libffi"
+      CONFIGURE_COMMAND env CFLAGS=-fPIC <SOURCE_DIR>/configure --prefix=${LIBFFI_INSTALL_DIR} --disable-docs --disable-multi-os-directory
+      BUILD_COMMAND $(MAKE)
+      INSTALL_COMMAND $(MAKE) install
+      BUILD_IN_SOURCE TRUE
+      BUILD_BYPRODUCTS "${LIBFFI_INSTALL_DIR}/lib/libffi.a"
+    )
+    set(LibFFI_INCLUDE_DIR "${LIBFFI_INSTALL_DIR}/include")
+    # Use static lib to match BUILD_BYPRODUCTS; some builds only produce .a
+    set(LibFFI_LIBRARY "${LIBFFI_INSTALL_DIR}/lib/libffi.a")
+    add_library(LibFFI::LibFFI STATIC IMPORTED GLOBAL)
+    set_target_properties(LibFFI::LibFFI PROPERTIES
+      IMPORTED_LOCATION "${LibFFI_LIBRARY}"
+      INTERFACE_INCLUDE_DIRECTORIES "${LibFFI_INCLUDE_DIR}"
+    )
+    add_dependencies(LibFFI::LibFFI libffi)
+    set(FUSION_LIBFFI_FOUND TRUE)
+    set(FUSION_LIBFFI_FOUND TRUE PARENT_SCOPE)
+    set(FUSION_LIBFFI_FETCHED TRUE)
+    set(FUSION_LIBFFI_FETCHED TRUE PARENT_SCOPE)
+    message(STATUS "libffi will be fetched and built into ${LIBFFI_INSTALL_DIR}")
+  else()
+    message(STATUS "libffi not found: FFI will use stub (install to ~/.local and source env_local_deps.sh, or set FUSION_FETCH_LIBFFI=ON)")
+  endif()
+endif()
+
+set(RUNTIME_FFI_SOURCES src/ffi_stub.c)
+if(FUSION_LIBFFI_FOUND)
+  set(RUNTIME_FFI_SOURCES src/ffi.c)
+endif()
+
+add_library(runtime SHARED src/stub.c src/dl.c ${RUNTIME_FFI_SOURCES})
 target_include_directories(runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+if(FUSION_LIBFFI_FOUND)
+  if(LibFFI_FOUND)
+    target_include_directories(runtime PRIVATE ${LibFFI_INCLUDE_DIRS})
+    target_link_libraries(runtime PRIVATE ${LibFFI_LIBRARIES})
+  else()
+    target_include_directories(runtime PRIVATE ${LibFFI_INCLUDE_DIR})
+    target_link_libraries(runtime PRIVATE LibFFI::LibFFI)
+  endif()
+endif()
 target_link_libraries(runtime PRIVATE ${CMAKE_DL_LIBS})
+if(FUSION_LIBFFI_FETCHED)
+  add_dependencies(runtime libffi)
+endif()
 set_target_properties(runtime PROPERTIES OUTPUT_NAME runtime PREFIX "lib")
 
-add_library(runtime_static STATIC src/stub.c src/dl.c)
+add_library(runtime_static STATIC src/stub.c src/dl.c ${RUNTIME_FFI_SOURCES})
 target_include_directories(runtime_static PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+if(FUSION_LIBFFI_FOUND)
+  if(LibFFI_FOUND)
+    target_include_directories(runtime_static PRIVATE ${LibFFI_INCLUDE_DIRS})
+    target_link_libraries(runtime_static PRIVATE ${LibFFI_LIBRARIES})
+  else()
+    target_include_directories(runtime_static PRIVATE ${LibFFI_INCLUDE_DIR})
+    target_link_libraries(runtime_static PRIVATE LibFFI::LibFFI)
+  endif()
+endif()
 target_link_libraries(runtime_static PRIVATE ${CMAKE_DL_LIBS})
+if(FUSION_LIBFFI_FETCHED)
+  add_dependencies(runtime_static libffi)
+endif()
 set_target_properties(runtime_static PROPERTIES OUTPUT_NAME runtime PREFIX "lib")

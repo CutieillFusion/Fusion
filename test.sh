@@ -3,16 +3,19 @@
 # Run from repo root: ./test.sh
 
 set -e
-cd build
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT"
+[ -f env_local_deps.sh ] && . ./env_local_deps.sh
 
+mkdir -p build
 echo "=== Configuring ==="
-cmake ..
+cmake -S . -B build
 
 echo "=== Building ==="
-make fusion fusion_tests
+cmake --build build --target fusion fusion_tests test_runner
 
 echo "=== Running tests ==="
-ctest --output-on-failure
+(cd build && ctest --output-on-failure)
+./build/tests/test_runner
 
 echo "=== Done ==="
-cd ..
