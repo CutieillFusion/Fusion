@@ -1,5 +1,5 @@
 add_executable(test_runner test_runner.c)
-target_link_libraries(test_runner PRIVATE runtime)
+target_link_libraries(test_runner PRIVATE runtime m)
 add_test(NAME test_runner COMMAND test_runner)
 
 add_executable(fusion_tests fusion_tests.cpp)
