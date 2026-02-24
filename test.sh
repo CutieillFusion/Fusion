@@ -3,14 +3,16 @@
 # Run from repo root: ./test.sh
 
 set -e
+cd build
 
 echo "=== Configuring ==="
-cmake -B build -S .
+cmake ..
 
 echo "=== Building ==="
-cmake --build build
+make fusion fusion_tests
 
 echo "=== Running tests ==="
-ctest --test-dir build --output-on-failure
+ctest --output-on-failure
 
 echo "=== Done ==="
+cd ..
