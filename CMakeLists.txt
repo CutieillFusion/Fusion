@@ -1,0 +1,23 @@
+cmake_minimum_required(VERSION 3.16)
+project(Fusion LANGUAGES C CXX)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
+
+find_package(LLVM QUIET)
+if(NOT LLVM_FOUND)
+  include(cmake/DownloadLLVM.cmake)
+  if(LLVM_DIR)
+    find_package(LLVM QUIET)
+  endif()
+endif()
+if(LLVM_FOUND)
+  message(STATUS "LLVM ${LLVM_VERSION} found - fusion will support --version")
+else()
+  message(STATUS "LLVM not found - fusion will build without --version")
+endif()
+
+enable_testing()
+add_subdirectory(compiler)
+add_subdirectory(runtime_c)
+add_subdirectory(tests)
