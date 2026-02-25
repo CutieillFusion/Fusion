@@ -18,7 +18,8 @@ struct CodegenResult {
 };
 
 #ifdef FUSION_HAVE_LLVM
-std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Expr* expr);
+struct Program;
+std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program);
 CodegenResult run_jit(std::unique_ptr<llvm::Module> module,
                       std::unique_ptr<llvm::LLVMContext> ctx);
 #endif

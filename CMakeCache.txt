@@ -222,6 +222,9 @@ FUSION_DOWNLOAD_LLVM:BOOL=ON
 // tree (enables full FFI)
 FUSION_FETCH_LIBFFI:BOOL=ON
 
+//No help, variable specified on the command line.
+FUSION_LIBFFI_FOUND:UNINITIALIZED=OFF
+
 //SHA256 for downloaded LLVM tarball (optional)
 FUSION_LLVM_SHA256:STRING=
 

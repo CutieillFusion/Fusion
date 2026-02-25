@@ -17,7 +17,7 @@ struct SemaResult {
   SemaError error;
 };
 
-SemaResult check(Expr* expr);
+SemaResult check(Program* program);
 
 }  // namespace fusion
 

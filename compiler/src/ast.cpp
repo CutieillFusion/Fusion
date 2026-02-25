@@ -9,6 +9,20 @@ ExprPtr Expr::make_int(int64_t value) {
   return e;
 }
 
+ExprPtr Expr::make_float(double value) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::FloatLiteral;
+  e->float_value = value;
+  return e;
+}
+
+ExprPtr Expr::make_string(std::string value) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::StringLiteral;
+  e->str_value = std::move(value);
+  return e;
+}
+
 ExprPtr Expr::make_binop(BinOp op, ExprPtr left, ExprPtr right) {
   auto e = std::make_unique<Expr>();
   e->kind = Kind::BinaryOp;

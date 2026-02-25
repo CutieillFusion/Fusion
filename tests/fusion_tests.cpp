@@ -45,10 +45,11 @@ static void test_parser_print_1_2() {
   auto tokens = fusion::lex("print(1+2)");
   auto result = fusion::parse(tokens);
   ASSERT(result.ok(), "parse print(1+2)");
-  if (result.ok() && result.expr) {
-    ASSERT(result.expr->kind == fusion::Expr::Kind::Call, "parse root is call");
-    ASSERT(result.expr->callee == "print" && result.expr->args.size() == 1, "parse print one arg");
-    auto* arg = result.expr->args[0].get();
+  if (result.ok() && result.program && result.program->root_expr) {
+    fusion::Expr* root = result.program->root_expr.get();
+    ASSERT(root->kind == fusion::Expr::Kind::Call, "parse root is call");
+    ASSERT(root->callee == "print" && root->args.size() == 1, "parse print one arg");
+    auto* arg = root->args[0].get();
     ASSERT(arg && arg->kind == fusion::Expr::Kind::BinaryOp, "parse arg is binary op");
     ASSERT(arg->bin_op == fusion::BinOp::Add, "parse arg is add");
     ASSERT(arg->left && arg->left->kind == fusion::Expr::Kind::IntLiteral && arg->left->int_value == 1, "parse left 1");
@@ -67,7 +68,7 @@ static void test_sema_ok() {
   auto parse_result = fusion::parse(tokens);
   ASSERT(parse_result.ok(), "sema ok parse");
   if (parse_result.ok()) {
-    auto sema_result = fusion::check(parse_result.expr.get());
+    auto sema_result = fusion::check(parse_result.program.get());
     ASSERT(sema_result.ok, "sema print(1+2) valid");
   }
 }
@@ -76,7 +77,7 @@ static void test_sema_wrong_arity() {
   auto tokens = fusion::lex("print(1,2)");
   auto parse_result = fusion::parse(tokens);
   if (!parse_result.ok()) return;
-  auto sema_result = fusion::check(parse_result.expr.get());
+  auto sema_result = fusion::check(parse_result.program.get());
   ASSERT(!sema_result.ok, "sema print(1,2) invalid arity");
 }
 
@@ -85,10 +86,10 @@ static void test_codegen_module() {
   auto tokens = fusion::lex("print(1+2)");
   auto parse_result = fusion::parse(tokens);
   if (!parse_result.ok()) { ASSERT(false, "codegen parse"); return; }
-  auto sema_result = fusion::check(parse_result.expr.get());
+  auto sema_result = fusion::check(parse_result.program.get());
   if (!sema_result.ok) { ASSERT(false, "codegen sema"); return; }
   llvm::LLVMContext ctx;
-  auto module = fusion::codegen(ctx, parse_result.expr.get());
+  auto module = fusion::codegen(ctx, parse_result.program.get());
   ASSERT(module != nullptr, "codegen produces module");
   ASSERT(module->getFunction("fusion_main") != nullptr, "codegen has fusion_main");
   ASSERT(module->getFunction("rt_print_i64") != nullptr, "codegen declares rt_print_i64");
@@ -98,16 +99,63 @@ static void test_jit_creation() {
   auto tokens = fusion::lex("print(1+2)");
   auto parse_result = fusion::parse(tokens);
   if (!parse_result.ok()) return;
-  auto sema_result = fusion::check(parse_result.expr.get());
+  auto sema_result = fusion::check(parse_result.program.get());
   if (!sema_result.ok) return;
   auto ctx = std::make_unique<llvm::LLVMContext>();
-  auto module = fusion::codegen(*ctx, parse_result.expr.get());
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
   if (!module) return;
   auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
   if (jit_result.ok) {
     std::cout << "PASS: JIT run print(1+2)\n";
   } else {
     std::cerr << "FAIL: JIT run: " << jit_result.error << "\n";
+    failed = 1;
+  }
+}
+
+static void test_parser_extern_cos() {
+  auto tokens = fusion::lex("extern lib \"libm.so.6\"; extern fn cos(x: f64) -> f64; print(cos(0.0))");
+  auto result = fusion::parse(tokens);
+  ASSERT(result.ok(), "parse extern lib and fn and print(cos(0.0))");
+  if (result.ok() && result.program) {
+    ASSERT(result.program->libs.size() == 1u, "one extern lib");
+    ASSERT(result.program->libs[0].path == "libm.so.6", "lib path");
+    ASSERT(result.program->extern_fns.size() == 1u, "one extern fn");
+    ASSERT(result.program->extern_fns[0].name == "cos", "extern fn cos");
+    ASSERT(result.program->extern_fns[0].params.size() == 1u && result.program->extern_fns[0].params[0].first == "x" && result.program->extern_fns[0].params[0].second == fusion::FfiType::F64, "cos(x: f64)");
+    ASSERT(result.program->extern_fns[0].return_type == fusion::FfiType::F64, "cos returns f64");
+    ASSERT(result.program->root_expr && result.program->root_expr->kind == fusion::Expr::Kind::Call && result.program->root_expr->callee == "print", "root is print(...)");
+  }
+}
+
+static void test_sema_print_cos() {
+  auto tokens = fusion::lex("extern lib \"libm.so.6\"; extern fn cos(x: f64) -> f64; print(cos(0.0))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT(parse_result.ok(), "sema cos parse");
+  if (parse_result.ok()) {
+    auto sema_result = fusion::check(parse_result.program.get());
+    ASSERT(sema_result.ok, "sema print(cos(0.0)) valid");
+  }
+}
+
+static void test_jit_cos() {
+  auto tokens = fusion::lex("extern lib \"libm.so.6\"; extern fn cos(x: f64) -> f64; print(cos(0.0))");
+  auto parse_result = fusion::parse(tokens);
+  if (!parse_result.ok()) return;
+  auto sema_result = fusion::check(parse_result.program.get());
+  if (!sema_result.ok) return;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  if (!module) {
+    std::cerr << "FAIL: JIT cos codegen produced null module\n";
+    failed = 1;
+    return;
+  }
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  if (jit_result.ok) {
+    std::cout << "PASS: JIT run print(cos(0.0))\n";
+  } else {
+    std::cerr << "FAIL: JIT run cos: " << jit_result.error << "\n";
     failed = 1;
   }
 }
@@ -123,6 +171,9 @@ int main() {
 #ifdef FUSION_HAVE_LLVM
   test_codegen_module();
   test_jit_creation();
+  test_parser_extern_cos();
+  test_sema_print_cos();
+  test_jit_cos();
 #endif
   if (failed) {
     std::cerr << "Some tests failed.\n";

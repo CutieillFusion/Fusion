@@ -15,9 +15,10 @@ struct ParseError {
 };
 
 struct ParseResult {
-  ExprPtr expr;
+  ProgramPtr program;
   ParseError error;
-  bool ok() const { return expr != nullptr; }
+  bool ok() const { return program != nullptr; }
+  Expr* root_expr() const { return program ? program->root_expr.get() : nullptr; }
 };
 
 ParseResult parse(const std::vector<Token>& tokens);

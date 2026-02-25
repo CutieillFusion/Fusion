@@ -10,15 +10,37 @@ namespace fusion {
 enum class TokenKind {
   Eof,
   IntLiteral,
+  FloatLiteral,
+  StringLiteral,
   Ident,
   LParen,
   RParen,
   Plus,
+  Comma,
+  Semicolon,
+  Colon,
+  Arrow,  // ->
+  // Keywords (recognized as ident then mapped in parser, or distinct kinds)
+  KwExtern,
+  KwLib,
+  KwFn,
+  KwF64,
+  KwF32,
+  KwI64,
+  KwI32,
+  KwU64,
+  KwU32,
+  KwVoid,
+  KwPtr,
+  KwCstring,
+  KwAs,
 };
 
 struct Token {
   TokenKind kind = TokenKind::Eof;
   int64_t int_value = 0;
+  double float_value = 0.0;
+  std::string str_value;  // for StringLiteral content (unescaped)
   std::string ident;
   size_t line = 0;
   size_t column = 0;

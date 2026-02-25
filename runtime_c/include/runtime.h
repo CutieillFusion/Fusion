@@ -10,6 +10,10 @@ extern "C" {
 void rt_init(void);
 
 void rt_print_i64(int64_t value);
+void rt_print_f64(double value);
+
+/* Print message to stderr and abort. Used when dlopen/dlsym/ffi_call fails. */
+void rt_panic(const char *msg);
 
 /* Dynamic loading (dlopen/dlsym). Handles are opaque pointers from dlopen/dlsym. */
 typedef void *rt_lib_handle_t;

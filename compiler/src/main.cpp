@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -22,6 +23,10 @@ static int run_file(const std::string& path) {
   std::stringstream buf;
   buf << f.rdbuf();
   std::string source = buf.str();
+  if (getenv("FUSION_DEBUG")) {
+    std::cerr << "fusion: running " << path << " (first line: ";
+    std::cerr << source.substr(0, source.find('\n')) << ")\n";
+  }
 
   auto tokens = fusion::lex(source);
   auto parse_result = fusion::parse(tokens);
@@ -31,7 +36,7 @@ static int run_file(const std::string& path) {
     return 1;
   }
 
-  auto sema_result = fusion::check(parse_result.expr.get());
+  auto sema_result = fusion::check(parse_result.program.get());
   if (!sema_result.ok) {
     std::cerr << "fusion: " << sema_result.error.message << "\n";
     return 1;
@@ -39,7 +44,7 @@ static int run_file(const std::string& path) {
 
 #ifdef FUSION_HAVE_LLVM
   auto ctx = std::make_unique<llvm::LLVMContext>();
-  auto module = fusion::codegen(*ctx, parse_result.expr.get());
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
   if (!module) {
     std::cerr << "fusion: codegen failed\n";
     return 1;
