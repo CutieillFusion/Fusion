@@ -223,6 +223,9 @@ FUSION_DOWNLOAD_LLVM:BOOL=ON
 FUSION_FETCH_LIBFFI:BOOL=ON
 
 //No help, variable specified on the command line.
+FUSION_HAVE_LLVM:UNINITIALIZED=ON
+
+//No help, variable specified on the command line.
 FUSION_LIBFFI_FOUND:UNINITIALIZED=OFF
 
 //SHA256 for downloaded LLVM tarball (optional)

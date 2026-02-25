@@ -19,7 +19,8 @@ enum class TokenKind {
   Comma,
   Semicolon,
   Colon,
-  Arrow,  // ->
+  Equals,  // =
+  Arrow,   // ->
   // Keywords (recognized as ident then mapped in parser, or distinct kinds)
   KwExtern,
   KwLib,
@@ -34,6 +35,7 @@ enum class TokenKind {
   KwPtr,
   KwCstring,
   KwAs,
+  KwLet,
 };
 
 struct Token {

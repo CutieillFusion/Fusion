@@ -25,7 +25,7 @@ struct Expr;
 using ExprPtr = std::unique_ptr<Expr>;
 
 struct Expr {
-  enum class Kind { IntLiteral, FloatLiteral, StringLiteral, BinaryOp, Call };
+  enum class Kind { IntLiteral, FloatLiteral, StringLiteral, BinaryOp, Call, VarRef };
   Kind kind = Kind::IntLiteral;
 
   int64_t int_value = 0;
@@ -36,12 +36,14 @@ struct Expr {
   ExprPtr right;
   std::string callee;
   std::vector<ExprPtr> args;
+  std::string var_name;  // for VarRef
 
   static ExprPtr make_int(int64_t value);
   static ExprPtr make_float(double value);
   static ExprPtr make_string(std::string value);
   static ExprPtr make_binop(BinOp op, ExprPtr left, ExprPtr right);
   static ExprPtr make_call(std::string callee, std::vector<ExprPtr> args);
+  static ExprPtr make_var_ref(std::string name);
 };
 
 /* extern lib "path"; or extern lib "path" as name; */
@@ -58,13 +60,20 @@ struct ExternFn {
   std::string lib_name;  // empty = default lib
 };
 
+/* let name = init; */
+struct LetBinding {
+  std::string name;
+  ExprPtr init;
+};
+
 struct Program;
 using ProgramPtr = std::unique_ptr<Program>;
 
-/* Top-level: zero or more extern decls, then one root expression. */
+/* Top-level: zero or more extern decls, zero or more let-bindings, then one root expression. */
 struct Program {
   std::vector<ExternLib> libs;
   std::vector<ExternFn> extern_fns;
+  std::vector<LetBinding> bindings;
   ExprPtr root_expr;
 };
 

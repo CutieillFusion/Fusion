@@ -40,4 +40,11 @@ ExprPtr Expr::make_call(std::string callee, std::vector<ExprPtr> args) {
   return e;
 }
 
+ExprPtr Expr::make_var_ref(std::string name) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::VarRef;
+  e->var_name = std::move(name);
+  return e;
+}
+
 }  // namespace fusion

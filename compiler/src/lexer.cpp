@@ -18,6 +18,7 @@ static TokenKind keyword_from_ident(const std::string& ident) {
   if (ident == "ptr") return TokenKind::KwPtr;
   if (ident == "cstring") return TokenKind::KwCstring;
   if (ident == "as") return TokenKind::KwAs;
+  if (ident == "let") return TokenKind::KwLet;
   return TokenKind::Ident;
 }
 
@@ -160,6 +161,11 @@ std::vector<Token> lex(const std::string& source) {
     }
     if (source[i] == ':') {
       tokens.push_back({TokenKind::Colon, 0, 0.0, {}, {}, start_line, start_col});
+      advance();
+      continue;
+    }
+    if (source[i] == '=') {
+      tokens.push_back({TokenKind::Equals, 0, 0.0, {}, {}, start_line, start_col});
       advance();
       continue;
     }

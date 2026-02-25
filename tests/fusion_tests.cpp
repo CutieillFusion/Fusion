@@ -63,6 +63,47 @@ static void test_parser_invalid() {
   ASSERT(!result.ok(), "parse print(1+ fails");
 }
 
+static void test_parser_let_one_binding_varref() {
+  auto tokens = fusion::lex("let x = 1; x");
+  auto result = fusion::parse(tokens);
+  ASSERT(result.ok(), "parse let x = 1; x");
+  if (result.ok() && result.program) {
+    ASSERT(result.program->bindings.size() == 1u, "one let binding");
+    ASSERT(result.program->bindings[0].name == "x", "binding name x");
+    ASSERT(result.program->root_expr && result.program->root_expr->kind == fusion::Expr::Kind::VarRef, "root is VarRef");
+    ASSERT(result.program->root_expr->var_name == "x", "root var ref x");
+  }
+}
+
+static void test_parser_let_two_bindings_sum() {
+  auto tokens = fusion::lex("let a = 1; let b = 2; a + b");
+  auto result = fusion::parse(tokens);
+  ASSERT(result.ok(), "parse let a = 1; let b = 2; a + b");
+  if (result.ok() && result.program) {
+    ASSERT(result.program->bindings.size() == 2u, "two let bindings");
+    ASSERT(result.program->bindings[0].name == "a" && result.program->bindings[1].name == "b", "bindings a and b");
+    ASSERT(result.program->root_expr && result.program->root_expr->kind == fusion::Expr::Kind::BinaryOp, "root is BinaryOp");
+    ASSERT(result.program->root_expr->left && result.program->root_expr->left->kind == fusion::Expr::Kind::VarRef && result.program->root_expr->left->var_name == "a", "left VarRef a");
+    ASSERT(result.program->root_expr->right && result.program->root_expr->right->kind == fusion::Expr::Kind::VarRef && result.program->root_expr->right->var_name == "b", "right VarRef b");
+  }
+}
+
+static void test_parser_let_no_trailing_expr() {
+  auto tokens = fusion::lex("let x = 1");
+  auto result = fusion::parse(tokens);
+  ASSERT(!result.ok(), "parse let x = 1 without trailing expr fails");
+}
+
+static void test_sema_undefined_variable() {
+  auto tokens = fusion::lex("let x = 1; print(y)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT(parse_result.ok(), "sema undefined var parse");
+  if (parse_result.ok()) {
+    auto sema_result = fusion::check(parse_result.program.get());
+    ASSERT(!sema_result.ok, "sema let x = 1; print(y) undefined variable fails");
+  }
+}
+
 static void test_sema_ok() {
   auto tokens = fusion::lex("print(1+2)");
   auto parse_result = fusion::parse(tokens);
@@ -159,6 +200,42 @@ static void test_jit_cos() {
     failed = 1;
   }
 }
+
+static void test_jit_let_print() {
+  auto tokens = fusion::lex("let x = 1 + 2; print(x)");
+  auto parse_result = fusion::parse(tokens);
+  if (!parse_result.ok()) return;
+  auto sema_result = fusion::check(parse_result.program.get());
+  if (!sema_result.ok) return;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  if (!module) return;
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  if (jit_result.ok) {
+    std::cout << "PASS: JIT run let x = 1+2; print(x)\n";
+  } else {
+    std::cerr << "FAIL: JIT run let: " << jit_result.error << "\n";
+    failed = 1;
+  }
+}
+
+static void test_jit_let_cos() {
+  auto tokens = fusion::lex("extern lib \"libm.so.6\"; extern fn cos(x: f64) -> f64; let x = cos(0.0); print(x)");
+  auto parse_result = fusion::parse(tokens);
+  if (!parse_result.ok()) return;
+  auto sema_result = fusion::check(parse_result.program.get());
+  if (!sema_result.ok) return;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  if (!module) return;
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  if (jit_result.ok) {
+    std::cout << "PASS: JIT run let x = cos(0.0); print(x)\n";
+  } else {
+    std::cerr << "FAIL: JIT run let cos: " << jit_result.error << "\n";
+    failed = 1;
+  }
+}
 #endif
 
 int main() {
@@ -166,14 +243,20 @@ int main() {
   test_lexer_spaces();
   test_parser_print_1_2();
   test_parser_invalid();
+  test_parser_let_one_binding_varref();
+  test_parser_let_two_bindings_sum();
+  test_parser_let_no_trailing_expr();
   test_sema_ok();
   test_sema_wrong_arity();
+  test_sema_undefined_variable();
 #ifdef FUSION_HAVE_LLVM
   test_codegen_module();
   test_jit_creation();
   test_parser_extern_cos();
   test_sema_print_cos();
   test_jit_cos();
+  test_jit_let_print();
+  test_jit_let_cos();
 #endif
   if (failed) {
     std::cerr << "Some tests failed.\n";

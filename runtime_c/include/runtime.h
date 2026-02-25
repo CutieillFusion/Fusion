@@ -11,6 +11,7 @@ void rt_init(void);
 
 void rt_print_i64(int64_t value);
 void rt_print_f64(double value);
+void rt_print_cstring(const char *s);
 
 /* Print message to stderr and abort. Used when dlopen/dlsym/ffi_call fails. */
 void rt_panic(const char *msg);

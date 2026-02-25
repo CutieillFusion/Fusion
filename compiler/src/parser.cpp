@@ -59,10 +59,10 @@ static ExprPtr parse_primary(const std::vector<Token>& tokens, size_t& i) {
   }
 
   if (t.kind == TokenKind::Ident) {
-    std::string callee = t.ident;
+    std::string name = t.ident;
     i++;
     if (at_eof(tokens, i) || tokens[i].kind != TokenKind::LParen) {
-      return nullptr;
+      return Expr::make_var_ref(std::move(name));
     }
     i++;
     std::vector<ExprPtr> args;
@@ -79,7 +79,7 @@ static ExprPtr parse_primary(const std::vector<Token>& tokens, size_t& i) {
     }
     if (at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return nullptr;
     i++;
-    return Expr::make_call(std::move(callee), std::move(args));
+    return Expr::make_call(std::move(name), std::move(args));
   }
 
   if (t.kind == TokenKind::LParen) {
@@ -175,6 +175,25 @@ static bool parse_extern_fn(const std::vector<Token>& tokens, size_t& i, Program
   return true;
 }
 
+static bool parse_let_binding(const std::vector<Token>& tokens, size_t& i, Program& prog) {
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::KwLet) return false;
+  i++;
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return false;
+  std::string name = tokens[i].ident;
+  i++;
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Equals) return false;
+  i++;
+  ExprPtr init = parse_expr(tokens, i);
+  if (!init) return false;
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Semicolon) return false;
+  i++;
+  LetBinding binding;
+  binding.name = std::move(name);
+  binding.init = std::move(init);
+  prog.bindings.push_back(std::move(binding));
+  return true;
+}
+
 ParseResult parse(const std::vector<Token>& tokens) {
   size_t i = 0;
   auto prog = std::make_unique<Program>();
@@ -185,6 +204,14 @@ ParseResult parse(const std::vector<Token>& tokens) {
     i = save;
     if (parse_extern_fn(tokens, i, *prog)) continue;
     break;
+  }
+
+  while (!at_eof(tokens, i) && tokens[i].kind == TokenKind::KwLet) {
+    if (!parse_let_binding(tokens, i, *prog)) {
+      size_t line = 1, col = 1;
+      if (i < tokens.size()) { line = tokens[i].line; col = tokens[i].column; }
+      return fail("invalid let binding", line, col);
+    }
   }
 
   if (at_eof(tokens, i)) {

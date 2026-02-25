@@ -12,6 +12,10 @@ void rt_print_f64(double value) {
   printf("%g\n", value);
 }
 
+void rt_print_cstring(const char *s) {
+  printf("%s\n", s ? s : "(null)");
+}
+
 void rt_panic(const char *msg) {
   if (msg)
     fprintf(stderr, "fusion panic: %s\n", msg);

@@ -44,6 +44,12 @@ static int ffi_type_to_kind(FfiType t) {
   return 0;
 }
 
+static FfiType expr_type(Expr* expr, Program* program);
+
+static FfiType binding_type(const LetBinding& binding, Program* program) {
+  return expr_type(binding.init.get(), program);
+}
+
 static FfiType expr_type(Expr* expr, Program* program) {
   if (!expr) return FfiType::Void;
   switch (expr->kind) {
@@ -51,6 +57,12 @@ static FfiType expr_type(Expr* expr, Program* program) {
     case Expr::Kind::FloatLiteral: return FfiType::F64;
     case Expr::Kind::StringLiteral: return FfiType::Cstring;
     case Expr::Kind::BinaryOp: return FfiType::I64;
+    case Expr::Kind::VarRef: {
+      if (!program) return FfiType::Void;
+      for (const LetBinding& b : program->bindings)
+        if (b.name == expr->var_name) return binding_type(b, program);
+      return FfiType::Void;
+    }
     case Expr::Kind::Call:
       if (expr->callee == "print") return FfiType::Void;
       if (program) {
@@ -67,6 +79,7 @@ struct CodegenEnv {
   Module* module = nullptr;
   IRBuilder<>* builder = nullptr;
   std::unordered_map<std::string, Value*> lib_handles;  // lib name or "" -> global
+  std::unordered_map<std::string, Value*> vars;         // variable name -> alloca
 };
 
 static Value* emit_expr(CodegenEnv& env, Expr* expr) {
@@ -77,22 +90,39 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
   Program* prog = env.program;
 
   switch (expr->kind) {
+    case Expr::Kind::VarRef: {
+      auto it = env.vars.find(expr->var_name);
+      if (it == env.vars.end()) return nullptr;
+      AllocaInst* alloca = cast<AllocaInst>(it->second);
+      return B.CreateLoad(alloca->getAllocatedType(), alloca, expr->var_name + ".load");
+    }
     case Expr::Kind::IntLiteral:
       return B.getInt64(expr->int_value);
     case Expr::Kind::FloatLiteral:
       return llvm::ConstantFP::get(B.getDoubleTy(), expr->float_value);
     case Expr::Kind::StringLiteral: {
+      /* String on stack to avoid GlobalVariable (JIT/relocation issues with globals). */
       std::string s = expr->str_value + '\0';
       Constant* str_const = ConstantDataArray::getString(ctx, s, false);
-      GlobalVariable* gv = new GlobalVariable(*M, str_const->getType(), true,
-          GlobalValue::PrivateLinkage, str_const, "str");
-      return B.CreatePointerCast(gv, PointerType::get(Type::getInt8Ty(ctx), 0));
+      Type* str_ty = str_const->getType();
+      Value* str_buf = B.CreateAlloca(str_ty, nullptr, "str");
+      B.CreateStore(str_const, str_buf);
+      return B.CreatePointerCast(str_buf, PointerType::get(Type::getInt8Ty(ctx), 0));
     }
     case Expr::Kind::BinaryOp: {
       if (expr->bin_op != BinOp::Add) return nullptr;
       Value* L = emit_expr(env, expr->left.get());
       Value* R = emit_expr(env, expr->right.get());
       if (!L || !R) return nullptr;
+      FfiType tyL = expr_type(expr->left.get(), prog);
+      FfiType tyR = expr_type(expr->right.get(), prog);
+      if (tyL == FfiType::F64 || tyR == FfiType::F64) {
+        if (L->getType() != B.getDoubleTy()) L = B.CreateSIToFP(L, B.getDoubleTy());
+        if (R->getType() != B.getDoubleTy()) R = B.CreateSIToFP(R, B.getDoubleTy());
+        return B.CreateFAdd(L, R, "add");
+      }
+      if (L->getType() != B.getInt64Ty()) L = B.CreateFPToSI(L, B.getInt64Ty());
+      if (R->getType() != B.getInt64Ty()) R = B.CreateFPToSI(R, B.getInt64Ty());
       return B.CreateAdd(L, R, "add");
     }
     case Expr::Kind::Call: {
@@ -106,13 +136,19 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
           rt_print = M->getFunction("rt_print_f64");
           if (!rt_print) return nullptr;
           return B.CreateCall(rt_print, arg_val);
-        } else {
-          rt_print = M->getFunction("rt_print_i64");
+        }
+        if (arg_ty == FfiType::Cstring) {
+          rt_print = M->getFunction("rt_print_cstring");
           if (!rt_print) return nullptr;
-          if (arg_val->getType() != B.getInt64Ty())
-            arg_val = B.CreateFPToSI(arg_val, B.getInt64Ty());
+          Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+          if (arg_val->getType() != i8ptr) arg_val = B.CreatePointerCast(arg_val, i8ptr);
           return B.CreateCall(rt_print, arg_val);
         }
+        rt_print = M->getFunction("rt_print_i64");
+        if (!rt_print) return nullptr;
+        if (arg_val->getType() != B.getInt64Ty())
+          arg_val = B.CreateFPToSI(arg_val, B.getInt64Ty());
+        return B.CreateCall(rt_print, arg_val);
       }
       /* Extern fn call */
       const ExternFn* ext = nullptr;
@@ -245,6 +281,7 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
   FunctionType* void_ty = FunctionType::get(builder.getVoidTy(), false);
   FunctionType* print_i64_ty = FunctionType::get(builder.getVoidTy(), builder.getInt64Ty(), false);
   FunctionType* print_f64_ty = FunctionType::get(builder.getVoidTy(), builder.getDoubleTy(), false);
+  FunctionType* print_cstring_ty = FunctionType::get(builder.getVoidTy(), i8ptr, false);
   FunctionType* panic_ty = FunctionType::get(builder.getVoidTy(), i8ptr, false);
   FunctionType* dlopen_ty = FunctionType::get(i8ptr, i8ptr, false);
   FunctionType* dlsym_ty = FunctionType::get(i8ptr, {i8ptr, i8ptr}, false);
@@ -257,6 +294,7 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
 
   Function::Create(print_i64_ty, GlobalValue::ExternalLinkage, "rt_print_i64", module.get());
   Function::Create(print_f64_ty, GlobalValue::ExternalLinkage, "rt_print_f64", module.get());
+  Function::Create(print_cstring_ty, GlobalValue::ExternalLinkage, "rt_print_cstring", module.get());
   Function::Create(panic_ty, GlobalValue::ExternalLinkage, "rt_panic", module.get());
   Function::Create(dlopen_ty, GlobalValue::ExternalLinkage, "rt_dlopen", module.get());
   Function::Create(dlsym_ty, GlobalValue::ExternalLinkage, "rt_dlsym", module.get());
@@ -305,6 +343,28 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
     builder.CreateCall(rt_panic, err);
     builder.CreateUnreachable();
     builder.SetInsertPoint(ok_bb);
+  }
+
+  /* Emit let-bindings: alloca, store init value, register in env.vars */
+  if (program) {
+    for (const LetBinding& binding : program->bindings) {
+    FfiType ty = binding_type(binding, program);
+    Type* llvm_ty;
+    if (ty == FfiType::F64) llvm_ty = builder.getDoubleTy();
+    else if (ty == FfiType::Cstring) llvm_ty = i8ptr;
+    else llvm_ty = builder.getInt64Ty();
+    Value* slot = builder.CreateAlloca(llvm_ty, nullptr, binding.name);
+    Value* init_val = emit_expr(env, binding.init.get());
+    if (!init_val) return nullptr;
+    if (ty == FfiType::F64 && init_val->getType() != builder.getDoubleTy())
+      init_val = builder.CreateSIToFP(init_val, builder.getDoubleTy());
+    else if (ty == FfiType::Cstring && init_val->getType() != i8ptr)
+      init_val = builder.CreatePointerCast(init_val, i8ptr);
+    else if (ty != FfiType::F64 && ty != FfiType::Cstring && init_val->getType() == builder.getDoubleTy())
+      init_val = builder.CreateFPToSI(init_val, builder.getInt64Ty());
+    builder.CreateStore(init_val, slot);
+    env.vars[binding.name] = slot;
+    }
   }
 
   Expr* root = program && program->root_expr ? program->root_expr.get() : nullptr;
@@ -359,7 +419,7 @@ CodegenResult run_jit(std::unique_ptr<llvm::Module> module,
     if (auto err = JIT->getMainJITDylib().define(absoluteSymbols(std::move(syms)))) return false;
     return true;
   };
-  if (!add_sym("rt_print_i64") || !add_sym("rt_print_f64") || !add_sym("rt_panic") ||
+  if (!add_sym("rt_print_i64") || !add_sym("rt_print_f64") || !add_sym("rt_print_cstring") || !add_sym("rt_panic") ||
       !add_sym("rt_dlopen") || !add_sym("rt_dlsym") || !add_sym("rt_dlerror_last") ||
       !add_sym("rt_ffi_sig_create") || !add_sym("rt_ffi_call") || !add_sym("rt_ffi_error_last")) {
     r.error = "runtime symbols not found (link runtime or use dlsym)";

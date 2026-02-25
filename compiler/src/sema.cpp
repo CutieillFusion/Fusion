@@ -8,6 +8,7 @@ namespace fusion {
 struct SemaContext {
   std::unordered_set<std::string> lib_names;
   std::unordered_map<std::string, ExternFn> extern_fn_by_name;
+  std::unordered_map<std::string, FfiType> var_types;
   SemaError* err = nullptr;
 };
 
@@ -33,8 +34,8 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
         }
         if (!check_expr(expr->args[0].get(), ctx)) return false;
         FfiType arg_ty = expr_type(expr->args[0].get(), &ctx);
-        if (arg_ty != FfiType::I64 && arg_ty != FfiType::F64) {
-          ctx.err->message = "print expects i64 or f64 argument";
+        if (arg_ty != FfiType::I64 && arg_ty != FfiType::F64 && arg_ty != FfiType::Cstring) {
+          ctx.err->message = "print expects i64, f64, or string argument";
           return false;
         }
         return true;
@@ -56,6 +57,14 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
           ctx.err->message = "argument type mismatch in call to '" + expr->callee + "'";
           return false;
         }
+      }
+      return true;
+    }
+    case Expr::Kind::VarRef: {
+      auto it = ctx.var_types.find(expr->var_name);
+      if (it == ctx.var_types.end()) {
+        ctx.err->message = "undefined variable '" + expr->var_name + "'";
+        return false;
       }
       return true;
     }
@@ -82,6 +91,12 @@ static FfiType expr_type(Expr* expr, SemaContext* ctx) {
       }
       return FfiType::Void;
     }
+    case Expr::Kind::VarRef:
+      if (ctx) {
+        auto it = ctx->var_types.find(expr->var_name);
+        if (it != ctx->var_types.end()) return it->second;
+      }
+      return FfiType::Void;
   }
   return FfiType::Void;
 }
@@ -100,6 +115,15 @@ SemaResult check(Program* program) {
   ctx.err = &r.error;
   for (const ExternFn& ext : program->extern_fns) {
     ctx.extern_fn_by_name[ext.name] = ext;
+  }
+  for (const LetBinding& binding : program->bindings) {
+    if (!check_expr(binding.init.get(), ctx)) return r;
+    FfiType ty = expr_type(binding.init.get(), &ctx);
+    if (ctx.var_types.count(binding.name)) {
+      ctx.err->message = "duplicate variable '" + binding.name + "'";
+      return r;
+    }
+    ctx.var_types[binding.name] = ty;
   }
   r.ok = check_expr(program->root_expr.get(), ctx);
   return r;
