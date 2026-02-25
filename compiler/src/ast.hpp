@@ -85,6 +85,30 @@ struct LetBinding {
   ExprPtr init;
 };
 
+/* Statement inside a function body. */
+struct Stmt;
+using StmtPtr = std::unique_ptr<Stmt>;
+struct Stmt {
+  enum class Kind { Return, Let, Expr };
+  Kind kind = Kind::Return;
+  ExprPtr expr;       // for Return and ExprStmt
+  std::string name;   // for Let
+  ExprPtr init;       // for Let
+  static StmtPtr make_return(ExprPtr expr);
+  static StmtPtr make_let(std::string name, ExprPtr init);
+  static StmtPtr make_expr(ExprPtr expr);
+};
+
+/* User-defined function: fn name(params) -> ret { body }. */
+struct FnDef {
+  std::string name;
+  std::vector<std::pair<std::string, FfiType>> params;
+  std::vector<std::string> param_type_names;  // same size as params; "" = keyword type
+  FfiType return_type = FfiType::Void;
+  std::string return_type_name;  // non-empty = named type -> PTR
+  std::vector<StmtPtr> body;
+};
+
 /* struct Name { field: type; ... }; fields use primitive FfiType only in v1. */
 struct StructDef {
   std::string name;
@@ -97,12 +121,13 @@ using ProgramPtr = std::unique_ptr<Program>;
 /* One top-level item: either a let binding or an expression. */
 using TopLevelItem = std::variant<LetBinding, ExprPtr>;
 
-/* Top-level: opaque/struct decls, extern decls, then an ordered list of let-bindings and expressions. */
+/* Top-level: opaque/struct decls, extern decls, user fn defs, then let-bindings and expressions. */
 struct Program {
   std::vector<std::string> opaque_types;
   std::vector<StructDef> struct_defs;
   std::vector<ExternLib> libs;
   std::vector<ExternFn> extern_fns;
+  std::vector<FnDef> user_fns;
   std::vector<TopLevelItem> top_level;  /* executed in order; at least one must be an expression */
 };
 

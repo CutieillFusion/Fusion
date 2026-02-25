@@ -8,11 +8,10 @@ extern lib "build/fusion_phase6.so" {
     fn point_set(p: Point, x: f64, y: f64) -> void; 
 };
 
-fn main() -> i64 {
-    return 0;
+fn test(f: f64) -> f64 {
+    let x = f + 1;
+    return x;
 }
-
-print(main());
 
 let z = cos(1.0);
 print(z);
@@ -27,3 +26,4 @@ print(load_field(p, Point, y));
 let x = z + 2;
 
 print(x);
+print(test(x));

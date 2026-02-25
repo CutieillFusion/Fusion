@@ -19,6 +19,7 @@ static TokenKind keyword_from_ident(const std::string& ident) {
   if (ident == "cstring") return TokenKind::KwCstring;
   if (ident == "as") return TokenKind::KwAs;
   if (ident == "let") return TokenKind::KwLet;
+  if (ident == "return") return TokenKind::KwReturn;
   if (ident == "opaque") return TokenKind::KwOpaque;
   if (ident == "struct") return TokenKind::KwStruct;
   return TokenKind::Ident;

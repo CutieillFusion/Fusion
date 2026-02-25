@@ -45,24 +45,42 @@ static int ffi_type_to_kind(FfiType t) {
   return 0;
 }
 
-static FfiType expr_type(Expr* expr, Program* program);
-
-static FfiType binding_type(const LetBinding& binding, Program* program) {
-  return expr_type(binding.init.get(), program);
+static Type* ffi_type_to_llvm(FfiType t, LLVMContext& ctx, IRBuilder<>& B) {
+  switch (t) {
+    case FfiType::Void: return B.getVoidTy();
+    case FfiType::I32: return B.getInt32Ty();
+    case FfiType::I64: return B.getInt64Ty();
+    case FfiType::F32: return B.getFloatTy();
+    case FfiType::F64: return B.getDoubleTy();
+    case FfiType::Ptr: return PointerType::get(Type::getInt8Ty(ctx), 0);
+  }
+  return B.getVoidTy();
 }
 
-static FfiType expr_type(Expr* expr, Program* program) {
+static FfiType expr_type(Expr* expr, Program* program,
+    const std::unordered_map<std::string, FfiType>* local_types = nullptr);
+
+static FfiType binding_type(const LetBinding& binding, Program* program) {
+  return expr_type(binding.init.get(), program, nullptr);
+}
+
+static FfiType expr_type(Expr* expr, Program* program,
+    const std::unordered_map<std::string, FfiType>* local_types) {
   if (!expr) return FfiType::Void;
   switch (expr->kind) {
     case Expr::Kind::IntLiteral: return FfiType::I64;
     case Expr::Kind::FloatLiteral: return FfiType::F64;
     case Expr::Kind::StringLiteral: return FfiType::Ptr;
     case Expr::Kind::BinaryOp: {
-      FfiType l = expr_type(expr->left.get(), program);
-      FfiType r = expr_type(expr->right.get(), program);
+      FfiType l = expr_type(expr->left.get(), program, local_types);
+      FfiType r = expr_type(expr->right.get(), program, local_types);
       return (l == FfiType::F64 || r == FfiType::F64) ? FfiType::F64 : FfiType::I64;
     }
     case Expr::Kind::VarRef: {
+      if (local_types) {
+        auto it = local_types->find(expr->var_name);
+        if (it != local_types->end()) return it->second;
+      }
       if (!program) return FfiType::Void;
       for (const TopLevelItem& item : program->top_level)
         if (const LetBinding* b = std::get_if<LetBinding>(&item))
@@ -74,6 +92,8 @@ static FfiType expr_type(Expr* expr, Program* program) {
       if (program) {
         for (const ExternFn& ext : program->extern_fns)
           if (ext.name == expr->callee) return ext.return_type;
+        for (const FnDef& def : program->user_fns)
+          if (def.name == expr->callee) return def.return_type;
       }
       return FfiType::Void;
     case Expr::Kind::Alloc:
@@ -113,6 +133,8 @@ struct CodegenEnv {
   LayoutMap* layout_map = nullptr;
   std::unordered_map<std::string, Value*> lib_handles;  // lib name or "" -> global
   std::unordered_map<std::string, Value*> vars;         // variable name -> alloca
+  std::unordered_map<std::string, Function*> user_fns;   // user fn name -> LLVM Function
+  const std::unordered_map<std::string, FfiType>* var_types = nullptr;  // current fn params + locals (for expr_type)
 };
 
 static Value* emit_expr(CodegenEnv& env, Expr* expr) {
@@ -147,8 +169,8 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       Value* L = emit_expr(env, expr->left.get());
       Value* R = emit_expr(env, expr->right.get());
       if (!L || !R) return nullptr;
-      FfiType tyL = expr_type(expr->left.get(), prog);
-      FfiType tyR = expr_type(expr->right.get(), prog);
+      FfiType tyL = expr_type(expr->left.get(), prog, env.var_types);
+      FfiType tyR = expr_type(expr->right.get(), prog, env.var_types);
       if (tyL == FfiType::F64 || tyR == FfiType::F64) {
         if (L->getType() != B.getDoubleTy()) L = B.CreateSIToFP(L, B.getDoubleTy());
         if (R->getType() != B.getDoubleTy()) R = B.CreateSIToFP(R, B.getDoubleTy());
@@ -163,7 +185,7 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         if (expr->args.size() != 1) return nullptr;
         Value* arg_val = emit_expr(env, expr->args[0].get());
         if (!arg_val) return nullptr;
-        FfiType arg_ty = expr_type(expr->args[0].get(), prog);
+        FfiType arg_ty = expr_type(expr->args[0].get(), prog, env.var_types);
         Function* rt_print = nullptr;
         if (arg_ty == FfiType::F64) {
           rt_print = M->getFunction("rt_print_f64");
@@ -182,6 +204,31 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         if (arg_val->getType() != B.getInt64Ty())
           arg_val = B.CreateFPToSI(arg_val, B.getInt64Ty());
         return B.CreateCall(rt_print, arg_val);
+      }
+      /* User fn call */
+      auto uf_it = env.user_fns.find(expr->callee);
+      if (uf_it != env.user_fns.end()) {
+        Function* fn = uf_it->second;
+        std::vector<Value*> args;
+        for (size_t j = 0; j < expr->args.size(); ++j) {
+          Value* arg_val = emit_expr(env, expr->args[j].get());
+          if (!arg_val) return nullptr;
+          Type* param_ty = fn->getArg(j)->getType();
+          if (arg_val->getType() != param_ty) {
+            if (param_ty == B.getDoubleTy() && arg_val->getType() == B.getInt64Ty())
+              arg_val = B.CreateSIToFP(arg_val, B.getDoubleTy());
+            else if (param_ty == B.getInt64Ty() && arg_val->getType() == B.getDoubleTy())
+              arg_val = B.CreateFPToSI(arg_val, B.getInt64Ty());
+            else if (param_ty->isPointerTy() && arg_val->getType()->isPointerTy())
+              arg_val = B.CreatePointerCast(arg_val, param_ty);
+            else
+              return nullptr;
+          }
+          args.push_back(arg_val);
+        }
+        Value* ret = B.CreateCall(fn, args, "call." + expr->callee);
+        if (fn->getReturnType()->isVoidTy()) return nullptr;
+        return ret;
       }
       /* Extern fn call */
       const ExternFn* ext = nullptr;
@@ -395,7 +442,7 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       if (!ptr || !val) return nullptr;
       Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
       if (ptr->getType() != i8ptr) ptr = B.CreatePointerCast(ptr, i8ptr);
-      FfiType val_ty = expr_type(expr->right.get(), prog);
+      FfiType val_ty = expr_type(expr->right.get(), prog, env.var_types);
       if (val_ty == FfiType::F64) {
         Value* as_f64 = B.CreatePointerCast(ptr, B.getDoubleTy()->getPointerTo());
         B.CreateStore(val, as_f64);
@@ -483,6 +530,77 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
   return nullptr;
 }
 
+static bool emit_user_fn_body(CodegenEnv& env, FnDef& def, Function* fn) {
+  LLVMContext& ctx = env.builder->getContext();
+  IRBuilder<>& B = *env.builder;
+  Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+  BasicBlock* entry = &fn->getEntryBlock();
+  B.SetInsertPoint(entry);
+  std::unordered_map<std::string, Value*> saved_vars = std::move(env.vars);
+  env.vars.clear();
+  std::unordered_map<std::string, FfiType> fn_var_types;
+  for (const auto& p : def.params)
+    fn_var_types[p.first] = p.second;
+  const std::unordered_map<std::string, FfiType>* saved_var_types = env.var_types;
+  env.var_types = &fn_var_types;
+  auto arg_it = fn->arg_begin();
+  for (size_t j = 0; j < def.params.size(); ++j, ++arg_it) {
+    Type* ty = ffi_type_to_llvm(def.params[j].second, ctx, B);
+    AllocaInst* alloca = B.CreateAlloca(ty, nullptr, def.params[j].first + ".param");
+    B.CreateStore(arg_it, alloca);
+    env.vars[def.params[j].first] = alloca;
+  }
+  for (StmtPtr& stmt : def.body) {
+    if (!stmt) return false;
+    switch (stmt->kind) {
+      case Stmt::Kind::Return: {
+        Value* val = emit_expr(env, stmt->expr.get());
+        if (!val) return false;
+        if (def.return_type == FfiType::Void) {
+          B.CreateRetVoid();
+        } else {
+          Type* ret_ty = ffi_type_to_llvm(def.return_type, ctx, B);
+          if (val->getType() != ret_ty) {
+            if (ret_ty == B.getDoubleTy() && val->getType() == B.getInt64Ty())
+              val = B.CreateSIToFP(val, B.getDoubleTy());
+            else if (ret_ty == B.getInt64Ty() && val->getType() == B.getDoubleTy())
+              val = B.CreateFPToSI(val, B.getInt64Ty());
+            else if (ret_ty->isPointerTy() && val->getType()->isPointerTy())
+              val = B.CreatePointerCast(val, ret_ty);
+            else
+              return false;
+          }
+          B.CreateRet(val);
+        }
+        break;
+      }
+      case Stmt::Kind::Let: {
+        fn_var_types[stmt->name] = expr_type(stmt->init.get(), env.program, env.var_types);
+        Value* init_val = emit_expr(env, stmt->init.get());
+        if (!init_val) return false;
+        AllocaInst* slot = B.CreateAlloca(init_val->getType(), nullptr, stmt->name);
+        B.CreateStore(init_val, slot);
+        env.vars[stmt->name] = slot;
+        break;
+      }
+      case Stmt::Kind::Expr: {
+        Value* v = emit_expr(env, stmt->expr.get());
+        (void)v;
+        break;
+      }
+    }
+  }
+  if (!def.body.empty() && def.body.back()->kind != Stmt::Kind::Return) {
+    if (def.return_type == FfiType::Void)
+      B.CreateRetVoid();
+    else
+      return false;
+  }
+  env.var_types = saved_var_types;
+  env.vars = std::move(saved_vars);
+  return true;
+}
+
 std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) {
   auto module = std::make_unique<Module>("fusion", ctx);
   IRBuilder<> builder(ctx);
@@ -521,6 +639,24 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
   Function::Create(ffi_sig_create_ty, GlobalValue::ExternalLinkage, "rt_ffi_sig_create", module.get());
   Function::Create(ffi_call_ty, GlobalValue::ExternalLinkage, "rt_ffi_call", module.get());
   Function::Create(ffi_error_ty, GlobalValue::ExternalLinkage, "rt_ffi_error_last", module.get());
+
+  /* Create user functions and emit bodies */
+  if (program) {
+    for (FnDef& def : program->user_fns) {
+      std::vector<Type*> param_types;
+      for (const auto& p : def.params)
+        param_types.push_back(ffi_type_to_llvm(p.second, ctx, builder));
+      Type* ret_ty = ffi_type_to_llvm(def.return_type, ctx, builder);
+      FunctionType* fn_ty = FunctionType::get(ret_ty, param_types, false);
+      Function* fn = Function::Create(fn_ty, GlobalValue::InternalLinkage, def.name, module.get());
+      BasicBlock::Create(ctx, "entry", fn);
+      env.user_fns[def.name] = fn;
+    }
+    for (FnDef& def : program->user_fns) {
+      Function* fn = env.user_fns[def.name];
+      if (!fn || !emit_user_fn_body(env, def, fn)) return nullptr;
+    }
+  }
 
   FunctionType* main_ty = FunctionType::get(builder.getVoidTy(), false);
   Function* main_fn = Function::Create(main_ty, GlobalValue::ExternalLinkage, "fusion_main", module.get());

@@ -393,6 +393,113 @@ static bool parse_let_binding(const std::vector<Token>& tokens, size_t& i, Progr
   return true;
 }
 
+static StmtPtr parse_stmt(const std::vector<Token>& tokens, size_t& i) {
+  if (at_eof(tokens, i)) return nullptr;
+  if (tokens[i].kind == TokenKind::KwReturn) {
+    i++;
+    ExprPtr expr = parse_expr(tokens, i);
+    if (!expr || at_eof(tokens, i) || tokens[i].kind != TokenKind::Semicolon) return nullptr;
+    i++;
+    return Stmt::make_return(std::move(expr));
+  }
+  if (tokens[i].kind == TokenKind::KwLet) {
+    i++;
+    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return nullptr;
+    std::string name = tokens[i].ident;
+    i++;
+    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Equals) return nullptr;
+    i++;
+    ExprPtr init = parse_expr(tokens, i);
+    if (!init || at_eof(tokens, i) || tokens[i].kind != TokenKind::Semicolon) return nullptr;
+    i++;
+    return Stmt::make_let(std::move(name), std::move(init));
+  }
+  ExprPtr expr = parse_expr(tokens, i);
+  if (!expr || at_eof(tokens, i) || tokens[i].kind != TokenKind::Semicolon) return nullptr;
+  i++;
+  return Stmt::make_expr(std::move(expr));
+}
+
+static bool parse_block(const std::vector<Token>& tokens, size_t& i, std::vector<StmtPtr>& out) {
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::LCurly) return false;
+  i++;
+  out.clear();
+  while (!at_eof(tokens, i) && tokens[i].kind != TokenKind::RCurly) {
+    StmtPtr s = parse_stmt(tokens, i);
+    if (!s) return false;
+    out.push_back(std::move(s));
+  }
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::RCurly) return false;
+  i++;
+  return true;
+}
+
+static bool parse_fn_def(const std::vector<Token>& tokens, size_t& i, Program& prog) {
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::KwFn) return false;
+  i++;
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return false;
+  FnDef def;
+  def.name = tokens[i].ident;
+  i++;
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::LParen) return false;
+  i++;
+  if (!at_eof(tokens, i) && tokens[i].kind != TokenKind::RParen) {
+    if (tokens[i].kind != TokenKind::Ident) return false;
+    std::string pname = tokens[i].ident;
+    i++;
+    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Colon) return false;
+    i++;
+    if (at_eof(tokens, i)) return false;
+    if (is_type_keyword(tokens[i].kind)) {
+      def.params.push_back({std::move(pname), token_to_ffi_type(tokens[i].kind)});
+      def.param_type_names.push_back("");
+    } else if (tokens[i].kind == TokenKind::Ident) {
+      def.params.push_back({std::move(pname), FfiType::Ptr});
+      def.param_type_names.push_back(tokens[i].ident);
+    } else {
+      return false;
+    }
+    i++;
+    while (!at_eof(tokens, i) && tokens[i].kind == TokenKind::Comma) {
+      i++;
+      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return false;
+      std::string pname2 = tokens[i].ident;
+      i++;
+      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Colon) return false;
+      i++;
+      if (at_eof(tokens, i)) return false;
+      if (is_type_keyword(tokens[i].kind)) {
+        def.params.push_back({std::move(pname2), token_to_ffi_type(tokens[i].kind)});
+        def.param_type_names.push_back("");
+      } else if (tokens[i].kind == TokenKind::Ident) {
+        def.params.push_back({std::move(pname2), FfiType::Ptr});
+        def.param_type_names.push_back(tokens[i].ident);
+      } else {
+        return false;
+      }
+      i++;
+    }
+  }
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return false;
+  i++;
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Arrow) return false;
+  i++;
+  if (at_eof(tokens, i)) return false;
+  if (is_type_keyword(tokens[i].kind)) {
+    def.return_type = token_to_ffi_type(tokens[i].kind);
+    def.return_type_name.clear();
+  } else if (tokens[i].kind == TokenKind::Ident) {
+    def.return_type = FfiType::Ptr;
+    def.return_type_name = tokens[i].ident;
+  } else {
+    return false;
+  }
+  i++;
+  if (!parse_block(tokens, i, def.body)) return false;
+  prog.user_fns.push_back(std::move(def));
+  return true;
+}
+
 ParseResult parse(const std::vector<Token>& tokens) {
   size_t i = 0;
   auto prog = std::make_unique<Program>();
@@ -426,6 +533,14 @@ ParseResult parse(const std::vector<Token>& tokens) {
       continue;
     }
     break;
+  }
+
+  while (!at_eof(tokens, i) && tokens[i].kind == TokenKind::KwFn) {
+    if (!parse_fn_def(tokens, i, *prog)) {
+      size_t line = 1, col = 1;
+      if (i < tokens.size()) { line = tokens[i].line; col = tokens[i].column; }
+      return fail("invalid function definition", line, col);
+    }
   }
 
   /* Ordered list of let bindings and expressions (at least one expression required). */

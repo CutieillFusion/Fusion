@@ -10,6 +10,7 @@ namespace fusion {
 struct SemaContext {
   std::unordered_set<std::string> lib_names;
   std::unordered_map<std::string, ExternFn> extern_fn_by_name;
+  std::unordered_map<std::string, FnDef*> user_fn_by_name;
   std::unordered_map<std::string, FfiType> var_types;
   LayoutMap* layout_map = nullptr;  // from Program::struct_defs
   Program* program = nullptr;
@@ -53,25 +54,42 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
         }
         return true;
       }
-      auto it = ctx.extern_fn_by_name.find(expr->callee);
-      if (it == ctx.extern_fn_by_name.end()) {
-        ctx.err->message = "unknown function '" + expr->callee + "'";
-        return false;
-      }
-      const ExternFn& ext = it->second;
-      if (expr->args.size() != ext.params.size()) {
-        ctx.err->message = "call to '" + expr->callee + "' has wrong number of arguments";
-        return false;
-      }
-      for (size_t j = 0; j < expr->args.size(); ++j) {
-        if (!check_expr(expr->args[j].get(), ctx)) return false;
-        FfiType arg_ty = expr_type(expr->args[j].get(), &ctx);
-        if (arg_ty != ext.params[j].second) {
-          ctx.err->message = "argument type mismatch in call to '" + expr->callee + "'";
+      auto ext_it = ctx.extern_fn_by_name.find(expr->callee);
+      if (ext_it != ctx.extern_fn_by_name.end()) {
+        const ExternFn& ext = ext_it->second;
+        if (expr->args.size() != ext.params.size()) {
+          ctx.err->message = "call to '" + expr->callee + "' has wrong number of arguments";
           return false;
         }
+        for (size_t j = 0; j < expr->args.size(); ++j) {
+          if (!check_expr(expr->args[j].get(), ctx)) return false;
+          FfiType arg_ty = expr_type(expr->args[j].get(), &ctx);
+          if (arg_ty != ext.params[j].second) {
+            ctx.err->message = "argument type mismatch in call to '" + expr->callee + "'";
+            return false;
+          }
+        }
+        return true;
       }
-      return true;
+      auto user_it = ctx.user_fn_by_name.find(expr->callee);
+      if (user_it != ctx.user_fn_by_name.end()) {
+        const FnDef& def = *user_it->second;
+        if (expr->args.size() != def.params.size()) {
+          ctx.err->message = "call to '" + expr->callee + "' has wrong number of arguments";
+          return false;
+        }
+        for (size_t j = 0; j < expr->args.size(); ++j) {
+          if (!check_expr(expr->args[j].get(), ctx)) return false;
+          FfiType arg_ty = expr_type(expr->args[j].get(), &ctx);
+          if (arg_ty != def.params[j].second) {
+            ctx.err->message = "argument type mismatch in call to '" + expr->callee + "'";
+            return false;
+          }
+        }
+        return true;
+      }
+      ctx.err->message = "unknown function '" + expr->callee + "'";
+      return false;
     }
     case Expr::Kind::VarRef: {
       auto it = ctx.var_types.find(expr->var_name);
@@ -203,8 +221,10 @@ static FfiType expr_type(Expr* expr, SemaContext* ctx) {
     case Expr::Kind::Call: {
       if (expr->callee == "print") return FfiType::Void;
       if (ctx) {
-        auto it = ctx->extern_fn_by_name.find(expr->callee);
-        if (it != ctx->extern_fn_by_name.end()) return it->second.return_type;
+        auto ext_it = ctx->extern_fn_by_name.find(expr->callee);
+        if (ext_it != ctx->extern_fn_by_name.end()) return ext_it->second.return_type;
+        auto user_it = ctx->user_fn_by_name.find(expr->callee);
+        if (user_it != ctx->user_fn_by_name.end()) return user_it->second->return_type;
       }
       return FfiType::Void;
     }
@@ -259,6 +279,43 @@ static bool top_level_has_expr(const Program* program) {
   return false;
 }
 
+static bool check_fn_def(SemaContext& ctx, FnDef& def) {
+  std::unordered_map<std::string, FfiType> local;
+  for (size_t j = 0; j < def.params.size(); ++j)
+    local[def.params[j].first] = def.params[j].second;
+  SemaContext fn_ctx;
+  fn_ctx.err = ctx.err;
+  fn_ctx.layout_map = ctx.layout_map;
+  fn_ctx.program = ctx.program;
+  fn_ctx.extern_fn_by_name = ctx.extern_fn_by_name;
+  fn_ctx.user_fn_by_name = ctx.user_fn_by_name;
+  fn_ctx.var_types = local;
+  for (StmtPtr& stmt : def.body) {
+    if (!stmt) return false;
+    switch (stmt->kind) {
+      case Stmt::Kind::Return:
+        if (!check_expr(stmt->expr.get(), fn_ctx)) return false;
+        if (expr_type(stmt->expr.get(), &fn_ctx) != def.return_type) {
+          ctx.err->message = "return type does not match function return type in '" + def.name + "'";
+          return false;
+        }
+        break;
+      case Stmt::Kind::Let:
+        if (!check_expr(stmt->init.get(), fn_ctx)) return false;
+        if (fn_ctx.var_types.count(stmt->name)) {
+          ctx.err->message = "duplicate variable '" + stmt->name + "' in function '" + def.name + "'";
+          return false;
+        }
+        fn_ctx.var_types[stmt->name] = expr_type(stmt->init.get(), &fn_ctx);
+        break;
+      case Stmt::Kind::Expr:
+        if (!check_expr(stmt->expr.get(), fn_ctx)) return false;
+        break;
+    }
+  }
+  return true;
+}
+
 SemaResult check(Program* program) {
   SemaResult r;
   if (!program || program->top_level.empty() || !top_level_has_expr(program)) {
@@ -298,6 +355,20 @@ SemaResult check(Program* program) {
   ctx.program = program;
   for (const ExternFn& ext : program->extern_fns) {
     ctx.extern_fn_by_name[ext.name] = ext;
+  }
+  for (FnDef& def : program->user_fns) {
+    if (ctx.extern_fn_by_name.count(def.name)) {
+      r.error.message = "function '" + def.name + "' conflicts with extern function";
+      return r;
+    }
+    if (ctx.user_fn_by_name.count(def.name)) {
+      r.error.message = "duplicate function definition '" + def.name + "'";
+      return r;
+    }
+    ctx.user_fn_by_name[def.name] = &def;
+  }
+  for (FnDef& def : program->user_fns) {
+    if (!check_fn_def(ctx, def)) return r;
   }
   for (const TopLevelItem& item : program->top_level) {
     if (const LetBinding* binding = std::get_if<LetBinding>(&item)) {

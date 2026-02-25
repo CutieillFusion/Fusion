@@ -38,6 +38,7 @@ enum class TokenKind {
   KwCstring,
   KwAs,
   KwLet,
+  KwReturn,
   KwOpaque,
   KwStruct,
 };

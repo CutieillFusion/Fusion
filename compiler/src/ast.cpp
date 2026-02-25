@@ -131,4 +131,26 @@ ExprPtr Expr::make_cast(ExprPtr operand, std::string target_type_name) {
   return e;
 }
 
+StmtPtr Stmt::make_return(ExprPtr expr) {
+  auto s = std::make_unique<Stmt>();
+  s->kind = Kind::Return;
+  s->expr = std::move(expr);
+  return s;
+}
+
+StmtPtr Stmt::make_let(std::string name, ExprPtr init) {
+  auto s = std::make_unique<Stmt>();
+  s->kind = Kind::Let;
+  s->name = std::move(name);
+  s->init = std::move(init);
+  return s;
+}
+
+StmtPtr Stmt::make_expr(ExprPtr expr) {
+  auto s = std::make_unique<Stmt>();
+  s->kind = Kind::Expr;
+  s->expr = std::move(expr);
+  return s;
+}
+
 }  // namespace fusion
