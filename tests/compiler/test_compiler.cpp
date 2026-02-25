@@ -165,6 +165,23 @@ TEST(ParserTests, ParsesTwoLibsTwoExternFnsBoundToCorrectLib) {
   EXPECT_EQ(result.program->extern_fns[1].lib_name, "__lib1");
 }
 
+TEST(ParserTests, ParsesExternLibBlock) {
+  auto tokens = fusion::lex(
+    "extern lib \"x.so\" { fn foo() -> void; fn bar() -> i64; }; print(1)");
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok());
+  ASSERT_TRUE(result.program);
+  EXPECT_EQ(result.program->libs.size(), 1u);
+  EXPECT_EQ(result.program->libs[0].path, "x.so");
+  EXPECT_EQ(result.program->extern_fns.size(), 2u);
+  EXPECT_EQ(result.program->extern_fns[0].name, "foo");
+  EXPECT_EQ(result.program->extern_fns[0].return_type, fusion::FfiType::Void);
+  EXPECT_EQ(result.program->extern_fns[0].lib_name, result.program->libs[0].name);
+  EXPECT_EQ(result.program->extern_fns[1].name, "bar");
+  EXPECT_EQ(result.program->extern_fns[1].return_type, fusion::FfiType::I64);
+  EXPECT_EQ(result.program->extern_fns[1].lib_name, result.program->libs[0].name);
+}
+
 TEST(ParserTests, ParsesOpaqueAndExternFn) {
   auto tokens = fusion::lex("opaque cudaStream_t; extern lib \"x.so\"; extern fn foo(s: cudaStream_t) -> void; print(1)");
   auto result = fusion::parse(tokens);

@@ -41,7 +41,6 @@ static int ffi_type_to_kind(FfiType t) {
     case FfiType::F32: return 3;
     case FfiType::F64: return 4;
     case FfiType::Ptr: return 5;
-    case FfiType::Cstring: return 6;
   }
   return 0;
 }
@@ -57,7 +56,7 @@ static FfiType expr_type(Expr* expr, Program* program) {
   switch (expr->kind) {
     case Expr::Kind::IntLiteral: return FfiType::I64;
     case Expr::Kind::FloatLiteral: return FfiType::F64;
-    case Expr::Kind::StringLiteral: return FfiType::Cstring;
+    case Expr::Kind::StringLiteral: return FfiType::Ptr;
     case Expr::Kind::BinaryOp: {
       FfiType l = expr_type(expr->left.get(), program);
       FfiType r = expr_type(expr->right.get(), program);
@@ -101,7 +100,7 @@ static FfiType expr_type(Expr* expr, Program* program) {
     }
     case Expr::Kind::Cast:
       if (expr->var_name == "ptr") return FfiType::Ptr;
-      if (expr->var_name == "cstring") return FfiType::Cstring;
+      if (expr->var_name == "cstring") return FfiType::Ptr;
       return FfiType::Void;
   }
   return FfiType::Void;
@@ -171,7 +170,7 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
           if (!rt_print) return nullptr;
           return B.CreateCall(rt_print, arg_val);
         }
-        if (arg_ty == FfiType::Cstring || arg_ty == FfiType::Ptr) {
+        if (arg_ty == FfiType::Ptr) {
           rt_print = M->getFunction("rt_print_cstring");
           if (!rt_print) return nullptr;
           Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
@@ -261,7 +260,7 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
           slot = B.CreatePointerCast(slot, B.getDoubleTy()->getPointerTo());
           if (arg_val->getType() != B.getDoubleTy())
             arg_val = B.CreateSIToFP(arg_val, B.getDoubleTy());
-        } else if (ext->params[j].second == FfiType::Ptr || ext->params[j].second == FfiType::Cstring) {
+        } else if (ext->params[j].second == FfiType::Ptr) {
           slot = B.CreatePointerCast(slot, B.getInt64Ty()->getPointerTo());
           if (arg_val->getType() == i8ptr || arg_val->getType()->isPointerTy())
             arg_val = B.CreatePtrToInt(arg_val, B.getInt64Ty());
@@ -299,7 +298,7 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       if (ext->return_type == FfiType::F64) {
         Value* ret_ptr = B.CreatePointerCast(ret_buf, B.getDoubleTy()->getPointerTo());
         ret_val = B.CreateLoad(B.getDoubleTy(), ret_ptr);
-      } else if (ext->return_type == FfiType::Ptr || ext->return_type == FfiType::Cstring) {
+      } else if (ext->return_type == FfiType::Ptr) {
         Value* ret_ptr = B.CreatePointerCast(ret_buf, B.getInt64Ty()->getPointerTo());
         Value* ret_i64 = B.CreateLoad(B.getInt64Ty(), ret_ptr);
         ret_val = B.CreateIntToPtr(ret_i64, PointerType::get(Type::getInt8Ty(ctx), 0));
@@ -400,7 +399,7 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       if (val_ty == FfiType::F64) {
         Value* as_f64 = B.CreatePointerCast(ptr, B.getDoubleTy()->getPointerTo());
         B.CreateStore(val, as_f64);
-      } else if (val_ty == FfiType::Ptr || val_ty == FfiType::Cstring) {
+      } else if (val_ty == FfiType::Ptr) {
         Value* as_i64 = B.CreatePointerCast(ptr, B.getInt64Ty()->getPointerTo());
         Value* val_i64 = val->getType()->isPointerTy() ? B.CreatePtrToInt(val, B.getInt64Ty()) : val;
         B.CreateStore(val_i64, as_i64);
@@ -434,7 +433,7 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         field_ptr = B.CreatePointerCast(field_ptr, B.getDoubleTy()->getPointerTo());
         return B.CreateLoad(B.getDoubleTy(), field_ptr, "load_field");
       }
-      if (field_ty == FfiType::Ptr || field_ty == FfiType::Cstring) {
+      if (field_ty == FfiType::Ptr) {
         field_ptr = B.CreatePointerCast(field_ptr, B.getInt64Ty()->getPointerTo());
         Value* v = B.CreateLoad(B.getInt64Ty(), field_ptr);
         return B.CreateIntToPtr(v, i8ptr);
@@ -466,7 +465,7 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         field_ptr = B.CreatePointerCast(field_ptr, B.getDoubleTy()->getPointerTo());
         if (val->getType() != B.getDoubleTy()) val = B.CreateSIToFP(val, B.getDoubleTy());
         B.CreateStore(val, field_ptr);
-      } else if (field_ty == FfiType::Ptr || field_ty == FfiType::Cstring) {
+      } else if (field_ty == FfiType::Ptr) {
         field_ptr = B.CreatePointerCast(field_ptr, B.getInt64Ty()->getPointerTo());
         Value* val_i64 = val->getType()->isPointerTy() ? B.CreatePtrToInt(val, B.getInt64Ty()) : val;
         B.CreateStore(val_i64, field_ptr);
@@ -571,16 +570,16 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
         FfiType ty = binding_type(*binding, program);
         Type* llvm_ty;
         if (ty == FfiType::F64) llvm_ty = builder.getDoubleTy();
-        else if (ty == FfiType::Cstring || ty == FfiType::Ptr) llvm_ty = i8ptr;
+        else if (ty == FfiType::Ptr) llvm_ty = i8ptr;
         else llvm_ty = builder.getInt64Ty();
         Value* slot = builder.CreateAlloca(llvm_ty, nullptr, binding->name);
         Value* init_val = emit_expr(env, binding->init.get());
         if (!init_val) return nullptr;
         if (ty == FfiType::F64 && init_val->getType() != builder.getDoubleTy())
           init_val = builder.CreateSIToFP(init_val, builder.getDoubleTy());
-        else if ((ty == FfiType::Cstring || ty == FfiType::Ptr) && init_val->getType() != i8ptr && init_val->getType()->isPointerTy())
+        else if (ty == FfiType::Ptr && init_val->getType() != i8ptr && init_val->getType()->isPointerTy())
           init_val = builder.CreatePointerCast(init_val, i8ptr);
-        else if (ty != FfiType::F64 && ty != FfiType::Cstring && ty != FfiType::Ptr && init_val->getType() == builder.getDoubleTy())
+        else if (ty != FfiType::F64 && ty != FfiType::Ptr && init_val->getType() == builder.getDoubleTy())
           init_val = builder.CreateFPToSI(init_val, builder.getInt64Ty());
         builder.CreateStore(init_val, slot);
         env.vars[binding->name] = slot;

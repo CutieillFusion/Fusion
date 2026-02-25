@@ -1,10 +1,18 @@
 struct Point { x: f64; y: f64; };
 
-extern lib "libm.so.6";
-extern fn cos(x: f64) -> f64;
+extern lib "libm.so.6" {
+    fn cos(x: f64) -> f64;
+};
 
-extern lib "build/fusion_phase6.so";
-extern fn point_set(p: Point, x: f64, y: f64) -> void; 
+extern lib "build/fusion_phase6.so" {
+    fn point_set(p: Point, x: f64, y: f64) -> void; 
+};
+
+fn main() -> i64 {
+    return 0;
+}
+
+print(main());
 
 let z = cos(1.0);
 print(z);
@@ -17,7 +25,5 @@ print(load_field(p, Point, x));
 print(load_field(p, Point, y));
 
 let x = z + 2;
-let hello = "Hello, World!";
 
-print(hello);
 print(x);

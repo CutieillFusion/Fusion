@@ -15,8 +15,7 @@ inline size_t ffi_type_size(FfiType t) {
     case FfiType::I64: return 8;
     case FfiType::F32: return 4;
     case FfiType::F64: return 8;
-    case FfiType::Ptr:
-    case FfiType::Cstring: return 8;
+    case FfiType::Ptr: return 8;
     case FfiType::Void: return 0;
   }
   return 0;

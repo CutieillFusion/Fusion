@@ -2,36 +2,37 @@ struct Buf { a: i64; b: i64; c: i64; d: i64; e: i64; };
 struct KernelParam { p0: i64; };  # layout for cuLaunchKernel (void** = pointer to each arg)
 
 # CUDA runtime: high-level API for GPU memory and device control
-extern lib "./libcudart.so.12";
-
-extern fn cudaMalloc(ptr_out: ptr, nbytes: i64) -> i64;
-extern fn cudaFree(dev_ptr: ptr) -> i64;
-extern fn cudaMemset(dev_ptr: ptr, value: i64, nbytes: i64) -> i64;
-extern fn cudaMemcpy(dst: ptr, src: ptr, nbytes: i64, kind: i64) -> i64;
-extern fn cudaSetDevice(device: i64) -> i64;
-extern fn cudaGetDevice(device_out: ptr) -> i64;
-extern fn cudaGetDeviceCount(count_out: ptr) -> i64;
-extern fn cudaDeviceSynchronize() -> i64;
+extern lib "./libcudart.so.12" {
+    fn cudaMalloc(ptr_out: ptr, nbytes: i64) -> i64;
+    fn cudaFree(dev_ptr: ptr) -> i64;
+    fn cudaMemset(dev_ptr: ptr, value: i64, nbytes: i64) -> i64;
+    fn cudaMemcpy(dst: ptr, src: ptr, nbytes: i64, kind: i64) -> i64;
+    fn cudaSetDevice(device: i64) -> i64;
+    fn cudaGetDevice(device_out: ptr) -> i64;
+    fn cudaGetDeviceCount(count_out: ptr) -> i64;
+    fn cudaDeviceSynchronize() -> i64;
+};
 
 # CUDA driver API: low-level interface for device, context, and kernel management
-extern lib "libcuda.so";
+extern lib "libcuda.so" {
+    fn cuInit(flags: i64) -> i64;
+    fn cuDeviceGet(device_out: ptr, ordinal: i64) -> i64;
+    fn cuDevicePrimaryCtxRetain(ctx_out: ptr, device: i64) -> i64;
+    fn cuCtxSetCurrent(ctx: ptr) -> i64;
+    fn cuModuleLoadData(module_out: ptr, image: ptr) -> i64;
+    fn cuModuleGetFunction(hfunc_out: ptr, hmod: ptr, name: cstring) -> i64;
+    fn cuLaunchKernel(f: ptr, gridX: i64, gridY: i64, gridZ: i64, blockX: i64, blockY: i64, blockZ: i64, sharedMem: i64, stream: i64, kernelParams: ptr, extra: i64) -> i64;
+};
 
-extern fn cuInit(flags: i64) -> i64;
-extern fn cuDeviceGet(device_out: ptr, ordinal: i64) -> i64;
-extern fn cuDevicePrimaryCtxRetain(ctx_out: ptr, device: i64) -> i64;
-extern fn cuCtxSetCurrent(ctx: ptr) -> i64;
-extern fn cuModuleLoadData(module_out: ptr, image: ptr) -> i64;
-extern fn cuModuleGetFunction(hfunc_out: ptr, hmod: ptr, name: cstring) -> i64;
-extern fn cuLaunchKernel(f: ptr, gridX: i64, gridY: i64, gridZ: i64, blockX: i64, blockY: i64, blockZ: i64, sharedMem: i64, stream: i64, kernelParams: ptr, extra: i64) -> i64;
 
 # NVRTC: compile .cu source to PTX at runtime (for dynamic kernel compilation)
-extern lib "libnvrtc.so";
-
-extern fn nvrtcCreateProgram(prog_out: ptr, src: ptr, name: cstring, numHeaders: i64, headers: i64, includeNames: i64) -> i64;
-extern fn nvrtcCompileProgram(prog: ptr, numOptions: i64, options: i64) -> i64;
-extern fn nvrtcGetPTXSize(prog: ptr, size_out: ptr) -> i64;
-extern fn nvrtcGetPTX(prog: ptr, ptx_buf: ptr) -> i64;
-extern fn nvrtcDestroyProgram(prog_out: ptr) -> i64;
+extern lib "libnvrtc.so" {
+    fn nvrtcCreateProgram(prog_out: ptr, src: ptr, name: cstring, numHeaders: i64, headers: i64, includeNames: i64) -> i64;
+    fn nvrtcCompileProgram(prog: ptr, numOptions: i64, options: i64) -> i64;
+    fn nvrtcGetPTXSize(prog: ptr, size_out: ptr) -> i64;
+    fn nvrtcGetPTX(prog: ptr, ptx_buf: ptr) -> i64;
+    fn nvrtcDestroyProgram(prog_out: ptr) -> i64;
+};
 
 # Driver init and context (needed for cuModuleLoadData / cuLaunchKernel)
 cuInit(0);

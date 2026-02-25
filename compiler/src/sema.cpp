@@ -47,8 +47,8 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
         }
         if (!check_expr(expr->args[0].get(), ctx)) return false;
         FfiType arg_ty = expr_type(expr->args[0].get(), &ctx);
-        if (arg_ty != FfiType::I64 && arg_ty != FfiType::F64 && arg_ty != FfiType::Cstring) {
-          ctx.err->message = "print expects i64, f64, or string argument";
+        if (arg_ty != FfiType::I64 && arg_ty != FfiType::F64 && arg_ty != FfiType::Ptr) {
+          ctx.err->message = "print expects i64, f64, or pointer argument";
           return false;
         }
         return true;
@@ -160,8 +160,6 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
       }
       FfiType val_ty = expr_type(expr->right.get(), &ctx);
       bool compat = (val_ty == field_ty) ||
-        (val_ty == FfiType::Ptr && field_ty == FfiType::Cstring) ||
-        (val_ty == FfiType::Cstring && field_ty == FfiType::Ptr) ||
         (val_ty == FfiType::Ptr && field_ty == FfiType::I64) ||
         (val_ty == FfiType::I64 && field_ty == FfiType::Ptr);
       if (!compat) {
@@ -174,16 +172,9 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
       if (!expr->left || expr->var_name.empty()) return false;
       if (!check_expr(expr->left.get(), ctx)) return false;
       FfiType from = expr_type(expr->left.get(), &ctx);
-      if (expr->var_name == "ptr") {
-        if (from != FfiType::Cstring) {
-          ctx.err->message = "cast to ptr: operand must be cstring";
-          return false;
-        }
-        return true;
-      }
-      if (expr->var_name == "cstring") {
+      if (expr->var_name == "ptr" || expr->var_name == "cstring") {
         if (from != FfiType::Ptr) {
-          ctx.err->message = "cast to cstring: operand must be ptr";
+          ctx.err->message = "cast to ptr/cstring: operand must be a pointer";
           return false;
         }
         return true;
@@ -203,7 +194,7 @@ static FfiType expr_type(Expr* expr, SemaContext* ctx) {
     case Expr::Kind::FloatLiteral:
       return FfiType::F64;
     case Expr::Kind::StringLiteral:
-      return FfiType::Cstring;
+      return FfiType::Ptr;
     case Expr::Kind::BinaryOp: {
       FfiType l = expr_type(expr->left.get(), ctx);
       FfiType r = expr_type(expr->right.get(), ctx);
@@ -247,8 +238,7 @@ static FfiType expr_type(Expr* expr, SemaContext* ctx) {
       return FfiType::Void;
     }
     case Expr::Kind::Cast:
-      if (expr->var_name == "ptr") return FfiType::Ptr;
-      if (expr->var_name == "cstring") return FfiType::Cstring;
+      if (expr->var_name == "ptr" || expr->var_name == "cstring") return FfiType::Ptr;
       return FfiType::Void;
   }
   return FfiType::Void;

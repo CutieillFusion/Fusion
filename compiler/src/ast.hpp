@@ -19,7 +19,6 @@ enum class FfiType {
   F32,
   F64,
   Ptr,
-  Cstring,
 };
 
 struct Expr;

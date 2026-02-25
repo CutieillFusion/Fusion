@@ -34,7 +34,7 @@ TEST(RuntimeFfiTests, FfiNegative) {
   EXPECT_NE(rt_ffi_call(sig, (void*)strlen, nullptr, nullptr), 0);
   EXPECT_TRUE(rt_ffi_error_last() && strstr(rt_ffi_error_last(), "null ret_buf"));
 
-  rt_ffi_type_kind_t arg_kinds[] = {RT_FFI_CSTRING};
+  rt_ffi_type_kind_t arg_kinds[] = {RT_FFI_PTR};
   rt_ffi_sig_t* sig1 = rt_ffi_sig_create(RT_FFI_I64, 1, arg_kinds);
   ASSERT_NE(sig1, nullptr);
   EXPECT_NE(rt_ffi_call(sig1, (void*)strlen, nullptr, &ret_buf), 0);
@@ -44,7 +44,7 @@ TEST(RuntimeFfiTests, FfiNegative) {
 TEST(RuntimeFfiTests, CallStrlen) {
   if (!ffi_available())
     GTEST_SKIP() << "FFI not available";
-  rt_ffi_type_kind_t arg_kinds[] = {RT_FFI_CSTRING};
+  rt_ffi_type_kind_t arg_kinds[] = {RT_FFI_PTR};
   rt_ffi_sig_t* sig = rt_ffi_sig_create(RT_FFI_I64, 1, arg_kinds);
   ASSERT_NE(sig, nullptr) << (rt_ffi_error_last() ? rt_ffi_error_last() : "unknown");
   const char* str = "hello";
@@ -76,7 +76,7 @@ TEST(RuntimeFfiTests, CallPuts) {
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  rt_ffi_type_kind_t arg_kinds[] = {RT_FFI_CSTRING};
+  rt_ffi_type_kind_t arg_kinds[] = {RT_FFI_PTR};
   rt_ffi_sig_t* sig = rt_ffi_sig_create(RT_FFI_I32, 1, arg_kinds);
   ASSERT_NE(sig, nullptr) << (rt_ffi_error_last() ? rt_ffi_error_last() : "unknown");
   const char* str = "fusion_puts_test";

@@ -23,7 +23,7 @@ static FfiType token_to_ffi_type(TokenKind k) {
     case TokenKind::KwF32: return FfiType::F32;
     case TokenKind::KwF64: return FfiType::F64;
     case TokenKind::KwPtr: return FfiType::Ptr;
-    case TokenKind::KwCstring: return FfiType::Cstring;
+    case TokenKind::KwCstring: return FfiType::Ptr;
     default: return FfiType::Void;  // invalid, caller checks
   }
 }
@@ -260,6 +260,72 @@ static ExprPtr parse_expr(const std::vector<Token>& tokens, size_t& i) {
   return left;
 }
 
+/* Parses "fn name(params) -> ret;" starting at KwFn. Fills out; does not set lib_name. */
+static bool parse_fn_decl(const std::vector<Token>& tokens, size_t& i, ExternFn& out) {
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::KwFn) return false;
+  i++;
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return false;
+  out.name = tokens[i].ident;
+  i++;
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::LParen) return false;
+  i++;
+  if (!at_eof(tokens, i) && tokens[i].kind != TokenKind::RParen) {
+    if (tokens[i].kind != TokenKind::Ident) return false;
+    std::string pname = tokens[i].ident;
+    i++;
+    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Colon) return false;
+    i++;
+    if (at_eof(tokens, i)) return false;
+    if (is_type_keyword(tokens[i].kind)) {
+      out.params.push_back({std::move(pname), token_to_ffi_type(tokens[i].kind)});
+      out.param_type_names.push_back("");
+    } else if (tokens[i].kind == TokenKind::Ident) {
+      out.params.push_back({std::move(pname), FfiType::Ptr});
+      out.param_type_names.push_back(tokens[i].ident);
+    } else {
+      return false;
+    }
+    i++;
+    while (!at_eof(tokens, i) && tokens[i].kind == TokenKind::Comma) {
+      i++;
+      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return false;
+      std::string pname2 = tokens[i].ident;
+      i++;
+      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Colon) return false;
+      i++;
+      if (at_eof(tokens, i)) return false;
+      if (is_type_keyword(tokens[i].kind)) {
+        out.params.push_back({std::move(pname2), token_to_ffi_type(tokens[i].kind)});
+        out.param_type_names.push_back("");
+      } else if (tokens[i].kind == TokenKind::Ident) {
+        out.params.push_back({std::move(pname2), FfiType::Ptr});
+        out.param_type_names.push_back(tokens[i].ident);
+      } else {
+        return false;
+      }
+      i++;
+    }
+  }
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return false;
+  i++;
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Arrow) return false;
+  i++;
+  if (at_eof(tokens, i)) return false;
+  if (is_type_keyword(tokens[i].kind)) {
+    out.return_type = token_to_ffi_type(tokens[i].kind);
+    out.return_type_name.clear();
+  } else if (tokens[i].kind == TokenKind::Ident) {
+    out.return_type = FfiType::Ptr;
+    out.return_type_name = tokens[i].ident;
+  } else {
+    return false;
+  }
+  i++;
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Semicolon) return false;
+  i++;
+  return true;
+}
+
 static bool parse_extern_lib(const std::vector<Token>& tokens, size_t& i, Program& prog) {
   if (at_eof(tokens, i) || tokens[i].kind != TokenKind::KwExtern) return false;
   i++;
@@ -275,10 +341,26 @@ static bool parse_extern_lib(const std::vector<Token>& tokens, size_t& i, Progra
     lib.name = tokens[i].ident;
     i++;
   }
-  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Semicolon) return false;
-  i++;
   if (lib.name.empty())
     lib.name = "__lib" + std::to_string(prog.libs.size());
+  if (at_eof(tokens, i)) return false;
+  if (tokens[i].kind == TokenKind::LCurly) {
+    prog.libs.push_back(lib);
+    i++;
+    while (!at_eof(tokens, i) && tokens[i].kind == TokenKind::KwFn) {
+      ExternFn ext;
+      if (!parse_fn_decl(tokens, i, ext)) return false;
+      ext.lib_name = lib.name;
+      prog.extern_fns.push_back(std::move(ext));
+    }
+    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::RCurly) return false;
+    i++;
+    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Semicolon) return false;
+    i++;
+    return true;
+  }
+  if (tokens[i].kind != TokenKind::Semicolon) return false;
+  i++;
   prog.libs.push_back(std::move(lib));
   return true;
 }
@@ -286,68 +368,8 @@ static bool parse_extern_lib(const std::vector<Token>& tokens, size_t& i, Progra
 static bool parse_extern_fn(const std::vector<Token>& tokens, size_t& i, Program& prog) {
   if (at_eof(tokens, i) || tokens[i].kind != TokenKind::KwExtern) return false;
   i++;
-  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::KwFn) return false;
-  i++;
-  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return false;
   ExternFn ext;
-  ext.name = tokens[i].ident;
-  i++;
-  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::LParen) return false;
-  i++;
-  if (!at_eof(tokens, i) && tokens[i].kind != TokenKind::RParen) {
-    if (tokens[i].kind != TokenKind::Ident) return false;
-    std::string pname = tokens[i].ident;
-    i++;
-    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Colon) return false;
-    i++;
-    if (at_eof(tokens, i)) return false;
-    if (is_type_keyword(tokens[i].kind)) {
-      ext.params.push_back({std::move(pname), token_to_ffi_type(tokens[i].kind)});
-      ext.param_type_names.push_back("");
-    } else if (tokens[i].kind == TokenKind::Ident) {
-      ext.params.push_back({std::move(pname), FfiType::Ptr});
-      ext.param_type_names.push_back(tokens[i].ident);
-    } else {
-      return false;
-    }
-    i++;
-    while (!at_eof(tokens, i) && tokens[i].kind == TokenKind::Comma) {
-      i++;
-      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return false;
-      std::string pname2 = tokens[i].ident;
-      i++;
-      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Colon) return false;
-      i++;
-      if (at_eof(tokens, i)) return false;
-      if (is_type_keyword(tokens[i].kind)) {
-        ext.params.push_back({std::move(pname2), token_to_ffi_type(tokens[i].kind)});
-        ext.param_type_names.push_back("");
-      } else if (tokens[i].kind == TokenKind::Ident) {
-        ext.params.push_back({std::move(pname2), FfiType::Ptr});
-        ext.param_type_names.push_back(tokens[i].ident);
-      } else {
-        return false;
-      }
-      i++;
-    }
-  }
-  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return false;
-  i++;
-  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Arrow) return false;
-  i++;
-  if (at_eof(tokens, i)) return false;
-  if (is_type_keyword(tokens[i].kind)) {
-    ext.return_type = token_to_ffi_type(tokens[i].kind);
-    ext.return_type_name.clear();
-  } else if (tokens[i].kind == TokenKind::Ident) {
-    ext.return_type = FfiType::Ptr;
-    ext.return_type_name = tokens[i].ident;
-  } else {
-    return false;
-  }
-  i++;
-  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Semicolon) return false;
-  i++;
+  if (!parse_fn_decl(tokens, i, ext)) return false;
   prog.extern_fns.push_back(std::move(ext));
   return true;
 }

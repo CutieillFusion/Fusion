@@ -27,14 +27,13 @@ static ffi_type *kind_to_ffi_type(rt_ffi_type_kind_t kind) {
     case RT_FFI_I64:     return &ffi_type_sint64;
     case RT_FFI_F32:     return &ffi_type_float;
     case RT_FFI_F64:     return &ffi_type_double;
-    case RT_FFI_PTR:
-    case RT_FFI_CSTRING: return &ffi_type_pointer;
+    case RT_FFI_PTR:     return &ffi_type_pointer;
     default:             return NULL;
   }
 }
 
 static int kind_valid(rt_ffi_type_kind_t kind) {
-  return kind >= RT_FFI_VOID && kind <= RT_FFI_CSTRING;
+  return kind >= RT_FFI_VOID && kind <= RT_FFI_PTR;
 }
 
 struct rt_ffi_sig {

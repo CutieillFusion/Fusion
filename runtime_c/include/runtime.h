@@ -33,7 +33,7 @@ const char *rt_dlerror_last(void);
 
 /* --- FFI (libffi) ---
  * args_buf: array of argument slots; each slot 8 bytes (pointer-sized), 8-byte aligned.
- *   i32/i64/u32/u64/ptr/cstring -> one 8-byte slot; f32 -> 4 bytes in low half (or 8 for double); f64 -> 8 bytes. Order = arg order.
+ *   i32/i64/u32/u64/ptr -> one 8-byte slot; f32 -> 4 bytes in low half (or 8 for double); f64 -> 8 bytes. Order = arg order.
  * ret_buf: caller-allocated, 8 bytes for integer/pointer/double return; unused for void.
  */
 typedef enum {
@@ -42,8 +42,7 @@ typedef enum {
   RT_FFI_I64,
   RT_FFI_F32,
   RT_FFI_F64,
-  RT_FFI_PTR,
-  RT_FFI_CSTRING
+  RT_FFI_PTR
 } rt_ffi_type_kind_t;
 
 typedef struct rt_ffi_sig rt_ffi_sig_t;
