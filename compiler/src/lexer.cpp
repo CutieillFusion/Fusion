@@ -48,6 +48,11 @@ std::vector<Token> lex(const std::string& source) {
     }
     if (i >= source.size()) break;
 
+    if (source[i] == '#') {
+      while (i < source.size() && source[i] != '\n') advance();
+      continue;
+    }
+
     size_t start_line = line;
     size_t start_col = column;
 
