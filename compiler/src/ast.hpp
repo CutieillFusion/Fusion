@@ -69,12 +69,12 @@ struct LetBinding {
 struct Program;
 using ProgramPtr = std::unique_ptr<Program>;
 
-/* Top-level: zero or more extern decls, zero or more let-bindings, then one root expression. */
+/* Top-level: zero or more extern decls, zero or more let-bindings, then one or more expressions (; separated). */
 struct Program {
   std::vector<ExternLib> libs;
   std::vector<ExternFn> extern_fns;
   std::vector<LetBinding> bindings;
-  ExprPtr root_expr;
+  std::vector<ExprPtr> stmts;  /* executed in order; optional semicolons between */
 };
 
 }  // namespace fusion

@@ -2,3 +2,5 @@ build/
 CMakeFiles/
 deps/
 _deps/
+*.so
+*.a

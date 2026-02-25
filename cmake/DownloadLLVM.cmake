@@ -22,7 +22,7 @@ set(FUSION_LLVM_TARBALL_SUFFIX "x86_64-linux-gnu-ubuntu-18.04" CACHE STRING "Pre
 set(FUSION_LLVM_SHA256 "" CACHE STRING "SHA256 for downloaded LLVM tarball (optional)")
 set(_fusion_llvm_tarball "clang+llvm-${FUSION_LLVM_VERSION}-${FUSION_LLVM_TARBALL_SUFFIX}.tar.xz")
 set(_fusion_llvm_url "https://github.com/llvm/llvm-project/releases/download/llvmorg-${FUSION_LLVM_VERSION}/${_fusion_llvm_tarball}")
-set(_fusion_deps_dir "${CMAKE_BINARY_DIR}/deps/llvm")
+set(_fusion_deps_dir "${CMAKE_BINARY_DIR}/_deps/llvm")
 set(_fusion_tarball_path "${_fusion_deps_dir}/${_fusion_llvm_tarball}")
 set(_fusion_expected_root "${_fusion_deps_dir}/clang+llvm-${FUSION_LLVM_VERSION}-${FUSION_LLVM_TARBALL_SUFFIX}")
 

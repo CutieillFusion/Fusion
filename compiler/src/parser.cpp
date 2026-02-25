@@ -214,22 +214,28 @@ ParseResult parse(const std::vector<Token>& tokens) {
     }
   }
 
-  if (at_eof(tokens, i)) {
+  /* One or more expressions, separated by semicolons (optional after last). */
+  while (!at_eof(tokens, i) && tokens[i].kind != TokenKind::Eof) {
+    ExprPtr expr = parse_expr(tokens, i);
+    if (!expr) {
+      size_t line = 1, col = 1;
+      if (i < tokens.size()) {
+        line = tokens[i].line;
+        col = tokens[i].column;
+      }
+      if (prog->stmts.empty()) {
+        return fail("expected expression", line, col);
+      }
+      return fail("parse error", line, col);
+    }
+    prog->stmts.push_back(std::move(expr));
+    if (!at_eof(tokens, i) && tokens[i].kind == TokenKind::Semicolon) {
+      i++;
+    }
+  }
+  if (prog->stmts.empty()) {
     return fail("expected expression", tokens.empty() ? 1u : tokens.back().line, tokens.empty() ? 1u : tokens.back().column);
   }
-  ExprPtr expr = parse_expr(tokens, i);
-  if (!expr) {
-    size_t line = 1, col = 1;
-    if (i < tokens.size()) {
-      line = tokens[i].line;
-      col = tokens[i].column;
-    }
-    return fail("parse error", line, col);
-  }
-  if (!at_eof(tokens, i) && tokens[i].kind != TokenKind::Eof) {
-    return fail("unexpected token", tokens[i].line, tokens[i].column);
-  }
-  prog->root_expr = std::move(expr);
   ParseResult r;
   r.program = std::move(prog);
   return r;

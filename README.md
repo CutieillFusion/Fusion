@@ -10,6 +10,13 @@ Same as CI:
 ./ci/build_and_test.sh
 ```
 
+Or use the wrapper Makefile (out-of-tree build):
+
+```bash
+make
+make check
+```
+
 Or manually:
 
 ```bash
@@ -75,11 +82,11 @@ cmake --build build
 
 This uses ExternalProject to fetch libffi 3.4.6 and install it under `build/_deps/libffi-install` (no `~/.local` or `env_local_deps.sh` needed).
 
-## Optional: LLVM
+## LLVM (required)
 
-If LLVM is installed and found by CMake (`find_package(LLVM)`), the compiler links LLVM and `fusion --version` prints the LLVM version.
+LLVM is required to build Fusion. If LLVM is not installed, CMake will try to find it; on Linux, if not found, CMake can download a pre-built LLVM into `build/_deps/llvm` on first configure (set `FUSION_DOWNLOAD_LLVM=ON`, which is the default on Linux).
 
-**Auto-download (no sudo):** On Linux, if LLVM is not found, CMake will download a pre-built LLVM (Ubuntu 22.04 x86_64) into `build/deps/llvm` on first configure. You can disable this with:
+**Auto-download (no sudo):** On Linux, if LLVM is not found, CMake downloads a pre-built LLVM (x86_64 Linux) into `build/_deps/llvm`. To disable auto-download and supply LLVM yourself:
 
 ```bash
 cmake -B build -S . -DFUSION_DOWNLOAD_LLVM=OFF
@@ -91,4 +98,4 @@ To use a different LLVM version when auto-downloading:
 cmake -B build -S . -DFUSION_LLVM_VERSION=18.1.7
 ```
 
-Without LLVM (and with `FUSION_DOWNLOAD_LLVM=OFF` or on non-Linux), the project still builds and `fusion --version` reports "LLVM not linked".
+If LLVM cannot be found or downloaded, configure will fail with an error.

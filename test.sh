@@ -1,21 +1,17 @@
 #!/usr/bin/env bash
 # CI build and test for Fusion (Linux).
 # Run from repo root: ./test.sh
+# If any argument is given, removes build/ then configures, builds, and runs tests (full rebuild).
+# If no arguments, preserves existing build directory.
 
 set -e
-ROOT="$(cd "$(dirname "$0")" && pwd)"
-cd "$ROOT"
-[ -f env_local_deps.sh ] && . ./env_local_deps.sh
 
-mkdir -p build
-echo "=== Configuring ==="
-cmake -S . -B build
+if [[ $# -gt 0 ]]; then
+  rm -rf build
+fi
 
-echo "=== Building ==="
-cmake --build build --target fusion fusion_tests test_runner
+cmake -B build -S .
 
-echo "=== Running tests ==="
-(cd build && ctest --output-on-failure)
-./build/tests/test_runner
+cmake --build build
 
-echo "=== Done ==="
+ctest --test-dir build --output-on-failure

@@ -103,8 +103,8 @@ static FfiType expr_type(Expr* expr, SemaContext* ctx) {
 
 SemaResult check(Program* program) {
   SemaResult r;
-  if (!program || !program->root_expr) {
-    r.error.message = "no program or root expression";
+  if (!program || program->stmts.empty()) {
+    r.error.message = "no program or no statements";
     return r;
   }
   if (!program->extern_fns.empty() && program->libs.empty()) {
@@ -125,7 +125,10 @@ SemaResult check(Program* program) {
     }
     ctx.var_types[binding.name] = ty;
   }
-  r.ok = check_expr(program->root_expr.get(), ctx);
+  for (const auto& stmt : program->stmts) {
+    if (!check_expr(stmt.get(), ctx)) return r;
+  }
+  r.ok = true;
   return r;
 }
 

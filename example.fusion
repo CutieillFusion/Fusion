@@ -3,5 +3,6 @@ extern fn cos(x: f64) -> f64;
 
 let z = cos(1.0);
 let x = z + 2;
-let hello = "Hello, World";
-print(hello)
+let hello = "Hello, World!";
+print(hello);
+print(x);

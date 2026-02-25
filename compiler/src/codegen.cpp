@@ -367,13 +367,12 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
     }
   }
 
-  Expr* root = program && program->root_expr ? program->root_expr.get() : nullptr;
-  if (!root) {
-    builder.CreateRetVoid();
-    return module;
+  if (program) {
+    for (const auto& stmt : program->stmts) {
+      Value* v = emit_expr(env, stmt.get());
+      if (!v) return nullptr;
+    }
   }
-  Value* result = emit_expr(env, root);
-  if (!result) return nullptr;
   builder.CreateRetVoid();
   return module;
 }

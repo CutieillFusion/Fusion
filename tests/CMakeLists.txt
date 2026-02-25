@@ -1,48 +1,61 @@
-add_executable(test_runner test_runner.c)
-target_link_libraries(test_runner PRIVATE runtime m)
-add_test(NAME test_runner COMMAND $<TARGET_FILE:test_runner>)
-set_tests_properties(test_runner PROPERTIES REQUIRED_FILES "$<TARGET_FILE:test_runner>")
+# GoogleTest: FetchContent (pinned), only when building tests
+include(FetchContent)
+FetchContent_Declare(
+  googletest
+  GIT_REPOSITORY https://github.com/google/googletest.git
+  GIT_TAG        v1.14.0
+)
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(googletest)
 
-add_executable(fusion_tests fusion_tests.cpp)
-target_link_libraries(fusion_tests PRIVATE fusion_compiler ${CMAKE_DL_LIBS})
-# Force-include static runtime so rt_print_i64 is in the binary; export for dlsym(RTLD_DEFAULT, "rt_print_i64")
-target_link_options(fusion_tests PRIVATE
+include("${CMAKE_SOURCE_DIR}/cmake/LinkFusionLLVM.cmake")
+
+# --- fusion_test_compiler (GoogleTest) ---
+add_executable(fusion_test_compiler compiler/test_compiler.cpp)
+target_link_libraries(fusion_test_compiler PRIVATE GTest::gtest_main fusion_compiler ${CMAKE_DL_LIBS})
+target_link_options(fusion_test_compiler PRIVATE
   "LINKER:--whole-archive,$<TARGET_FILE:runtime_static>,--no-whole-archive"
   "LINKER:--export-dynamic"
 )
 if(FUSION_LIBFFI_FOUND)
-  target_link_libraries(fusion_tests PRIVATE LibFFI::LibFFI)
+  target_link_libraries(fusion_test_compiler PRIVATE LibFFI::LibFFI)
 endif()
-target_include_directories(fusion_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../compiler ${CMAKE_CURRENT_SOURCE_DIR}/../compiler/src)
-if(LLVM_FOUND)
-  target_include_directories(fusion_tests PRIVATE ${LLVM_INCLUDE_DIRS})
-  if(TARGET LLVMSupport)
-    include("${LLVM_CMAKE_DIR}/LLVM-Config.cmake")
-    include("${CMAKE_SOURCE_DIR}/cmake/FusionLLVMComponents.cmake")
-    llvm_map_components_to_libnames(FUSION_LLVM_LIBS ${FUSION_LLVM_COMPONENTS})
-    include("${CMAKE_SOURCE_DIR}/cmake/SanitizeLLVMLibs.cmake")
-    if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
-      target_link_libraries(fusion_tests PRIVATE "$<LINK_GROUP:RESCAN,${FUSION_LLVM_LIBRARY_PATHS}>" ${FUSION_LLVM_LIBS_SANITIZED})
-    else()
-      target_link_libraries(fusion_tests PRIVATE "LINKER:--start-group" ${FUSION_LLVM_LIBRARY_PATHS} "LINKER:--end-group" ${FUSION_LLVM_LIBS_SANITIZED})
-    endif()
-  elseif(TARGET LLVM::Support)
-    target_link_libraries(fusion_tests PRIVATE LLVM::Support LLVM::Core LLVM::ExecutionEngine LLVM::OrcJIT)
-  else()
-    target_link_libraries(fusion_tests PRIVATE ${LLVM_LIBRARIES})
-  endif()
-  target_compile_definitions(fusion_tests PRIVATE FUSION_HAVE_LLVM=1)
-  target_link_libraries(fusion_tests PRIVATE ${FUSION_LLVM_EXTRA_SYSTEM_LIBS})
-endif()
-add_test(NAME fusion_tests COMMAND fusion_tests)
+target_include_directories(fusion_test_compiler PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../compiler ${CMAKE_CURRENT_SOURCE_DIR}/../compiler/src)
+fusion_target_link_llvm(fusion_test_compiler)
 
-add_test(NAME fusion_help COMMAND $<TARGET_FILE:fusion> --help)
-set_tests_properties(fusion_help PROPERTIES
-  REQUIRED_FILES "$<TARGET_FILE:fusion>"
+include(GoogleTest)
+gtest_discover_tests(fusion_test_compiler
+  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+  PROPERTIES LABELS "compiler" ENVIRONMENT "GTEST_COLOR=yes"
 )
 
-add_test(NAME fusion_run_print_1_2 COMMAND $<TARGET_FILE:fusion> run ${CMAKE_SOURCE_DIR}/test.fusion)
-set_tests_properties(fusion_run_print_1_2 PROPERTIES
-  REQUIRED_FILES "$<TARGET_FILE:fusion>"
-  ENVIRONMENT "LC_ALL=C"
+# --- fusion_test_runtime (GoogleTest, C++ calling C runtime) ---
+set(FUSION_RUNTIME_GTEST_SOURCES
+  runtime/test_runtime_basic.cpp
+  runtime/test_runtime_dl.cpp
+  runtime/test_runtime_ffi.cpp
+)
+add_executable(fusion_test_runtime ${FUSION_RUNTIME_GTEST_SOURCES})
+target_link_libraries(fusion_test_runtime PRIVATE GTest::gtest_main runtime m)
+target_include_directories(fusion_test_runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../runtime_c/include)
+
+gtest_discover_tests(fusion_test_runtime
+  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+  PROPERTIES LABELS "runtime" ENVIRONMENT "GTEST_COLOR=yes"
+)
+
+# --- CTest: CLI smoke tests ---
+add_test(NAME cli.help COMMAND $<TARGET_FILE:fusion> --help)
+set_tests_properties(cli.help PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+  LABELS "cli;smoke"
+)
+
+# CLI smoke: fusion run test.fusion with LC_ALL=C (use repo-root test.fusion for Phase 1)
+add_test(NAME cli.run.test_fusion
+  COMMAND ${CMAKE_COMMAND} -E env LC_ALL=C $<TARGET_FILE:fusion> run ${CMAKE_SOURCE_DIR}/test.fusion
+)
+set_tests_properties(cli.run.test_fusion PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+  LABELS "cli;smoke"
 )

@@ -3,7 +3,7 @@
 # Include after LLVM-Config.cmake; then call llvm_map_components_to_libnames(FUSION_LLVM_LIBS ${FUSION_LLVM_COMPONENTS}).
 # Pre-built LLVM does not set LLVM_LINK_COMPONENTS, so we must list all transitive deps explicitly.
 #
-# Direct: AsmPrinter, GlobalISel, Passes, ProfileData, OrcJIT, X86CodeGen, JITLink, AsmPrinter, Core, etc.
+# Direct: AsmPrinter, GlobalISel, Passes, ProfileData, OrcJIT, X86CodeGen, JITLink, Core, etc.
 # Transitive (from INTERFACE_LINK_LIBRARIES):
 #   TargetParser: Triple (Core, AsmPrinter, Object, ...)
 #   Option: OptTable, InputArgList (JITLink COFF parser)

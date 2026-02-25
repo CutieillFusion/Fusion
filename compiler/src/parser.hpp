@@ -18,7 +18,7 @@ struct ParseResult {
   ProgramPtr program;
   ParseError error;
   bool ok() const { return program != nullptr; }
-  Expr* root_expr() const { return program ? program->root_expr.get() : nullptr; }
+  Expr* root_expr() const { return program && !program->stmts.empty() ? program->stmts.back().get() : nullptr; }
 };
 
 ParseResult parse(const std::vector<Token>& tokens);
