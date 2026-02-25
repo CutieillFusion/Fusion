@@ -47,4 +47,88 @@ ExprPtr Expr::make_var_ref(std::string name) {
   return e;
 }
 
+ExprPtr Expr::make_alloc(std::string type_name) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::Alloc;
+  e->var_name = std::move(type_name);
+  return e;
+}
+
+ExprPtr Expr::make_alloc_bytes(ExprPtr size_expr) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::AllocBytes;
+  e->left = std::move(size_expr);
+  return e;
+}
+
+ExprPtr Expr::make_addr_of(ExprPtr expr) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::AddrOf;
+  e->left = std::move(expr);
+  return e;
+}
+
+ExprPtr Expr::make_load(ExprPtr ptr) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::Load;
+  e->left = std::move(ptr);
+  return e;
+}
+
+ExprPtr Expr::make_load_f64(ExprPtr ptr) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::LoadF64;
+  e->left = std::move(ptr);
+  return e;
+}
+
+ExprPtr Expr::make_load_i32(ExprPtr ptr) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::LoadI32;
+  e->left = std::move(ptr);
+  return e;
+}
+
+ExprPtr Expr::make_load_ptr(ExprPtr ptr) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::LoadPtr;
+  e->left = std::move(ptr);
+  return e;
+}
+
+ExprPtr Expr::make_store(ExprPtr ptr, ExprPtr value) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::Store;
+  e->left = std::move(ptr);
+  e->right = std::move(value);
+  return e;
+}
+
+ExprPtr Expr::make_load_field(ExprPtr ptr, std::string struct_name, std::string field_name) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::LoadField;
+  e->left = std::move(ptr);
+  e->load_field_struct = std::move(struct_name);
+  e->load_field_field = std::move(field_name);
+  return e;
+}
+
+ExprPtr Expr::make_store_field(ExprPtr ptr, std::string struct_name, std::string field_name, ExprPtr value) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::StoreField;
+  e->left = std::move(ptr);
+  e->right = std::move(value);
+  e->load_field_struct = std::move(struct_name);
+  e->load_field_field = std::move(field_name);
+  return e;
+}
+
+ExprPtr Expr::make_cast(ExprPtr operand, std::string target_type_name) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::Cast;
+  e->left = std::move(operand);
+  e->var_name = std::move(target_type_name);
+  return e;
+}
+
 }  // namespace fusion

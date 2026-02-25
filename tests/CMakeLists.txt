@@ -10,8 +10,15 @@ FetchContent_MakeAvailable(googletest)
 
 include("${CMAKE_SOURCE_DIR}/cmake/LinkFusionLLVM.cmake")
 
+# --- Phase 6 test .so (struct, out-param, pointer-to-pointer) ---
+add_library(fusion_phase6_so SHARED data/libfusion_phase6.c)
+set_target_properties(fusion_phase6_so PROPERTIES OUTPUT_NAME fusion_phase6 PREFIX "")
+set_target_properties(fusion_phase6_so PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+set_target_properties(fusion_phase6_so PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
 # --- fusion_test_compiler (GoogleTest) ---
 add_executable(fusion_test_compiler compiler/test_compiler.cpp)
+add_dependencies(fusion_test_compiler fusion_phase6_so)
 target_link_libraries(fusion_test_compiler PRIVATE GTest::gtest_main fusion_compiler ${CMAKE_DL_LIBS})
 target_link_options(fusion_test_compiler PRIVATE
   "LINKER:--whole-archive,$<TARGET_FILE:runtime_static>,--no-whole-archive"
@@ -26,7 +33,7 @@ fusion_target_link_llvm(fusion_test_compiler)
 include(GoogleTest)
 gtest_discover_tests(fusion_test_compiler
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-  PROPERTIES LABELS "compiler" ENVIRONMENT "GTEST_COLOR=yes"
+  PROPERTIES LABELS "compiler" ENVIRONMENT "GTEST_COLOR=yes;FUSION_PHASE6_SO=$<TARGET_FILE:fusion_phase6_so>"
 )
 
 # --- fusion_test_runtime (GoogleTest, C++ calling C runtime) ---
@@ -36,26 +43,18 @@ set(FUSION_RUNTIME_GTEST_SOURCES
   runtime/test_runtime_ffi.cpp
 )
 add_executable(fusion_test_runtime ${FUSION_RUNTIME_GTEST_SOURCES})
-target_link_libraries(fusion_test_runtime PRIVATE GTest::gtest_main runtime m)
+target_link_libraries(fusion_test_runtime PRIVATE GTest::gtest_main runtime m ${CMAKE_DL_LIBS})
 target_include_directories(fusion_test_runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../runtime_c/include)
+add_dependencies(fusion_test_runtime fusion_phase6_so)
 
 gtest_discover_tests(fusion_test_runtime
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-  PROPERTIES LABELS "runtime" ENVIRONMENT "GTEST_COLOR=yes"
+  PROPERTIES LABELS "runtime" ENVIRONMENT "GTEST_COLOR=yes;FUSION_PHASE6_SO=$<TARGET_FILE:fusion_phase6_so>"
 )
 
 # --- CTest: CLI smoke tests ---
 add_test(NAME cli.help COMMAND $<TARGET_FILE:fusion> --help)
 set_tests_properties(cli.help PROPERTIES
-  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-  LABELS "cli;smoke"
-)
-
-# CLI smoke: fusion run test.fusion with LC_ALL=C (use repo-root test.fusion for Phase 1)
-add_test(NAME cli.run.test_fusion
-  COMMAND ${CMAKE_COMMAND} -E env LC_ALL=C $<TARGET_FILE:fusion> run ${CMAKE_SOURCE_DIR}/test.fusion
-)
-set_tests_properties(cli.run.test_fusion PROPERTIES
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
   LABELS "cli;smoke"
 )

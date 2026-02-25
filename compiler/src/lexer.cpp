@@ -19,6 +19,8 @@ static TokenKind keyword_from_ident(const std::string& ident) {
   if (ident == "cstring") return TokenKind::KwCstring;
   if (ident == "as") return TokenKind::KwAs;
   if (ident == "let") return TokenKind::KwLet;
+  if (ident == "opaque") return TokenKind::KwOpaque;
+  if (ident == "struct") return TokenKind::KwStruct;
   return TokenKind::Ident;
 }
 
@@ -141,6 +143,16 @@ std::vector<Token> lex(const std::string& source) {
     }
     if (source[i] == ')') {
       tokens.push_back({TokenKind::RParen, 0, 0.0, {}, {}, start_line, start_col});
+      advance();
+      continue;
+    }
+    if (source[i] == '{') {
+      tokens.push_back({TokenKind::LCurly, 0, 0.0, {}, {}, start_line, start_col});
+      advance();
+      continue;
+    }
+    if (source[i] == '}') {
+      tokens.push_back({TokenKind::RCurly, 0, 0.0, {}, {}, start_line, start_col});
       advance();
       continue;
     }

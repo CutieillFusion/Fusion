@@ -2,7 +2,9 @@
 #include <gtest/gtest.h>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <dlfcn.h>
 #include <unistd.h>
 
 static bool ffi_available() {
@@ -95,4 +97,22 @@ TEST(RuntimeFfiTests, CallPuts) {
   unlink(path);
   EXPECT_STREQ(buf, "fusion_puts_test\n");
   EXPECT_GE(static_cast<int32_t>(ret_buf & 0xFFFFFFFFu), 0);
+}
+
+TEST(RuntimeFfiTests, Phase6LayoutCrossCheck) {
+  const char* so_path = std::getenv("FUSION_PHASE6_SO");
+  if (!so_path) so_path = "./fusion_phase6.so";
+  void* handle = dlopen(so_path, RTLD_NOW);
+  if (!handle) GTEST_SKIP() << "dlopen failed: " << dlerror();
+  auto sizeof_fn = (size_t(*)())dlsym(handle, "fusion_test_sizeof_Point");
+  auto offsetof_x = (size_t(*)())dlsym(handle, "fusion_test_offsetof_Point_x");
+  auto offsetof_y = (size_t(*)())dlsym(handle, "fusion_test_offsetof_Point_y");
+  if (!sizeof_fn || !offsetof_x || !offsetof_y) {
+    dlclose(handle);
+    GTEST_SKIP() << "layout symbols not found";
+  }
+  EXPECT_EQ(sizeof_fn(), 16u) << "C sizeof(Point) should be 16";
+  EXPECT_EQ(offsetof_x(), 0u) << "offsetof(Point, x) should be 0";
+  EXPECT_EQ(offsetof_y(), 8u) << "offsetof(Point, y) should be 8";
+  dlclose(handle);
 }

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace fusion {
@@ -25,7 +26,10 @@ struct Expr;
 using ExprPtr = std::unique_ptr<Expr>;
 
 struct Expr {
-  enum class Kind { IntLiteral, FloatLiteral, StringLiteral, BinaryOp, Call, VarRef };
+  enum class Kind {
+    IntLiteral, FloatLiteral, StringLiteral, BinaryOp, Call, VarRef,
+    Alloc, AllocBytes, AddrOf, Load, LoadF64, LoadI32, LoadPtr, Store, LoadField, StoreField, Cast
+  };
   Kind kind = Kind::IntLiteral;
 
   int64_t int_value = 0;
@@ -36,7 +40,9 @@ struct Expr {
   ExprPtr right;
   std::string callee;
   std::vector<ExprPtr> args;
-  std::string var_name;  // for VarRef
+  std::string var_name;  // for VarRef, or alloc type name for Alloc
+  std::string load_field_struct;  // for LoadField
+  std::string load_field_field;   // for LoadField
 
   static ExprPtr make_int(int64_t value);
   static ExprPtr make_float(double value);
@@ -44,6 +50,17 @@ struct Expr {
   static ExprPtr make_binop(BinOp op, ExprPtr left, ExprPtr right);
   static ExprPtr make_call(std::string callee, std::vector<ExprPtr> args);
   static ExprPtr make_var_ref(std::string name);
+  static ExprPtr make_alloc(std::string type_name);
+  static ExprPtr make_alloc_bytes(ExprPtr size_expr);
+  static ExprPtr make_addr_of(ExprPtr expr);
+  static ExprPtr make_load(ExprPtr ptr);
+  static ExprPtr make_load_f64(ExprPtr ptr);
+  static ExprPtr make_load_i32(ExprPtr ptr);
+  static ExprPtr make_load_ptr(ExprPtr ptr);
+  static ExprPtr make_store(ExprPtr ptr, ExprPtr value);
+  static ExprPtr make_load_field(ExprPtr ptr, std::string struct_name, std::string field_name);
+  static ExprPtr make_store_field(ExprPtr ptr, std::string struct_name, std::string field_name, ExprPtr value);
+  static ExprPtr make_cast(ExprPtr operand, std::string target_type_name);
 };
 
 /* extern lib "path"; or extern lib "path" as name; */
@@ -52,11 +69,14 @@ struct ExternLib {
   std::string name;  // empty = default (single lib)
 };
 
-/* extern fn name(x: f64, ...) -> ret_type; (symbol in default lib) */
+/* extern fn name(x: f64, ...) -> ret_type; (symbol in default lib).
+ * param_type_names[i] non-empty means param type was a named type (opaque/struct) -> PTR at ABI. */
 struct ExternFn {
   std::string name;
   std::vector<std::pair<std::string, FfiType>> params;
+  std::vector<std::string> param_type_names;  // same size as params; "" = keyword type
   FfiType return_type;
+  std::string return_type_name;  // non-empty = named type (opaque/struct) -> PTR
   std::string lib_name;  // empty = default lib
 };
 
@@ -66,15 +86,25 @@ struct LetBinding {
   ExprPtr init;
 };
 
+/* struct Name { field: type; ... }; fields use primitive FfiType only in v1. */
+struct StructDef {
+  std::string name;
+  std::vector<std::pair<std::string, FfiType>> fields;
+};
+
 struct Program;
 using ProgramPtr = std::unique_ptr<Program>;
 
-/* Top-level: zero or more extern decls, zero or more let-bindings, then one or more expressions (; separated). */
+/* One top-level item: either a let binding or an expression. */
+using TopLevelItem = std::variant<LetBinding, ExprPtr>;
+
+/* Top-level: opaque/struct decls, extern decls, then an ordered list of let-bindings and expressions. */
 struct Program {
+  std::vector<std::string> opaque_types;
+  std::vector<StructDef> struct_defs;
   std::vector<ExternLib> libs;
   std::vector<ExternFn> extern_fns;
-  std::vector<LetBinding> bindings;
-  std::vector<ExprPtr> stmts;  /* executed in order; optional semicolons between */
+  std::vector<TopLevelItem> top_level;  /* executed in order; at least one must be an expression */
 };
 
 }  // namespace fusion

@@ -15,6 +15,8 @@ enum class TokenKind {
   Ident,
   LParen,
   RParen,
+  LCurly,  // {
+  RCurly,  // }
   Plus,
   Comma,
   Semicolon,
@@ -36,6 +38,8 @@ enum class TokenKind {
   KwCstring,
   KwAs,
   KwLet,
+  KwOpaque,
+  KwStruct,
 };
 
 struct Token {

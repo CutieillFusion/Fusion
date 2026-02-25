@@ -2,6 +2,7 @@ set(FUSION_COMPILER_SOURCES
   src/ast.cpp
   src/lexer.cpp
   src/parser.cpp
+  src/layout.cpp
   src/sema.cpp
   src/codegen.cpp
 )

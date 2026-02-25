@@ -1,5 +1,7 @@
 #include "codegen.hpp"
 #include "ast.hpp"
+#include "layout.hpp"
+#include <variant>
 
 #ifdef FUSION_HAVE_LLVM
 #include "llvm/IR/LLVMContext.h"
@@ -56,11 +58,16 @@ static FfiType expr_type(Expr* expr, Program* program) {
     case Expr::Kind::IntLiteral: return FfiType::I64;
     case Expr::Kind::FloatLiteral: return FfiType::F64;
     case Expr::Kind::StringLiteral: return FfiType::Cstring;
-    case Expr::Kind::BinaryOp: return FfiType::I64;
+    case Expr::Kind::BinaryOp: {
+      FfiType l = expr_type(expr->left.get(), program);
+      FfiType r = expr_type(expr->right.get(), program);
+      return (l == FfiType::F64 || r == FfiType::F64) ? FfiType::F64 : FfiType::I64;
+    }
     case Expr::Kind::VarRef: {
       if (!program) return FfiType::Void;
-      for (const LetBinding& b : program->bindings)
-        if (b.name == expr->var_name) return binding_type(b, program);
+      for (const TopLevelItem& item : program->top_level)
+        if (const LetBinding* b = std::get_if<LetBinding>(&item))
+          if (b->name == expr->var_name) return binding_type(*b, program);
       return FfiType::Void;
     }
     case Expr::Kind::Call:
@@ -70,6 +77,32 @@ static FfiType expr_type(Expr* expr, Program* program) {
           if (ext.name == expr->callee) return ext.return_type;
       }
       return FfiType::Void;
+    case Expr::Kind::Alloc:
+    case Expr::Kind::AllocBytes:
+    case Expr::Kind::AddrOf:
+    case Expr::Kind::LoadPtr:
+      return FfiType::Ptr;
+    case Expr::Kind::Load:
+    case Expr::Kind::LoadI32:
+      return FfiType::I64;
+    case Expr::Kind::LoadF64:
+      return FfiType::F64;
+    case Expr::Kind::Store:
+    case Expr::Kind::StoreField:
+      return FfiType::Void;
+    case Expr::Kind::LoadField: {
+      if (!program) return FfiType::Void;
+      LayoutMap layout_map = build_layout_map(program->struct_defs);
+      auto it = layout_map.find(expr->load_field_struct);
+      if (it == layout_map.end()) return FfiType::Void;
+      for (const auto& f : it->second.fields)
+        if (f.first == expr->load_field_field) return f.second.type;
+      return FfiType::Void;
+    }
+    case Expr::Kind::Cast:
+      if (expr->var_name == "ptr") return FfiType::Ptr;
+      if (expr->var_name == "cstring") return FfiType::Cstring;
+      return FfiType::Void;
   }
   return FfiType::Void;
 }
@@ -78,6 +111,7 @@ struct CodegenEnv {
   Program* program = nullptr;
   Module* module = nullptr;
   IRBuilder<>* builder = nullptr;
+  LayoutMap* layout_map = nullptr;
   std::unordered_map<std::string, Value*> lib_handles;  // lib name or "" -> global
   std::unordered_map<std::string, Value*> vars;         // variable name -> alloca
 };
@@ -137,7 +171,7 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
           if (!rt_print) return nullptr;
           return B.CreateCall(rt_print, arg_val);
         }
-        if (arg_ty == FfiType::Cstring) {
+        if (arg_ty == FfiType::Cstring || arg_ty == FfiType::Ptr) {
           rt_print = M->getFunction("rt_print_cstring");
           if (!rt_print) return nullptr;
           Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
@@ -158,8 +192,7 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       }
       if (!ext || prog->libs.empty()) return nullptr;
 
-      Value* handle = env.lib_handles.count("") ? env.lib_handles[""] : env.lib_handles[ext->lib_name];
-      if (!handle) handle = env.lib_handles[""];
+      Value* handle = env.lib_handles[ext->lib_name];
       if (!handle) return nullptr;
       handle = B.CreateLoad(PointerType::get(Type::getInt8Ty(ctx), 0), handle);
 
@@ -219,16 +252,24 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       const unsigned slot_size = 8;
       Value* args_buf = B.CreateAlloca(B.getInt8Ty(), B.getInt32(nargs * slot_size), "args_buf");
       args_buf = B.CreatePointerCast(args_buf, PointerType::get(Type::getInt8Ty(ctx), 0));
+      Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
       for (size_t j = 0; j < nargs; ++j) {
         Value* arg_val = emit_expr(env, expr->args[j].get());
         if (!arg_val) return nullptr;
         Value* slot = B.CreateGEP(B.getInt8Ty(), args_buf, B.getInt32(j * slot_size));
-        Type* slot_ty = (ext->params[j].second == FfiType::F64) ? B.getDoubleTy() : B.getInt64Ty();
-        slot = B.CreatePointerCast(slot, slot_ty->getPointerTo());
-        if (ext->params[j].second == FfiType::F64 && arg_val->getType() != B.getDoubleTy())
-          arg_val = B.CreateSIToFP(arg_val, B.getDoubleTy());
-        else if (ext->params[j].second != FfiType::F64 && arg_val->getType() == B.getDoubleTy())
-          arg_val = B.CreateFPToSI(arg_val, B.getInt64Ty());
+        if (ext->params[j].second == FfiType::F64) {
+          slot = B.CreatePointerCast(slot, B.getDoubleTy()->getPointerTo());
+          if (arg_val->getType() != B.getDoubleTy())
+            arg_val = B.CreateSIToFP(arg_val, B.getDoubleTy());
+        } else if (ext->params[j].second == FfiType::Ptr || ext->params[j].second == FfiType::Cstring) {
+          slot = B.CreatePointerCast(slot, B.getInt64Ty()->getPointerTo());
+          if (arg_val->getType() == i8ptr || arg_val->getType()->isPointerTy())
+            arg_val = B.CreatePtrToInt(arg_val, B.getInt64Ty());
+        } else {
+          slot = B.CreatePointerCast(slot, B.getInt64Ty()->getPointerTo());
+          if (arg_val->getType() == B.getDoubleTy())
+            arg_val = B.CreateFPToSI(arg_val, B.getInt64Ty());
+        }
         B.CreateStore(arg_val, slot);
       }
 
@@ -258,12 +299,187 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       if (ext->return_type == FfiType::F64) {
         Value* ret_ptr = B.CreatePointerCast(ret_buf, B.getDoubleTy()->getPointerTo());
         ret_val = B.CreateLoad(B.getDoubleTy(), ret_ptr);
+      } else if (ext->return_type == FfiType::Ptr || ext->return_type == FfiType::Cstring) {
+        Value* ret_ptr = B.CreatePointerCast(ret_buf, B.getInt64Ty()->getPointerTo());
+        Value* ret_i64 = B.CreateLoad(B.getInt64Ty(), ret_ptr);
+        ret_val = B.CreateIntToPtr(ret_i64, PointerType::get(Type::getInt8Ty(ctx), 0));
       } else {
         Value* ret_ptr = B.CreatePointerCast(ret_buf, B.getInt64Ty()->getPointerTo());
         ret_val = B.CreateLoad(B.getInt64Ty(), ret_ptr);
       }
       return ret_val;
     }
+    case Expr::Kind::Alloc: {
+      Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+      const std::string& tn = expr->var_name;
+      if (tn == "i32") {
+        Value* slot = B.CreateAlloca(B.getInt32Ty(), nullptr, "alloc.i32");
+        return B.CreatePointerCast(slot, i8ptr);
+      }
+      if (tn == "i64") {
+        Value* slot = B.CreateAlloca(B.getInt64Ty(), nullptr, "alloc.i64");
+        return B.CreatePointerCast(slot, i8ptr);
+      }
+      if (tn == "f32") {
+        Value* slot = B.CreateAlloca(B.getFloatTy(), nullptr, "alloc.f32");
+        return B.CreatePointerCast(slot, i8ptr);
+      }
+      if (tn == "f64") {
+        Value* slot = B.CreateAlloca(B.getDoubleTy(), nullptr, "alloc.f64");
+        return B.CreatePointerCast(slot, i8ptr);
+      }
+      if (tn == "ptr" || tn == "cstring") {
+        Value* slot = B.CreateAlloca(i8ptr, nullptr, "alloc.ptr");
+        return B.CreatePointerCast(slot, i8ptr);
+      }
+      if (prog && env.layout_map) {
+        auto it = env.layout_map->find(tn);
+        if (it != env.layout_map->end() && it->second.size > 0) {
+          Value* slot = B.CreateAlloca(B.getInt8Ty(), B.getInt32(it->second.size), "alloc.struct");
+          return B.CreatePointerCast(slot, i8ptr);
+        }
+      }
+      return nullptr;
+    }
+    case Expr::Kind::AllocBytes: {
+      Value* size_val = emit_expr(env, expr->left.get());
+      if (!size_val) return nullptr;
+      Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+      if (size_val->getType() != B.getInt64Ty())
+        size_val = B.CreateIntCast(size_val, B.getInt64Ty(), true);
+      Value* slot = B.CreateAlloca(B.getInt8Ty(), size_val, "alloc_bytes");
+      return B.CreatePointerCast(slot, i8ptr);
+    }
+    case Expr::Kind::AddrOf: {
+      if (!expr->left || expr->left->kind != Expr::Kind::VarRef) return nullptr;
+      auto it = env.vars.find(expr->left->var_name);
+      if (it == env.vars.end()) return nullptr;
+      Value* alloca = it->second;
+      return B.CreatePointerCast(alloca, PointerType::get(Type::getInt8Ty(ctx), 0));
+    }
+    case Expr::Kind::Load: {
+      Value* ptr = emit_expr(env, expr->left.get());
+      if (!ptr) return nullptr;
+      Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+      if (ptr->getType() != i8ptr) ptr = B.CreatePointerCast(ptr, i8ptr);
+      Value* as_i64 = B.CreatePointerCast(ptr, B.getInt64Ty()->getPointerTo());
+      return B.CreateLoad(B.getInt64Ty(), as_i64, "load");
+    }
+    case Expr::Kind::LoadI32: {
+      Value* ptr = emit_expr(env, expr->left.get());
+      if (!ptr) return nullptr;
+      Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+      if (ptr->getType() != i8ptr) ptr = B.CreatePointerCast(ptr, i8ptr);
+      Value* as_i32 = B.CreatePointerCast(ptr, B.getInt32Ty()->getPointerTo());
+      Value* v32 = B.CreateLoad(B.getInt32Ty(), as_i32, "load_i32");
+      return B.CreateZExt(v32, B.getInt64Ty());
+    }
+    case Expr::Kind::LoadF64: {
+      Value* ptr = emit_expr(env, expr->left.get());
+      if (!ptr) return nullptr;
+      Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+      if (ptr->getType() != i8ptr) ptr = B.CreatePointerCast(ptr, i8ptr);
+      Value* as_f64 = B.CreatePointerCast(ptr, B.getDoubleTy()->getPointerTo());
+      return B.CreateLoad(B.getDoubleTy(), as_f64, "load_f64");
+    }
+    case Expr::Kind::LoadPtr: {
+      Value* ptr = emit_expr(env, expr->left.get());
+      if (!ptr) return nullptr;
+      Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+      Value* as_i64ptr = B.CreatePointerCast(ptr, B.getInt64Ty()->getPointerTo());
+      Value* val = B.CreateLoad(B.getInt64Ty(), as_i64ptr, "load_ptr");
+      return B.CreateIntToPtr(val, i8ptr);
+    }
+    case Expr::Kind::Store: {
+      Value* ptr = emit_expr(env, expr->left.get());
+      Value* val = emit_expr(env, expr->right.get());
+      if (!ptr || !val) return nullptr;
+      Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+      if (ptr->getType() != i8ptr) ptr = B.CreatePointerCast(ptr, i8ptr);
+      FfiType val_ty = expr_type(expr->right.get(), prog);
+      if (val_ty == FfiType::F64) {
+        Value* as_f64 = B.CreatePointerCast(ptr, B.getDoubleTy()->getPointerTo());
+        B.CreateStore(val, as_f64);
+      } else if (val_ty == FfiType::Ptr || val_ty == FfiType::Cstring) {
+        Value* as_i64 = B.CreatePointerCast(ptr, B.getInt64Ty()->getPointerTo());
+        Value* val_i64 = val->getType()->isPointerTy() ? B.CreatePtrToInt(val, B.getInt64Ty()) : val;
+        B.CreateStore(val_i64, as_i64);
+      } else {
+        Value* as_i64 = B.CreatePointerCast(ptr, B.getInt64Ty()->getPointerTo());
+        if (val->getType() == B.getDoubleTy()) val = B.CreateFPToSI(val, B.getInt64Ty());
+        B.CreateStore(val, as_i64);
+      }
+      return B.getInt64(0);
+    }
+    case Expr::Kind::LoadField: {
+      if (!env.layout_map) return nullptr;
+      auto it = env.layout_map->find(expr->load_field_struct);
+      if (it == env.layout_map->end()) return nullptr;
+      size_t offset = 0;
+      FfiType field_ty = FfiType::Void;
+      for (const auto& f : it->second.fields) {
+        if (f.first == expr->load_field_field) {
+          offset = f.second.offset;
+          field_ty = f.second.type;
+          break;
+        }
+      }
+      if (field_ty == FfiType::Void) return nullptr;
+      Value* base = emit_expr(env, expr->left.get());
+      if (!base) return nullptr;
+      Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+      if (base->getType() != i8ptr) base = B.CreatePointerCast(base, i8ptr);
+      Value* field_ptr = B.CreateGEP(B.getInt8Ty(), base, B.getInt64(offset));
+      if (field_ty == FfiType::F64) {
+        field_ptr = B.CreatePointerCast(field_ptr, B.getDoubleTy()->getPointerTo());
+        return B.CreateLoad(B.getDoubleTy(), field_ptr, "load_field");
+      }
+      if (field_ty == FfiType::Ptr || field_ty == FfiType::Cstring) {
+        field_ptr = B.CreatePointerCast(field_ptr, B.getInt64Ty()->getPointerTo());
+        Value* v = B.CreateLoad(B.getInt64Ty(), field_ptr);
+        return B.CreateIntToPtr(v, i8ptr);
+      }
+      field_ptr = B.CreatePointerCast(field_ptr, B.getInt64Ty()->getPointerTo());
+      return B.CreateLoad(B.getInt64Ty(), field_ptr, "load_field");
+    }
+    case Expr::Kind::StoreField: {
+      if (!env.layout_map) return nullptr;
+      auto it = env.layout_map->find(expr->load_field_struct);
+      if (it == env.layout_map->end()) return nullptr;
+      size_t offset = 0;
+      FfiType field_ty = FfiType::Void;
+      for (const auto& f : it->second.fields) {
+        if (f.first == expr->load_field_field) {
+          offset = f.second.offset;
+          field_ty = f.second.type;
+          break;
+        }
+      }
+      if (field_ty == FfiType::Void) return nullptr;
+      Value* base = emit_expr(env, expr->left.get());
+      Value* val = emit_expr(env, expr->right.get());
+      if (!base || !val) return nullptr;
+      Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+      if (base->getType() != i8ptr) base = B.CreatePointerCast(base, i8ptr);
+      Value* field_ptr = B.CreateGEP(B.getInt8Ty(), base, B.getInt64(offset));
+      if (field_ty == FfiType::F64) {
+        field_ptr = B.CreatePointerCast(field_ptr, B.getDoubleTy()->getPointerTo());
+        if (val->getType() != B.getDoubleTy()) val = B.CreateSIToFP(val, B.getDoubleTy());
+        B.CreateStore(val, field_ptr);
+      } else if (field_ty == FfiType::Ptr || field_ty == FfiType::Cstring) {
+        field_ptr = B.CreatePointerCast(field_ptr, B.getInt64Ty()->getPointerTo());
+        Value* val_i64 = val->getType()->isPointerTy() ? B.CreatePtrToInt(val, B.getInt64Ty()) : val;
+        B.CreateStore(val_i64, field_ptr);
+      } else {
+        field_ptr = B.CreatePointerCast(field_ptr, B.getInt64Ty()->getPointerTo());
+        if (val->getType()->isPointerTy()) val = B.CreatePtrToInt(val, B.getInt64Ty());
+        else if (val->getType() == B.getDoubleTy()) val = B.CreateFPToSI(val, B.getInt64Ty());
+        B.CreateStore(val, field_ptr);
+      }
+      return B.getInt64(0);
+    }
+    case Expr::Kind::Cast:
+      return emit_expr(env, expr->left.get());
   }
   return nullptr;
 }
@@ -272,10 +488,14 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
   auto module = std::make_unique<Module>("fusion", ctx);
   IRBuilder<> builder(ctx);
   Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+  LayoutMap layout_map;
+  if (program && !program->struct_defs.empty())
+    layout_map = build_layout_map(program->struct_defs);
   CodegenEnv env;
   env.program = program;
   env.module = module.get();
   env.builder = &builder;
+  env.layout_map = layout_map.empty() ? nullptr : &layout_map;
 
   /* Declare runtime functions */
   FunctionType* void_ty = FunctionType::get(builder.getVoidTy(), false);
@@ -313,13 +533,12 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
     const ExternLib& lib = program->libs[idx];
     Value* handle_slot = builder.CreateAlloca(i8ptr, nullptr, "lib_handle_" + std::to_string(idx));
     env.lib_handles[lib.name] = handle_slot;
-    if (lib.name.empty()) env.lib_handles[""] = handle_slot;
   }
 
   /* Emit dlopen + null check for each lib */
   for (size_t idx = 0; idx < (program ? program->libs.size() : 0); ++idx) {
     const ExternLib& lib = program->libs[idx];
-    Value* handle_slot = env.lib_handles.count(lib.name) ? env.lib_handles[lib.name] : env.lib_handles[""];
+    Value* handle_slot = env.lib_handles[lib.name];
 
     /* Path string on stack to avoid GlobalVariable (LLVM 18 CreateGlobalStringPtr can crash) */
     Type* path_array_ty = ArrayType::get(Type::getInt8Ty(ctx), lib.path.size() + 1);
@@ -345,32 +564,31 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
     builder.SetInsertPoint(ok_bb);
   }
 
-  /* Emit let-bindings: alloca, store init value, register in env.vars */
+  /* Emit top-level items in order: let = alloca + store, expr = emit */
   if (program) {
-    for (const LetBinding& binding : program->bindings) {
-    FfiType ty = binding_type(binding, program);
-    Type* llvm_ty;
-    if (ty == FfiType::F64) llvm_ty = builder.getDoubleTy();
-    else if (ty == FfiType::Cstring) llvm_ty = i8ptr;
-    else llvm_ty = builder.getInt64Ty();
-    Value* slot = builder.CreateAlloca(llvm_ty, nullptr, binding.name);
-    Value* init_val = emit_expr(env, binding.init.get());
-    if (!init_val) return nullptr;
-    if (ty == FfiType::F64 && init_val->getType() != builder.getDoubleTy())
-      init_val = builder.CreateSIToFP(init_val, builder.getDoubleTy());
-    else if (ty == FfiType::Cstring && init_val->getType() != i8ptr)
-      init_val = builder.CreatePointerCast(init_val, i8ptr);
-    else if (ty != FfiType::F64 && ty != FfiType::Cstring && init_val->getType() == builder.getDoubleTy())
-      init_val = builder.CreateFPToSI(init_val, builder.getInt64Ty());
-    builder.CreateStore(init_val, slot);
-    env.vars[binding.name] = slot;
-    }
-  }
-
-  if (program) {
-    for (const auto& stmt : program->stmts) {
-      Value* v = emit_expr(env, stmt.get());
-      if (!v) return nullptr;
+    for (const TopLevelItem& item : program->top_level) {
+      if (const LetBinding* binding = std::get_if<LetBinding>(&item)) {
+        FfiType ty = binding_type(*binding, program);
+        Type* llvm_ty;
+        if (ty == FfiType::F64) llvm_ty = builder.getDoubleTy();
+        else if (ty == FfiType::Cstring || ty == FfiType::Ptr) llvm_ty = i8ptr;
+        else llvm_ty = builder.getInt64Ty();
+        Value* slot = builder.CreateAlloca(llvm_ty, nullptr, binding->name);
+        Value* init_val = emit_expr(env, binding->init.get());
+        if (!init_val) return nullptr;
+        if (ty == FfiType::F64 && init_val->getType() != builder.getDoubleTy())
+          init_val = builder.CreateSIToFP(init_val, builder.getDoubleTy());
+        else if ((ty == FfiType::Cstring || ty == FfiType::Ptr) && init_val->getType() != i8ptr && init_val->getType()->isPointerTy())
+          init_val = builder.CreatePointerCast(init_val, i8ptr);
+        else if (ty != FfiType::F64 && ty != FfiType::Cstring && ty != FfiType::Ptr && init_val->getType() == builder.getDoubleTy())
+          init_val = builder.CreateFPToSI(init_val, builder.getInt64Ty());
+        builder.CreateStore(init_val, slot);
+        env.vars[binding->name] = slot;
+      } else {
+        const ExprPtr& stmt = std::get<ExprPtr>(item);
+        Value* v = emit_expr(env, stmt.get());
+        if (!v) return nullptr;
+      }
     }
   }
   builder.CreateRetVoid();

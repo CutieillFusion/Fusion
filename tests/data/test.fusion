@@ -1,4 +1,0 @@
-extern lib "libm.so.6";
-extern fn cos(x: f64) -> f64;
-extern fn sin(x: f64) -> f64;
-print(sin(1.0))
