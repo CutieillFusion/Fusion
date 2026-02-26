@@ -74,6 +74,24 @@ static bool parse_struct_def(const std::vector<Token>& tokens, size_t& i, Progra
 }
 
 static ExprPtr parse_expr(const std::vector<Token>& tokens, size_t& i);
+static bool parse_block(const std::vector<Token>& tokens, size_t& i, std::vector<StmtPtr>& out);
+
+static bool is_comparison(TokenKind k) {
+  return k == TokenKind::EqEq || k == TokenKind::Ne || k == TokenKind::Lt ||
+         k == TokenKind::Gt || k == TokenKind::Le || k == TokenKind::Ge;
+}
+
+static CompareOp token_to_compare_op(TokenKind k) {
+  switch (k) {
+    case TokenKind::EqEq: return CompareOp::Eq;
+    case TokenKind::Ne:   return CompareOp::Ne;
+    case TokenKind::Lt:   return CompareOp::Lt;
+    case TokenKind::Gt:   return CompareOp::Gt;
+    case TokenKind::Le:   return CompareOp::Le;
+    case TokenKind::Ge:   return CompareOp::Ge;
+    default: return CompareOp::Eq;
+  }
+}
 
 static ExprPtr parse_primary(const std::vector<Token>& tokens, size_t& i) {
   if (at_eof(tokens, i)) return nullptr;
@@ -236,7 +254,8 @@ static ExprPtr parse_primary(const std::vector<Token>& tokens, size_t& i) {
   return nullptr;
 }
 
-static ExprPtr parse_expr(const std::vector<Token>& tokens, size_t& i) {
+/* Additive level: primary, Plus*, optional "as" cast. */
+static ExprPtr parse_additive(const std::vector<Token>& tokens, size_t& i) {
   ExprPtr left = parse_primary(tokens, i);
   if (!left) return nullptr;
 
@@ -256,6 +275,20 @@ static ExprPtr parse_expr(const std::vector<Token>& tokens, size_t& i) {
     else return nullptr;
     i++;
     left = Expr::make_cast(std::move(left), std::move(type_name));
+  }
+  return left;
+}
+
+static ExprPtr parse_expr(const std::vector<Token>& tokens, size_t& i) {
+  ExprPtr left = parse_additive(tokens, i);
+  if (!left) return nullptr;
+
+  while (!at_eof(tokens, i) && is_comparison(tokens[i].kind)) {
+    CompareOp op = token_to_compare_op(tokens[i].kind);
+    i++;
+    ExprPtr right = parse_additive(tokens, i);
+    if (!right) return nullptr;
+    left = Expr::make_compare(op, std::move(left), std::move(right));
   }
   return left;
 }
@@ -393,6 +426,32 @@ static bool parse_let_binding(const std::vector<Token>& tokens, size_t& i, Progr
   return true;
 }
 
+/* Parses optional "elif ( expr ) { block }"* and optional "else { block }". Returns else_body for an if. */
+static std::vector<StmtPtr> parse_elif_else_chain(const std::vector<Token>& tokens, size_t& i) {
+  std::vector<StmtPtr> out;
+  if (at_eof(tokens, i)) return out;
+  if (tokens[i].kind == TokenKind::KwElif) {
+    i++;
+    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::LParen) return out;
+    i++;
+    ExprPtr cond = parse_expr(tokens, i);
+    if (!cond || at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return out;
+    i++;
+    std::vector<StmtPtr> then_body;
+    if (!parse_block(tokens, i, then_body)) return out;
+    std::vector<StmtPtr> else_body = parse_elif_else_chain(tokens, i);
+    out.push_back(Stmt::make_if(std::move(cond), std::move(then_body), std::move(else_body)));
+    return out;
+  }
+  if (tokens[i].kind == TokenKind::KwElse) {
+    i++;
+    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::LCurly) return out;
+    if (!parse_block(tokens, i, out)) return out;
+    return out;
+  }
+  return out;
+}
+
 static StmtPtr parse_stmt(const std::vector<Token>& tokens, size_t& i) {
   if (at_eof(tokens, i)) return nullptr;
   if (tokens[i].kind == TokenKind::KwReturn) {
@@ -413,6 +472,18 @@ static StmtPtr parse_stmt(const std::vector<Token>& tokens, size_t& i) {
     if (!init || at_eof(tokens, i) || tokens[i].kind != TokenKind::Semicolon) return nullptr;
     i++;
     return Stmt::make_let(std::move(name), std::move(init));
+  }
+  if (tokens[i].kind == TokenKind::KwIf) {
+    i++;
+    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::LParen) return nullptr;
+    i++;
+    ExprPtr cond = parse_expr(tokens, i);
+    if (!cond || at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return nullptr;
+    i++;
+    std::vector<StmtPtr> then_body;
+    if (!parse_block(tokens, i, then_body)) return nullptr;
+    std::vector<StmtPtr> else_body = parse_elif_else_chain(tokens, i);
+    return Stmt::make_if(std::move(cond), std::move(then_body), std::move(else_body));
   }
   ExprPtr expr = parse_expr(tokens, i);
   if (!expr || at_eof(tokens, i) || tokens[i].kind != TokenKind::Semicolon) return nullptr;
@@ -552,6 +623,18 @@ ParseResult parse(const std::vector<Token>& tokens) {
         if (i < tokens.size()) { line = tokens[i].line; col = tokens[i].column; }
         return fail("invalid let binding", line, col);
       }
+      continue;
+    }
+    if (tokens[i].kind == TokenKind::KwIf) {
+      StmtPtr stmt = parse_stmt(tokens, i);
+      if (!stmt) {
+        size_t line = 1, col = 1;
+        if (i < tokens.size()) { line = tokens[i].line; col = tokens[i].column; }
+        return fail("invalid if statement", line, col);
+      }
+      prog->top_level.push_back(std::move(stmt));
+      if (!at_eof(tokens, i) && tokens[i].kind == TokenKind::Semicolon)
+        i++;
       continue;
     }
     ExprPtr expr = parse_expr(tokens, i);

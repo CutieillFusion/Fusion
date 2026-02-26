@@ -1,20 +1,18 @@
+# layout for cuLaunchKernel (void** = pointer to each arg)
+struct KernelParam { p0: i64; };
 struct Buf { a: i64; b: i64; c: i64; d: i64; e: i64; };
-struct KernelParam { p0: i64; };  # layout for cuLaunchKernel (void** = pointer to each arg)
 
 # CUDA runtime: high-level API for GPU memory and device control
 extern lib "./libcudart.so.12" {
     fn cudaMalloc(ptr_out: ptr, nbytes: i64) -> i64;
     fn cudaFree(dev_ptr: ptr) -> i64;
-    fn cudaMemset(dev_ptr: ptr, value: i64, nbytes: i64) -> i64;
     fn cudaMemcpy(dst: ptr, src: ptr, nbytes: i64, kind: i64) -> i64;
-    fn cudaSetDevice(device: i64) -> i64;
-    fn cudaGetDevice(device_out: ptr) -> i64;
     fn cudaGetDeviceCount(count_out: ptr) -> i64;
     fn cudaDeviceSynchronize() -> i64;
 };
 
 # CUDA driver API: low-level interface for device, context, and kernel management
-extern lib "libcuda.so" {
+extern lib "./libcuda.so.1" {
     fn cuInit(flags: i64) -> i64;
     fn cuDeviceGet(device_out: ptr, ordinal: i64) -> i64;
     fn cuDevicePrimaryCtxRetain(ctx_out: ptr, device: i64) -> i64;
@@ -26,13 +24,35 @@ extern lib "libcuda.so" {
 
 
 # NVRTC: compile .cu source to PTX at runtime (for dynamic kernel compilation)
-extern lib "libnvrtc.so" {
+extern lib "./libnvrtc.so.12" {
     fn nvrtcCreateProgram(prog_out: ptr, src: ptr, name: cstring, numHeaders: i64, headers: i64, includeNames: i64) -> i64;
     fn nvrtcCompileProgram(prog: ptr, numOptions: i64, options: i64) -> i64;
     fn nvrtcGetPTXSize(prog: ptr, size_out: ptr) -> i64;
     fn nvrtcGetPTX(prog: ptr, ptx_buf: ptr) -> i64;
     fn nvrtcDestroyProgram(prog_out: ptr) -> i64;
 };
+
+fn gpu_available() -> i64 {
+    let count_slot = alloc(i32);
+    let status = cudaGetDeviceCount(count_slot);
+    if (status == 0) {
+        if (load_i32(count_slot) > 0) {
+            return 1;
+        } else {
+            return 0;
+        }
+    } else {
+        return 0;
+    }
+}
+
+let avail_gpu = gpu_available();
+if (avail_gpu > 0) {
+    print("GPU available:");
+    print(avail_gpu);
+} else {
+    print("No GPU available");
+}
 
 # Driver init and context (needed for cuModuleLoadData / cuLaunchKernel)
 cuInit(0);
@@ -45,25 +65,30 @@ cuDevicePrimaryCtxRetain(ctx_slot, load_i32(device_slot));
 cuCtxSetCurrent(load_ptr(ctx_slot));
 
 # Allocate device buffer and compile kernel via NVRTC
-let cuda_src = "extern \"C\" __global__ void set_value(int* out) { *out = 42; }\n";
+let cuda_src = "extern \"C\" __global__ void set_value(int* out) { *out = 255; }\n";
+
 # Allocate device buffer
 let dev_buf_slot = alloc(i64);
 cudaMalloc(dev_buf_slot, 4);
+
 # Create program
 let prog_slot = alloc(i64);
-nvrtcCreateProgram(prog_slot, cuda_src as ptr, "kern.cu", 0, 0, 0);
+nvrtcCreateProgram(prog_slot, cuda_src, "kern.cu", 0, 0, 0);
 nvrtcCompileProgram(load_ptr(prog_slot), 0, 0);
 
 # Get PTX size
 let ptx_size_slot = alloc(i64);
 nvrtcGetPTXSize(load_ptr(prog_slot), ptx_size_slot);
 let ptx_size = load(ptx_size_slot);
+
 # Allocate PTX buffer
 let ptx_buf = alloc_bytes(ptx_size);
 nvrtcGetPTX(load_ptr(prog_slot), ptx_buf);
+
 # Load module
 let mod_slot = alloc(i64);
 cuModuleLoadData(mod_slot, ptx_buf);
+
 # Get function
 let func_slot = alloc(i64);
 cuModuleGetFunction(func_slot, load_ptr(mod_slot), "set_value");
@@ -72,6 +97,7 @@ cuModuleGetFunction(func_slot, load_ptr(mod_slot), "set_value");
 # Allocate parameter slot
 let param0_slot = alloc(i64);
 store(param0_slot, load_ptr(dev_buf_slot));
+
 # Allocate parameters
 let params = alloc(KernelParam);
 store_field(params, KernelParam, p0, param0_slot);
@@ -79,13 +105,18 @@ cuLaunchKernel(load_ptr(func_slot), 1, 1, 1, 1, 1, 1, 0, 0, params, 0);
 
 # Sync, copy result back (D2H = kind 2), print, cleanup
 cudaDeviceSynchronize();
+
 # Destroy program
 nvrtcDestroyProgram(prog_slot);
+
 # Allocate host integer slot
 let host_int_slot = alloc(i32);
+
 # Copy result back to host
 cudaMemcpy(host_int_slot, load_ptr(dev_buf_slot), 4, 2);
+
 # Print result
 print(load_i32(host_int_slot));
+
 # Free device buffer
 cudaFree(load_ptr(dev_buf_slot));

@@ -83,7 +83,7 @@
         },
         {
           "name": "keyword.control",
-          "match": "\\b(extern|struct|opaque|as|return)\\b"
+          "match": "\\b(extern|struct|opaque|as|return|if|else|elif)\\b"
         }
       ]
     },
@@ -128,7 +128,8 @@
         { "name": "punctuation.terminator.statement", "match": ";" },
         { "name": "punctuation.separator.colon", "match": ":" },
         { "name": "keyword.operator.assignment", "match": "=" },
-        { "name": "keyword.operator.arithmetic", "match": "\\+" }
+        { "name": "keyword.operator.arithmetic", "match": "\\+" },
+        { "name": "keyword.operator.comparison", "match": "==|!=|<=|>=|<|>" }
       ]
     }
   }

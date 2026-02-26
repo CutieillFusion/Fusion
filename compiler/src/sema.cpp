@@ -200,6 +200,18 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
       ctx.err->message = "cast: target type must be ptr or cstring";
       return false;
     }
+    case Expr::Kind::Compare: {
+      if (!expr->left || !expr->right) return false;
+      if (!check_expr(expr->left.get(), ctx) || !check_expr(expr->right.get(), ctx)) return false;
+      FfiType l = expr_type(expr->left.get(), &ctx);
+      FfiType r = expr_type(expr->right.get(), &ctx);
+      bool numeric = (l == FfiType::I64 || l == FfiType::F64) && (r == FfiType::I64 || r == FfiType::F64);
+      if (!numeric) {
+        ctx.err->message = "comparison operands must be numeric (i64 or f64)";
+        return false;
+      }
+      return true;
+    }
   }
   return false;
 }
@@ -260,6 +272,8 @@ static FfiType expr_type(Expr* expr, SemaContext* ctx) {
     case Expr::Kind::Cast:
       if (expr->var_name == "ptr" || expr->var_name == "cstring") return FfiType::Ptr;
       return FfiType::Void;
+    case Expr::Kind::Compare:
+      return FfiType::I64;  /* condition type as i64 0/1 for codegen */
   }
   return FfiType::Void;
 }
@@ -279,6 +293,45 @@ static bool top_level_has_expr(const Program* program) {
   return false;
 }
 
+static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt);
+
+static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
+  if (!stmt) return false;
+  switch (stmt->kind) {
+    case Stmt::Kind::Return:
+      if (!def) {
+        ctx.err->message = "return only allowed inside a function";
+        return false;
+      }
+      if (!check_expr(stmt->expr.get(), ctx)) return false;
+      if (expr_type(stmt->expr.get(), &ctx) != def->return_type) {
+        ctx.err->message = "return type does not match function return type in '" + def->name + "'";
+        return false;
+      }
+      return true;
+    case Stmt::Kind::Let:
+      if (!check_expr(stmt->init.get(), ctx)) return false;
+      if (ctx.var_types.count(stmt->name)) {
+        ctx.err->message = def
+          ? "duplicate variable '" + stmt->name + "' in function '" + def->name + "'"
+          : "duplicate variable '" + stmt->name + "'";
+        return false;
+      }
+      ctx.var_types[stmt->name] = expr_type(stmt->init.get(), &ctx);
+      return true;
+    case Stmt::Kind::Expr:
+      return check_expr(stmt->expr.get(), ctx);
+    case Stmt::Kind::If:
+      if (!check_expr(stmt->cond.get(), ctx)) return false;
+      for (StmtPtr& s : stmt->then_body)
+        if (!check_stmt(ctx, def, s.get())) return false;
+      for (StmtPtr& s : stmt->else_body)
+        if (!check_stmt(ctx, def, s.get())) return false;
+      return true;
+  }
+  return false;
+}
+
 static bool check_fn_def(SemaContext& ctx, FnDef& def) {
   std::unordered_map<std::string, FfiType> local;
   for (size_t j = 0; j < def.params.size(); ++j)
@@ -291,27 +344,7 @@ static bool check_fn_def(SemaContext& ctx, FnDef& def) {
   fn_ctx.user_fn_by_name = ctx.user_fn_by_name;
   fn_ctx.var_types = local;
   for (StmtPtr& stmt : def.body) {
-    if (!stmt) return false;
-    switch (stmt->kind) {
-      case Stmt::Kind::Return:
-        if (!check_expr(stmt->expr.get(), fn_ctx)) return false;
-        if (expr_type(stmt->expr.get(), &fn_ctx) != def.return_type) {
-          ctx.err->message = "return type does not match function return type in '" + def.name + "'";
-          return false;
-        }
-        break;
-      case Stmt::Kind::Let:
-        if (!check_expr(stmt->init.get(), fn_ctx)) return false;
-        if (fn_ctx.var_types.count(stmt->name)) {
-          ctx.err->message = "duplicate variable '" + stmt->name + "' in function '" + def.name + "'";
-          return false;
-        }
-        fn_ctx.var_types[stmt->name] = expr_type(stmt->init.get(), &fn_ctx);
-        break;
-      case Stmt::Kind::Expr:
-        if (!check_expr(stmt->expr.get(), fn_ctx)) return false;
-        break;
-    }
+    if (!check_stmt(fn_ctx, &def, stmt.get())) return false;
   }
   return true;
 }
@@ -379,9 +412,11 @@ SemaResult check(Program* program) {
         return r;
       }
       ctx.var_types[binding->name] = ty;
+    } else if (const ExprPtr* expr = std::get_if<ExprPtr>(&item)) {
+      if (!check_expr(expr->get(), ctx)) return r;
     } else {
-      const ExprPtr& stmt = std::get<ExprPtr>(item);
-      if (!check_expr(stmt.get(), ctx)) return r;
+      const StmtPtr& stmt = std::get<StmtPtr>(item);
+      if (!check_stmt(ctx, nullptr, stmt.get())) return r;
     }
   }
   r.ok = true;

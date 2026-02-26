@@ -41,6 +41,16 @@ enum class TokenKind {
   KwReturn,
   KwOpaque,
   KwStruct,
+  KwIf,
+  KwElse,
+  KwElif,
+  // Comparison (two-char before single where applicable)
+  EqEq,   // ==
+  Ne,     // !=
+  Lt,     // <
+  Gt,     // >
+  Le,     // <=
+  Ge,     // >=
 };
 
 struct Token {

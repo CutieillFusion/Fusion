@@ -131,6 +131,15 @@ ExprPtr Expr::make_cast(ExprPtr operand, std::string target_type_name) {
   return e;
 }
 
+ExprPtr Expr::make_compare(CompareOp op, ExprPtr left, ExprPtr right) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::Compare;
+  e->compare_op = op;
+  e->left = std::move(left);
+  e->right = std::move(right);
+  return e;
+}
+
 StmtPtr Stmt::make_return(ExprPtr expr) {
   auto s = std::make_unique<Stmt>();
   s->kind = Kind::Return;
@@ -150,6 +159,15 @@ StmtPtr Stmt::make_expr(ExprPtr expr) {
   auto s = std::make_unique<Stmt>();
   s->kind = Kind::Expr;
   s->expr = std::move(expr);
+  return s;
+}
+
+StmtPtr Stmt::make_if(ExprPtr cond, std::vector<StmtPtr> then_body, std::vector<StmtPtr> else_body) {
+  auto s = std::make_unique<Stmt>();
+  s->kind = Kind::If;
+  s->cond = std::move(cond);
+  s->then_body = std::move(then_body);
+  s->else_body = std::move(else_body);
   return s;
 }
 

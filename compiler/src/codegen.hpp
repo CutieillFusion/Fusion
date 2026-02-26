@@ -20,6 +20,8 @@ struct CodegenResult {
 #ifdef FUSION_HAVE_LLVM
 struct Program;
 std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program);
+/** Last reason codegen returned null (for diagnostics). */
+const std::string& codegen_last_error();
 CodegenResult run_jit(std::unique_ptr<llvm::Module> module,
                       std::unique_ptr<llvm::LLVMContext> ctx);
 #endif

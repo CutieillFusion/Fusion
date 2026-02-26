@@ -7,7 +7,9 @@
 #include <gtest/gtest.h>
 #include <cstdlib>
 #include <cstdio>
+#include <iostream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <variant>
 #include <unistd.h>
@@ -209,6 +211,80 @@ TEST(ParserTests, ParsesStructPoint) {
   EXPECT_EQ(result.program->struct_defs[0].fields[1].second, fusion::FfiType::F64);
 }
 
+TEST(ParserTests, ParsesIfWithComparison) {
+  auto tokens = fusion::lex("fn foo(x: i64) -> i64 { if (x > 0) { return 1; } return 0; } print(1)");
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok()) << result.error.message;
+  ASSERT_TRUE(result.program);
+  ASSERT_EQ(result.program->user_fns.size(), 1u);
+  const fusion::FnDef& fn = result.program->user_fns[0];
+  EXPECT_EQ(fn.name, "foo");
+  ASSERT_GE(fn.body.size(), 2u);
+  ASSERT_EQ(fn.body[0]->kind, fusion::Stmt::Kind::If);
+  EXPECT_TRUE(fn.body[0]->cond);
+  EXPECT_EQ(fn.body[0]->cond->kind, fusion::Expr::Kind::Compare);
+  EXPECT_EQ(fn.body[0]->cond->compare_op, fusion::CompareOp::Gt);
+  ASSERT_EQ(fn.body[0]->then_body.size(), 1u);
+  EXPECT_EQ(fn.body[0]->then_body[0]->kind, fusion::Stmt::Kind::Return);
+}
+
+TEST(ParserTests, ParsesIfElifElse) {
+  auto tokens = fusion::lex(
+    "fn foo(x: i64) -> i64 { if (x > 0) { return 1; } elif (x < 0) { return 99; } else { return 0; } } print(1)");
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok()) << result.error.message;
+  ASSERT_TRUE(result.program);
+  ASSERT_EQ(result.program->user_fns.size(), 1u);
+  const fusion::FnDef& fn = result.program->user_fns[0];
+  ASSERT_EQ(fn.body.size(), 1u);
+  ASSERT_EQ(fn.body[0]->kind, fusion::Stmt::Kind::If);
+  EXPECT_EQ(fn.body[0]->cond->compare_op, fusion::CompareOp::Gt);
+  ASSERT_EQ(fn.body[0]->else_body.size(), 1u);
+  EXPECT_EQ(fn.body[0]->else_body[0]->kind, fusion::Stmt::Kind::If);
+  EXPECT_EQ(fn.body[0]->else_body[0]->cond->compare_op, fusion::CompareOp::Lt);
+  ASSERT_EQ(fn.body[0]->else_body[0]->else_body.size(), 1u);
+  EXPECT_EQ(fn.body[0]->else_body[0]->else_body[0]->kind, fusion::Stmt::Kind::Return);
+}
+
+TEST(ParserTests, ParsesComparisonOperators) {
+  auto tokens = fusion::lex("fn f(a: i64, b: i64) -> i64 { if (a == b) { return 0; } if (a != b) { return 1; } if (a <= b) { return 2; } if (a >= b) { return 3; } return 4; } print(1)");
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok()) << result.error.message;
+  ASSERT_TRUE(result.program);
+  ASSERT_EQ(result.program->user_fns.size(), 1u);
+  const fusion::FnDef& fn = result.program->user_fns[0];
+  ASSERT_GE(fn.body.size(), 4u);
+  EXPECT_EQ(fn.body[0]->cond->compare_op, fusion::CompareOp::Eq);
+  EXPECT_EQ(fn.body[1]->cond->compare_op, fusion::CompareOp::Ne);
+  EXPECT_EQ(fn.body[2]->cond->compare_op, fusion::CompareOp::Le);
+  EXPECT_EQ(fn.body[3]->cond->compare_op, fusion::CompareOp::Ge);
+}
+
+TEST(ParserTests, ParsesTopLevelIf) {
+  auto tokens = fusion::lex("if (1 > 0) { print(1); } else { print(0); } print(2)");
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok()) << result.error.message;
+  ASSERT_TRUE(result.program);
+  ASSERT_EQ(result.program->top_level.size(), 2u);
+  const fusion::StmtPtr* if_stmt = std::get_if<fusion::StmtPtr>(&result.program->top_level[0]);
+  ASSERT_NE(if_stmt, nullptr);
+  ASSERT_TRUE(*if_stmt);
+  EXPECT_EQ((*if_stmt)->kind, fusion::Stmt::Kind::If);
+  EXPECT_TRUE((*if_stmt)->cond);
+  EXPECT_EQ((*if_stmt)->cond->kind, fusion::Expr::Kind::Compare);
+  EXPECT_EQ((*if_stmt)->cond->compare_op, fusion::CompareOp::Gt);
+  ASSERT_EQ((*if_stmt)->then_body.size(), 1u);
+  ASSERT_EQ((*if_stmt)->else_body.size(), 1u);
+  fusion::Expr* root = result.root_expr();
+  ASSERT_TRUE(root);
+  EXPECT_EQ(root->kind, fusion::Expr::Kind::Call);
+  EXPECT_EQ(root->callee, "print");
+  ASSERT_EQ(root->args.size(), 1u);
+  ASSERT_TRUE(root->args[0]);
+  EXPECT_EQ(root->args[0]->kind, fusion::Expr::Kind::IntLiteral);
+  EXPECT_EQ(root->args[0]->int_value, 2);
+}
+
 // --- LayoutTests ---
 TEST(LayoutTests, PointSizeAlignmentOffsets) {
   fusion::StructDef point;
@@ -267,6 +343,32 @@ TEST(SemaTests, RejectsExternFnReferencesUnknownLib) {
   auto sema_result = fusion::check(parse_result.program.get());
   EXPECT_FALSE(sema_result.ok);
   EXPECT_TRUE(sema_result.error.message.find("unknown lib") != std::string::npos);
+}
+
+TEST(SemaTests, AcceptsIfWithComparison) {
+  auto tokens = fusion::lex("fn foo(x: i64) -> i64 { if (x > 0) { return 1; } return 0; } print(foo(1))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, AcceptsTopLevelIf) {
+  auto tokens = fusion::lex("if (1 > 0) { print(1); } else { print(0); } print(2)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, RejectsReturnAtTopLevel) {
+  auto tokens = fusion::lex("if (1 > 0) { return 1; } print(0)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_FALSE(sema_result.ok);
+  EXPECT_TRUE(sema_result.error.message.find("return") != std::string::npos)
+    << "expected error message to mention return, got: " << sema_result.error.message;
 }
 
 #ifdef FUSION_HAVE_LLVM
@@ -482,5 +584,56 @@ TEST(JitTests, ExecutesInterleavedLetAndExpr) {
   ASSERT_NE(module, nullptr);
   auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
   ASSERT_TRUE(jit_result.ok) << jit_result.error;
+}
+
+TEST(JitTests, ExecutesIfWithComparison) {
+  /* If/elif/else with comparisons: compile and run JIT. Verifies codegen for conditionals does not crash. */
+  auto tokens = fusion::lex(
+    "fn sign(x: i64) -> i64 { if (x > 0) { return 1; } elif (x < 0) { return 99; } else { return 0; } } "
+    "print(sign(5)); print(sign(0)); print(sign(3))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  EXPECT_TRUE(jit_result.ok) << jit_result.error;
+}
+
+TEST(JitTests, ExecutesTopLevelIf) {
+  /* Top-level if/else: compile and run JIT, capture stdout (fd 1) and expect "1" and "2". */
+  auto tokens = fusion::lex("if (1 > 0) { print(1); } else { print(0); } print(2)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  std::string stdout_capture;
+  {
+    int pipe_fd[2];
+    ASSERT_EQ(pipe(pipe_fd), 0);
+    int saved_stdout = dup(STDOUT_FILENO);
+    ASSERT_GE(saved_stdout, 0);
+    dup2(pipe_fd[1], STDOUT_FILENO);
+    close(pipe_fd[1]);
+    auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+    fflush(stdout);
+    dup2(saved_stdout, STDOUT_FILENO);
+    close(saved_stdout);
+    ASSERT_TRUE(jit_result.ok) << jit_result.error;
+    char buf[256];
+    ssize_t n;
+    while ((n = read(pipe_fd[0], buf, sizeof(buf) - 1)) > 0) {
+      buf[n] = '\0';
+      stdout_capture += buf;
+    }
+    close(pipe_fd[0]);
+  }
+  EXPECT_TRUE(stdout_capture.find("1") != std::string::npos) << "captured: " << stdout_capture;
+  EXPECT_TRUE(stdout_capture.find("2") != std::string::npos) << "captured: " << stdout_capture;
 }
 #endif

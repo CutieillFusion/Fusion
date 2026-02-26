@@ -46,7 +46,10 @@ static int run_file(const std::string& path) {
   auto ctx = std::make_unique<llvm::LLVMContext>();
   auto module = fusion::codegen(*ctx, parse_result.program.get());
   if (!module) {
-    std::cerr << "fusion: codegen failed\n";
+    std::cerr << "fusion: codegen failed";
+    const std::string& err = fusion::codegen_last_error();
+    if (!err.empty()) std::cerr << ": " << err;
+    std::cerr << "\n";
     return 1;
   }
   auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));

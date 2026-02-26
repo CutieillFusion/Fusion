@@ -11,6 +11,8 @@ namespace fusion {
 
 enum class BinOp { Add };
 
+enum class CompareOp { Eq, Ne, Lt, Le, Gt, Ge };
+
 /* FFI type kind, matches rt_ffi_type_kind_t. */
 enum class FfiType {
   Void,
@@ -27,7 +29,8 @@ using ExprPtr = std::unique_ptr<Expr>;
 struct Expr {
   enum class Kind {
     IntLiteral, FloatLiteral, StringLiteral, BinaryOp, Call, VarRef,
-    Alloc, AllocBytes, AddrOf, Load, LoadF64, LoadI32, LoadPtr, Store, LoadField, StoreField, Cast
+    Alloc, AllocBytes, AddrOf, Load, LoadF64, LoadI32, LoadPtr, Store, LoadField, StoreField, Cast,
+    Compare
   };
   Kind kind = Kind::IntLiteral;
 
@@ -35,6 +38,7 @@ struct Expr {
   double float_value = 0.0;
   std::string str_value;
   BinOp bin_op = BinOp::Add;
+  CompareOp compare_op = CompareOp::Eq;
   ExprPtr left;
   ExprPtr right;
   std::string callee;
@@ -60,6 +64,7 @@ struct Expr {
   static ExprPtr make_load_field(ExprPtr ptr, std::string struct_name, std::string field_name);
   static ExprPtr make_store_field(ExprPtr ptr, std::string struct_name, std::string field_name, ExprPtr value);
   static ExprPtr make_cast(ExprPtr operand, std::string target_type_name);
+  static ExprPtr make_compare(CompareOp op, ExprPtr left, ExprPtr right);
 };
 
 /* extern lib "path"; or extern lib "path" as name; */
@@ -89,14 +94,18 @@ struct LetBinding {
 struct Stmt;
 using StmtPtr = std::unique_ptr<Stmt>;
 struct Stmt {
-  enum class Kind { Return, Let, Expr };
+  enum class Kind { Return, Let, Expr, If };
   Kind kind = Kind::Return;
   ExprPtr expr;       // for Return and ExprStmt
   std::string name;   // for Let
   ExprPtr init;       // for Let
+  ExprPtr cond;       // for If
+  std::vector<StmtPtr> then_body;  // for If
+  std::vector<StmtPtr> else_body;   // for If
   static StmtPtr make_return(ExprPtr expr);
   static StmtPtr make_let(std::string name, ExprPtr init);
   static StmtPtr make_expr(ExprPtr expr);
+  static StmtPtr make_if(ExprPtr cond, std::vector<StmtPtr> then_body, std::vector<StmtPtr> else_body);
 };
 
 /* User-defined function: fn name(params) -> ret { body }. */
@@ -118,8 +127,8 @@ struct StructDef {
 struct Program;
 using ProgramPtr = std::unique_ptr<Program>;
 
-/* One top-level item: either a let binding or an expression. */
-using TopLevelItem = std::variant<LetBinding, ExprPtr>;
+/* One top-level item: let binding, expression, or statement (e.g. if). */
+using TopLevelItem = std::variant<LetBinding, ExprPtr, StmtPtr>;
 
 /* Top-level: opaque/struct decls, extern decls, user fn defs, then let-bindings and expressions. */
 struct Program {

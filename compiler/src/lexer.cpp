@@ -22,6 +22,9 @@ static TokenKind keyword_from_ident(const std::string& ident) {
   if (ident == "return") return TokenKind::KwReturn;
   if (ident == "opaque") return TokenKind::KwOpaque;
   if (ident == "struct") return TokenKind::KwStruct;
+  if (ident == "if") return TokenKind::KwIf;
+  if (ident == "else") return TokenKind::KwElse;
+  if (ident == "elif") return TokenKind::KwElif;
   return TokenKind::Ident;
 }
 
@@ -182,8 +185,42 @@ std::vector<Token> lex(const std::string& source) {
       advance();
       continue;
     }
+    if (source[i] == '=' && i + 1 < source.size() && source[i + 1] == '=') {
+      tokens.push_back({TokenKind::EqEq, 0, 0.0, {}, {}, start_line, start_col});
+      advance();
+      advance();
+      continue;
+    }
     if (source[i] == '=') {
       tokens.push_back({TokenKind::Equals, 0, 0.0, {}, {}, start_line, start_col});
+      advance();
+      continue;
+    }
+    if (source[i] == '!' && i + 1 < source.size() && source[i + 1] == '=') {
+      tokens.push_back({TokenKind::Ne, 0, 0.0, {}, {}, start_line, start_col});
+      advance();
+      advance();
+      continue;
+    }
+    if (source[i] == '<' && i + 1 < source.size() && source[i + 1] == '=') {
+      tokens.push_back({TokenKind::Le, 0, 0.0, {}, {}, start_line, start_col});
+      advance();
+      advance();
+      continue;
+    }
+    if (source[i] == '<') {
+      tokens.push_back({TokenKind::Lt, 0, 0.0, {}, {}, start_line, start_col});
+      advance();
+      continue;
+    }
+    if (source[i] == '>' && i + 1 < source.size() && source[i + 1] == '=') {
+      tokens.push_back({TokenKind::Ge, 0, 0.0, {}, {}, start_line, start_col});
+      advance();
+      advance();
+      continue;
+    }
+    if (source[i] == '>') {
+      tokens.push_back({TokenKind::Gt, 0, 0.0, {}, {}, start_line, start_col});
       advance();
       continue;
     }

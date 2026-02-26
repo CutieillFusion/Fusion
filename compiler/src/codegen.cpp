@@ -23,6 +23,7 @@
 #include "llvm/Support/TargetSelect.h"
 #include <cstring>
 #include <dlfcn.h>
+#include <string>
 #include <unordered_map>
 
 using namespace llvm;
@@ -32,6 +33,8 @@ using namespace llvm::orc;
 namespace fusion {
 
 #ifdef FUSION_HAVE_LLVM
+static thread_local std::string s_codegen_error;
+const std::string& codegen_last_error() { return s_codegen_error; }
 /* Match rt_ffi_type_kind_t enum in runtime.h */
 static int ffi_type_to_kind(FfiType t) {
   switch (t) {
@@ -122,6 +125,8 @@ static FfiType expr_type(Expr* expr, Program* program,
       if (expr->var_name == "ptr") return FfiType::Ptr;
       if (expr->var_name == "cstring") return FfiType::Ptr;
       return FfiType::Void;
+    case Expr::Kind::Compare:
+      return FfiType::I64;  /* condition produces i1 in IR */
   }
   return FfiType::Void;
 }
@@ -135,6 +140,7 @@ struct CodegenEnv {
   std::unordered_map<std::string, Value*> vars;         // variable name -> alloca
   std::unordered_map<std::string, Function*> user_fns;   // user fn name -> LLVM Function
   const std::unordered_map<std::string, FfiType>* var_types = nullptr;  // current fn params + locals (for expr_type)
+  std::unordered_map<std::string, FfiType>* fn_var_types = nullptr;     // mutable map to add locals in Let
 };
 
 static Value* emit_expr(CodegenEnv& env, Expr* expr) {
@@ -236,11 +242,17 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         for (const ExternFn& e : prog->extern_fns)
           if (e.name == expr->callee) { ext = &e; break; }
       }
-      if (!ext || prog->libs.empty()) return nullptr;
+      if (!ext || prog->libs.empty()) {
+        s_codegen_error = "extern fn '" + expr->callee + "' not found or no libs";
+        return nullptr;
+      }
 
       Value* handle = env.lib_handles[ext->lib_name];
-      if (!handle) return nullptr;
-      handle = B.CreateLoad(PointerType::get(Type::getInt8Ty(ctx), 0), handle);
+      if (!handle) {
+        s_codegen_error = "extern fn '" + expr->callee + "' lib handle not found (lib_name='" + ext->lib_name + "')";
+        return nullptr;
+      }
+      handle = B.CreateLoad(PointerType::get(Type::getInt8Ty(ctx), 0), handle, true, "lib_handle");
 
       Function* rt_dlsym_fn = M->getFunction("rt_dlsym");
       Function* rt_panic_fn = M->getFunction("rt_panic");
@@ -248,7 +260,10 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       Function* rt_ffi_sig_create_fn = M->getFunction("rt_ffi_sig_create");
       Function* rt_ffi_call_fn = M->getFunction("rt_ffi_call");
       Function* rt_ffi_error_fn = M->getFunction("rt_ffi_error_last");
-      if (!rt_dlsym_fn || !rt_panic_fn || !rt_ffi_sig_create_fn || !rt_ffi_call_fn) return nullptr;
+      if (!rt_dlsym_fn || !rt_panic_fn || !rt_ffi_sig_create_fn || !rt_ffi_call_fn) {
+        s_codegen_error = "runtime FFI symbols (rt_dlsym/rt_ffi_sig_create/rt_ffi_call) not found";
+        return nullptr;
+      }
 
       /* Symbol name on stack to avoid GlobalVariable */
       Type* sym_array_ty = ArrayType::get(Type::getInt8Ty(ctx), expr->callee.size() + 1);
@@ -526,8 +541,125 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
     }
     case Expr::Kind::Cast:
       return emit_expr(env, expr->left.get());
+    case Expr::Kind::Compare: {
+      Value* L = emit_expr(env, expr->left.get());
+      Value* R = emit_expr(env, expr->right.get());
+      if (!L || !R) return nullptr;
+      FfiType tyL = expr_type(expr->left.get(), prog, env.var_types);
+      FfiType tyR = expr_type(expr->right.get(), prog, env.var_types);
+      bool is_float = (tyL == FfiType::F64 || tyR == FfiType::F64);
+      if (is_float) {
+        if (L->getType() != B.getDoubleTy()) L = B.CreateSIToFP(L, B.getDoubleTy());
+        if (R->getType() != B.getDoubleTy()) R = B.CreateSIToFP(R, B.getDoubleTy());
+        CmpInst::Predicate pred;
+        switch (expr->compare_op) {
+          case CompareOp::Eq: pred = CmpInst::FCMP_OEQ; break;
+          case CompareOp::Ne: pred = CmpInst::FCMP_ONE; break;
+          case CompareOp::Lt: pred = CmpInst::FCMP_OLT; break;
+          case CompareOp::Le: pred = CmpInst::FCMP_OLE; break;
+          case CompareOp::Gt: pred = CmpInst::FCMP_OGT; break;
+          case CompareOp::Ge: pred = CmpInst::FCMP_OGE; break;
+        }
+        return B.CreateFCmp(pred, L, R, "cmp");
+      }
+      if (L->getType() != B.getInt64Ty()) L = B.CreateFPToSI(L, B.getInt64Ty());
+      if (R->getType() != B.getInt64Ty()) R = B.CreateFPToSI(R, B.getInt64Ty());
+      CmpInst::Predicate pred;
+      switch (expr->compare_op) {
+        case CompareOp::Eq: pred = CmpInst::ICMP_EQ; break;
+        case CompareOp::Ne: pred = CmpInst::ICMP_NE; break;
+        case CompareOp::Lt: pred = CmpInst::ICMP_SLT; break;
+        case CompareOp::Le: pred = CmpInst::ICMP_SLE; break;
+        case CompareOp::Gt: pred = CmpInst::ICMP_SGT; break;
+        case CompareOp::Ge: pred = CmpInst::ICMP_SGE; break;
+      }
+      return B.CreateICmp(pred, L, R, "cmp");
+    }
   }
   return nullptr;
+}
+
+static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt);
+
+static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
+  if (!stmt) return false;
+  LLVMContext& ctx = env.builder->getContext();
+  IRBuilder<>& B = *env.builder;
+  switch (stmt->kind) {
+    case Stmt::Kind::Return: {
+      Value* val = emit_expr(env, stmt->expr.get());
+      if (!val) return false;
+      if (def.return_type == FfiType::Void) {
+        B.CreateRetVoid();
+      } else {
+        Type* ret_ty = ffi_type_to_llvm(def.return_type, ctx, B);
+        if (val->getType() != ret_ty) {
+          if (ret_ty == B.getDoubleTy() && val->getType() == B.getInt64Ty())
+            val = B.CreateSIToFP(val, B.getDoubleTy());
+          else if (ret_ty == B.getInt64Ty() && val->getType() == B.getDoubleTy())
+            val = B.CreateFPToSI(val, B.getInt64Ty());
+          else if (ret_ty->isPointerTy() && val->getType()->isPointerTy())
+            val = B.CreatePointerCast(val, ret_ty);
+          else
+            return false;
+        }
+        B.CreateRet(val);
+      }
+      return true;
+    }
+    case Stmt::Kind::Let: {
+      if (env.fn_var_types)
+        (*env.fn_var_types)[stmt->name] = expr_type(stmt->init.get(), env.program, env.var_types);
+      Value* init_val = emit_expr(env, stmt->init.get());
+      if (!init_val) return false;
+      AllocaInst* slot = B.CreateAlloca(init_val->getType(), nullptr, stmt->name);
+      B.CreateStore(init_val, slot);
+      env.vars[stmt->name] = slot;
+      return true;
+    }
+    case Stmt::Kind::Expr: {
+      Value* v = emit_expr(env, stmt->expr.get());
+      (void)v;
+      return true;
+    }
+    case Stmt::Kind::If: {
+      Value* cond_val = emit_expr(env, stmt->cond.get());
+      if (!cond_val) return false;
+      if (cond_val->getType() != B.getInt1Ty()) {
+        if (cond_val->getType() == B.getInt64Ty())
+          cond_val = B.CreateICmpNE(cond_val, B.getInt64(0), "cond");
+        else if (cond_val->getType() == B.getDoubleTy())
+          cond_val = B.CreateFCmpONE(cond_val, ConstantFP::get(B.getDoubleTy(), 0.0), "cond");
+        else
+          return false;
+      }
+      BasicBlock* then_bb = BasicBlock::Create(ctx, "if.then", fn);
+      BasicBlock* else_bb = BasicBlock::Create(ctx, "if.else", fn);
+      BasicBlock* merge_bb = BasicBlock::Create(ctx, "if.merge", fn);
+      B.CreateCondBr(cond_val, then_bb, else_bb);
+
+      B.SetInsertPoint(then_bb);
+      for (StmtPtr& s : stmt->then_body) {
+        if (!emit_stmt(env, def, fn, s.get())) return false;
+      }
+      if (!B.GetInsertBlock()->getTerminator())
+        B.CreateBr(merge_bb);
+
+      B.SetInsertPoint(else_bb);
+      if (stmt->else_body.empty()) {
+        B.CreateBr(merge_bb);
+      } else {
+        for (StmtPtr& s : stmt->else_body) {
+          if (!emit_stmt(env, def, fn, s.get())) return false;
+        }
+        if (!B.GetInsertBlock()->getTerminator())
+          B.CreateBr(merge_bb);
+      }
+      B.SetInsertPoint(merge_bb);
+      return true;
+    }
+  }
+  return false;
 }
 
 static bool emit_user_fn_body(CodegenEnv& env, FnDef& def, Function* fn) {
@@ -542,7 +674,9 @@ static bool emit_user_fn_body(CodegenEnv& env, FnDef& def, Function* fn) {
   for (const auto& p : def.params)
     fn_var_types[p.first] = p.second;
   const std::unordered_map<std::string, FfiType>* saved_var_types = env.var_types;
+  std::unordered_map<std::string, FfiType>* saved_fn_var_types = env.fn_var_types;
   env.var_types = &fn_var_types;
+  env.fn_var_types = &fn_var_types;
   auto arg_it = fn->arg_begin();
   for (size_t j = 0; j < def.params.size(); ++j, ++arg_it) {
     Type* ty = ffi_type_to_llvm(def.params[j].second, ctx, B);
@@ -551,57 +685,22 @@ static bool emit_user_fn_body(CodegenEnv& env, FnDef& def, Function* fn) {
     env.vars[def.params[j].first] = alloca;
   }
   for (StmtPtr& stmt : def.body) {
-    if (!stmt) return false;
-    switch (stmt->kind) {
-      case Stmt::Kind::Return: {
-        Value* val = emit_expr(env, stmt->expr.get());
-        if (!val) return false;
-        if (def.return_type == FfiType::Void) {
-          B.CreateRetVoid();
-        } else {
-          Type* ret_ty = ffi_type_to_llvm(def.return_type, ctx, B);
-          if (val->getType() != ret_ty) {
-            if (ret_ty == B.getDoubleTy() && val->getType() == B.getInt64Ty())
-              val = B.CreateSIToFP(val, B.getDoubleTy());
-            else if (ret_ty == B.getInt64Ty() && val->getType() == B.getDoubleTy())
-              val = B.CreateFPToSI(val, B.getInt64Ty());
-            else if (ret_ty->isPointerTy() && val->getType()->isPointerTy())
-              val = B.CreatePointerCast(val, ret_ty);
-            else
-              return false;
-          }
-          B.CreateRet(val);
-        }
-        break;
-      }
-      case Stmt::Kind::Let: {
-        fn_var_types[stmt->name] = expr_type(stmt->init.get(), env.program, env.var_types);
-        Value* init_val = emit_expr(env, stmt->init.get());
-        if (!init_val) return false;
-        AllocaInst* slot = B.CreateAlloca(init_val->getType(), nullptr, stmt->name);
-        B.CreateStore(init_val, slot);
-        env.vars[stmt->name] = slot;
-        break;
-      }
-      case Stmt::Kind::Expr: {
-        Value* v = emit_expr(env, stmt->expr.get());
-        (void)v;
-        break;
-      }
-    }
+    if (!emit_stmt(env, def, fn, stmt.get())) return false;
   }
-  if (!def.body.empty() && def.body.back()->kind != Stmt::Kind::Return) {
+  if (!B.GetInsertBlock()->getTerminator()) {
     if (def.return_type == FfiType::Void)
       B.CreateRetVoid();
     else
-      return false;
+      B.CreateUnreachable();  /* non-void: merge after if/elif/else is dead when all branches return */
   }
   env.var_types = saved_var_types;
+  env.fn_var_types = saved_fn_var_types;
   env.vars = std::move(saved_vars);
   return true;
 }
 
 std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) {
+  s_codegen_error.clear();
   auto module = std::make_unique<Module>("fusion", ctx);
   IRBuilder<> builder(ctx);
   Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
@@ -640,6 +739,19 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
   Function::Create(ffi_call_ty, GlobalValue::ExternalLinkage, "rt_ffi_call", module.get());
   Function::Create(ffi_error_ty, GlobalValue::ExternalLinkage, "rt_ffi_error_last", module.get());
 
+  /* Create one global per lib for the dlopen handle (visible to all functions; filled in main) */
+  if (program) {
+    for (size_t idx = 0; idx < program->libs.size(); ++idx) {
+      const ExternLib& lib = program->libs[idx];
+      GlobalVariable* gv = new GlobalVariable(i8ptr, false, GlobalValue::InternalLinkage,
+          ConstantPointerNull::get(cast<PointerType>(i8ptr)),
+          "fusion.lib_handle_" + std::to_string(idx));
+      module->insertGlobalVariable(gv);
+      gv->setSection(".data");
+      env.lib_handles[lib.name] = gv;
+    }
+  }
+
   /* Create user functions and emit bodies */
   if (program) {
     for (FnDef& def : program->user_fns) {
@@ -663,14 +775,7 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
   BasicBlock* entry = BasicBlock::Create(ctx, "entry", main_fn);
   builder.SetInsertPoint(entry);
 
-  /* Create one alloca per lib for the dlopen handle (entry block so it dominates all uses) */
-  for (size_t idx = 0; idx < (program ? program->libs.size() : 0); ++idx) {
-    const ExternLib& lib = program->libs[idx];
-    Value* handle_slot = builder.CreateAlloca(i8ptr, nullptr, "lib_handle_" + std::to_string(idx));
-    env.lib_handles[lib.name] = handle_slot;
-  }
-
-  /* Emit dlopen + null check for each lib */
+  /* Emit dlopen + null check for each lib (store into globals created above) */
   for (size_t idx = 0; idx < (program ? program->libs.size() : 0); ++idx) {
     const ExternLib& lib = program->libs[idx];
     Value* handle_slot = env.lib_handles[lib.name];
@@ -684,10 +789,12 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
     Function* rt_dlopen = module->getFunction("rt_dlopen");
     Function* rt_panic = module->getFunction("rt_panic");
     Function* rt_dlerror = module->getFunction("rt_dlerror_last");
-    if (!rt_dlopen || !rt_panic || !rt_dlerror)
+    if (!rt_dlopen || !rt_panic || !rt_dlerror) {
+      s_codegen_error = "rt_dlopen/rt_panic/rt_dlerror not found";
       return nullptr;
+    }
     Value* h = builder.CreateCall(rt_dlopen, path_ptr);
-    builder.CreateStore(h, handle_slot);
+    builder.CreateStore(h, handle_slot, true);
     Value* is_null = builder.CreateIsNull(h);
     BasicBlock* ok_bb = BasicBlock::Create(ctx, "dlopen.ok", main_fn);
     BasicBlock* fail_bb = BasicBlock::Create(ctx, "dlopen.fail", main_fn);
@@ -699,18 +806,30 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
     builder.SetInsertPoint(ok_bb);
   }
 
-  /* Emit top-level items in order: let = alloca + store, expr = emit */
+  /* Emit top-level items in order: let = alloca + store, stmt = emit_stmt, expr = emit */
   if (program) {
+    std::unordered_map<std::string, FfiType> top_var_types;
+    const std::unordered_map<std::string, FfiType>* saved_var_types = env.var_types;
+    std::unordered_map<std::string, FfiType>* saved_fn_var_types = env.fn_var_types;
+    env.var_types = &top_var_types;
+    env.fn_var_types = &top_var_types;
+    FnDef dummy_main;
+    dummy_main.return_type = FfiType::Void;
     for (const TopLevelItem& item : program->top_level) {
       if (const LetBinding* binding = std::get_if<LetBinding>(&item)) {
         FfiType ty = binding_type(*binding, program);
+        top_var_types[binding->name] = ty;
         Type* llvm_ty;
         if (ty == FfiType::F64) llvm_ty = builder.getDoubleTy();
         else if (ty == FfiType::Ptr) llvm_ty = i8ptr;
         else llvm_ty = builder.getInt64Ty();
         Value* slot = builder.CreateAlloca(llvm_ty, nullptr, binding->name);
         Value* init_val = emit_expr(env, binding->init.get());
-        if (!init_val) return nullptr;
+        if (!init_val) {
+          if (s_codegen_error.empty())
+            s_codegen_error = "top-level let init expression failed for '" + binding->name + "'";
+          return nullptr;
+        }
         if (ty == FfiType::F64 && init_val->getType() != builder.getDoubleTy())
           init_val = builder.CreateSIToFP(init_val, builder.getDoubleTy());
         else if (ty == FfiType::Ptr && init_val->getType() != i8ptr && init_val->getType()->isPointerTy())
@@ -719,12 +838,24 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
           init_val = builder.CreateFPToSI(init_val, builder.getInt64Ty());
         builder.CreateStore(init_val, slot);
         env.vars[binding->name] = slot;
+      } else if (const StmtPtr* stmt = std::get_if<StmtPtr>(&item)) {
+        if (!emit_stmt(env, dummy_main, main_fn, stmt->get())) {
+          if (s_codegen_error.empty())
+            s_codegen_error = "top-level if/statement emit failed";
+          return nullptr;
+        }
       } else {
-        const ExprPtr& stmt = std::get<ExprPtr>(item);
-        Value* v = emit_expr(env, stmt.get());
-        if (!v) return nullptr;
+        const ExprPtr& expr = std::get<ExprPtr>(item);
+        Value* v = emit_expr(env, expr.get());
+        if (!v) {
+          if (s_codegen_error.empty())
+            s_codegen_error = "top-level expression emit failed";
+          return nullptr;
+        }
       }
     }
+    env.var_types = saved_var_types;
+    env.fn_var_types = saved_fn_var_types;
   }
   builder.CreateRetVoid();
   return module;
