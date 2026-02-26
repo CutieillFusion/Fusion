@@ -32,11 +32,12 @@ ExprPtr Expr::make_binop(BinOp op, ExprPtr left, ExprPtr right) {
   return e;
 }
 
-ExprPtr Expr::make_call(std::string callee, std::vector<ExprPtr> args) {
+ExprPtr Expr::make_call(std::string callee, std::vector<ExprPtr> args, std::string call_type_arg) {
   auto e = std::make_unique<Expr>();
   e->kind = Kind::Call;
   e->callee = std::move(callee);
   e->args = std::move(args);
+  e->call_type_arg = std::move(call_type_arg);
   return e;
 }
 
@@ -51,6 +52,22 @@ ExprPtr Expr::make_alloc(std::string type_name) {
   auto e = std::make_unique<Expr>();
   e->kind = Kind::Alloc;
   e->var_name = std::move(type_name);
+  return e;
+}
+
+ExprPtr Expr::make_alloc_array(std::string element_type, ExprPtr count_expr) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::AllocArray;
+  e->var_name = std::move(element_type);
+  e->left = std::move(count_expr);
+  return e;
+}
+
+ExprPtr Expr::make_index(ExprPtr base, ExprPtr index_expr) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::Index;
+  e->left = std::move(base);
+  e->right = std::move(index_expr);
   return e;
 }
 
@@ -168,6 +185,23 @@ StmtPtr Stmt::make_if(ExprPtr cond, std::vector<StmtPtr> then_body, std::vector<
   s->cond = std::move(cond);
   s->then_body = std::move(then_body);
   s->else_body = std::move(else_body);
+  return s;
+}
+
+StmtPtr Stmt::make_for(std::string loop_var, ExprPtr iterable, std::vector<StmtPtr> body) {
+  auto s = std::make_unique<Stmt>();
+  s->kind = Kind::For;
+  s->name = std::move(loop_var);
+  s->iterable = std::move(iterable);
+  s->body = std::move(body);
+  return s;
+}
+
+StmtPtr Stmt::make_assign(ExprPtr target, ExprPtr value) {
+  auto s = std::make_unique<Stmt>();
+  s->kind = Kind::Assign;
+  s->expr = std::move(target);
+  s->init = std::move(value);
   return s;
 }
 

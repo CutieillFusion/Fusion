@@ -83,7 +83,7 @@
         },
         {
           "name": "keyword.control",
-          "match": "\\b(extern|struct|opaque|as|return|if|else|elif)\\b"
+          "match": "\\b(extern|struct|opaque|as|return|if|else|elif|for|in)\\b"
         }
       ]
     },
@@ -124,11 +124,13 @@
         { "name": "punctuation.definition.group.end", "match": "\\)" },
         { "name": "punctuation.definition.block.begin", "match": "\\{" },
         { "name": "punctuation.definition.block.end", "match": "\\}" },
+        { "name": "punctuation.definition.bracket.begin", "match": "\\[" },
+        { "name": "punctuation.definition.bracket.end", "match": "\\]" },
         { "name": "punctuation.separator.comma", "match": "," },
         { "name": "punctuation.terminator.statement", "match": ";" },
         { "name": "punctuation.separator.colon", "match": ":" },
         { "name": "keyword.operator.assignment", "match": "=" },
-        { "name": "keyword.operator.arithmetic", "match": "\\+" },
+        { "name": "keyword.operator.arithmetic", "match": "\\+|\\-|\\*|/" },
         { "name": "keyword.operator.comparison", "match": "==|!=|<=|>=|<|>" }
       ]
     }

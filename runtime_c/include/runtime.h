@@ -9,9 +9,30 @@ extern "C" {
 
 void rt_init(void);
 
-void rt_print_i64(int64_t value);
-void rt_print_f64(double value);
-void rt_print_cstring(const char *s);
+void rt_print_i64(int64_t value, int64_t stream);
+void rt_print_f64(double value, int64_t stream);
+void rt_print_cstring(const char *s, int64_t stream);
+
+/* Read one line from stdin. Returns NUL-terminated buffer (Fusion-owned; invalid after next read_line). NULL on EOF/error. */
+const char *rt_read_line(void);
+
+/* Number to string. Returns NUL-terminated buffer (Fusion-owned; invalid after next to_str or read_line). */
+const char *rt_to_str_i64(int64_t value);
+const char *rt_to_str_f64(double value);
+
+/* String to number. atoi/atof style; 0 / 0.0 on null/empty/invalid. */
+int64_t rt_from_str_i64(const char *s);
+double rt_from_str_f64(const char *s);
+
+/* File I/O. Handle is opaque ptr; NULL = invalid. */
+void *rt_open(const char *path, const char *mode);
+void rt_close(void *handle);
+const char *rt_read_line_file(void *handle);
+void rt_write_file_i64(void *handle, int64_t value);
+void rt_write_file_f64(void *handle, double value);
+void rt_write_file_ptr(void *handle, const char *s);
+int64_t rt_eof_file(void *handle);
+int64_t rt_line_count_file(void *handle);
 
 /* Print message to stderr and abort. Used when dlopen/dlsym/ffi_call fails. */
 void rt_panic(const char *msg);

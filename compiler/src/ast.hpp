@@ -9,7 +9,7 @@
 
 namespace fusion {
 
-enum class BinOp { Add };
+enum class BinOp { Add, Sub, Mul, Div };
 
 enum class CompareOp { Eq, Ne, Lt, Le, Gt, Ge };
 
@@ -29,8 +29,8 @@ using ExprPtr = std::unique_ptr<Expr>;
 struct Expr {
   enum class Kind {
     IntLiteral, FloatLiteral, StringLiteral, BinaryOp, Call, VarRef,
-    Alloc, AllocBytes, AddrOf, Load, LoadF64, LoadI32, LoadPtr, Store, LoadField, StoreField, Cast,
-    Compare
+    Alloc, AllocArray, AllocBytes, AddrOf, Load, LoadF64, LoadI32, LoadPtr, Store, LoadField, StoreField, Cast,
+    Compare, Index
   };
   Kind kind = Kind::IntLiteral;
 
@@ -43,6 +43,7 @@ struct Expr {
   ExprPtr right;
   std::string callee;
   std::vector<ExprPtr> args;
+  std::string call_type_arg;  // optional type arg for Call: e.g. range elem type, from_str result type; "" = none
   std::string var_name;  // for VarRef, or alloc type name for Alloc
   std::string load_field_struct;  // for LoadField
   std::string load_field_field;   // for LoadField
@@ -51,10 +52,12 @@ struct Expr {
   static ExprPtr make_float(double value);
   static ExprPtr make_string(std::string value);
   static ExprPtr make_binop(BinOp op, ExprPtr left, ExprPtr right);
-  static ExprPtr make_call(std::string callee, std::vector<ExprPtr> args);
+  static ExprPtr make_call(std::string callee, std::vector<ExprPtr> args, std::string call_type_arg = "");
   static ExprPtr make_var_ref(std::string name);
   static ExprPtr make_alloc(std::string type_name);
+  static ExprPtr make_alloc_array(std::string element_type, ExprPtr count_expr);
   static ExprPtr make_alloc_bytes(ExprPtr size_expr);
+  static ExprPtr make_index(ExprPtr base, ExprPtr index_expr);
   static ExprPtr make_addr_of(ExprPtr expr);
   static ExprPtr make_load(ExprPtr ptr);
   static ExprPtr make_load_f64(ExprPtr ptr);
@@ -94,18 +97,22 @@ struct LetBinding {
 struct Stmt;
 using StmtPtr = std::unique_ptr<Stmt>;
 struct Stmt {
-  enum class Kind { Return, Let, Expr, If };
+  enum class Kind { Return, Let, Expr, If, For, Assign };
   Kind kind = Kind::Return;
-  ExprPtr expr;       // for Return and ExprStmt
-  std::string name;   // for Let
-  ExprPtr init;       // for Let
+  ExprPtr expr;       // for Return, ExprStmt, Assign (LHS target)
+  std::string name;   // for Let, For (loop_var)
+  ExprPtr init;       // for Let (init), Assign (RHS value)
   ExprPtr cond;       // for If
   std::vector<StmtPtr> then_body;  // for If
   std::vector<StmtPtr> else_body;   // for If
+  ExprPtr iterable;   // for For (array expression)
+  std::vector<StmtPtr> body;        // for For
   static StmtPtr make_return(ExprPtr expr);
   static StmtPtr make_let(std::string name, ExprPtr init);
   static StmtPtr make_expr(ExprPtr expr);
   static StmtPtr make_if(ExprPtr cond, std::vector<StmtPtr> then_body, std::vector<StmtPtr> else_body);
+  static StmtPtr make_for(std::string loop_var, ExprPtr iterable, std::vector<StmtPtr> body);
+  static StmtPtr make_assign(ExprPtr target, ExprPtr value);
 };
 
 /* User-defined function: fn name(params) -> ret { body }. */
@@ -137,7 +144,7 @@ struct Program {
   std::vector<ExternLib> libs;
   std::vector<ExternFn> extern_fns;
   std::vector<FnDef> user_fns;
-  std::vector<TopLevelItem> top_level;  /* executed in order; at least one must be an expression */
+  std::vector<TopLevelItem> top_level;  /* executed in order; items are let bindings, if/for statements, assignments, or expressions */
 };
 
 }  // namespace fusion

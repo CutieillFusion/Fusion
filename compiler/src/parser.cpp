@@ -145,6 +145,32 @@ static ExprPtr parse_primary(const std::vector<Token>& tokens, size_t& i) {
       i++;
       return Expr::make_alloc(std::move(type_name));
     }
+    if (name == "alloc_array") {
+      if (at_eof(tokens, i)) return nullptr;
+      std::string elem_type;
+      if (tokens[i].kind == TokenKind::Ident) {
+        elem_type = tokens[i].ident;
+      } else if (is_type_keyword(tokens[i].kind)) {
+        switch (tokens[i].kind) {
+          case TokenKind::KwI32: elem_type = "i32"; break;
+          case TokenKind::KwI64: elem_type = "i64"; break;
+          case TokenKind::KwF32: elem_type = "f32"; break;
+          case TokenKind::KwF64: elem_type = "f64"; break;
+          case TokenKind::KwPtr: elem_type = "ptr"; break;
+          case TokenKind::KwCstring: elem_type = "cstring"; break;
+          default: return nullptr;
+        }
+      } else {
+        return nullptr;
+      }
+      i++;
+      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Comma) return nullptr;
+      i++;
+      ExprPtr count_expr = parse_expr(tokens, i);
+      if (!count_expr || at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return nullptr;
+      i++;
+      return Expr::make_alloc_array(std::move(elem_type), std::move(count_expr));
+    }
     if (name == "alloc_bytes") {
       ExprPtr size_expr = parse_expr(tokens, i);
       if (!size_expr || at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return nullptr;
@@ -225,6 +251,56 @@ static ExprPtr parse_primary(const std::vector<Token>& tokens, size_t& i) {
       i++;
       return Expr::make_store_field(std::move(ptr_expr), std::move(struct_name), std::move(field_name), std::move(val_expr));
     }
+    if (name == "range") {
+      std::vector<ExprPtr> args;
+      ExprPtr first = parse_expr(tokens, i);
+      if (!first) return nullptr;
+      args.push_back(std::move(first));
+      std::string call_type_arg;
+      if (!at_eof(tokens, i) && tokens[i].kind == TokenKind::Comma) {
+        i++;
+        if (!at_eof(tokens, i)) {
+          if (tokens[i].kind == TokenKind::KwI64) { call_type_arg = "i64"; i++; }
+          else if (tokens[i].kind == TokenKind::KwI32) { call_type_arg = "i32"; i++; }
+          else if (tokens[i].kind == TokenKind::KwF64) { call_type_arg = "f64"; i++; }
+          else if (tokens[i].kind == TokenKind::KwF32) { call_type_arg = "f32"; i++; }
+          else {
+            ExprPtr second = parse_expr(tokens, i);
+            if (!second) return nullptr;
+            args.push_back(std::move(second));
+            if (!at_eof(tokens, i) && tokens[i].kind == TokenKind::Comma) {
+              i++;
+              if (!at_eof(tokens, i)) {
+                if (tokens[i].kind == TokenKind::KwI64) { call_type_arg = "i64"; i++; }
+                else if (tokens[i].kind == TokenKind::KwI32) { call_type_arg = "i32"; i++; }
+                else if (tokens[i].kind == TokenKind::KwF64) { call_type_arg = "f64"; i++; }
+                else if (tokens[i].kind == TokenKind::KwF32) { call_type_arg = "f32"; i++; }
+              }
+            }
+          }
+        }
+      }
+      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return nullptr;
+      i++;
+      return Expr::make_call("range", std::move(args), std::move(call_type_arg));
+    }
+    if (name == "from_str") {
+      ExprPtr s_expr = parse_expr(tokens, i);
+      if (!s_expr) return nullptr;
+      std::string call_type_arg;
+      if (!at_eof(tokens, i) && tokens[i].kind == TokenKind::Comma) {
+        i++;
+        if (!at_eof(tokens, i)) {
+          if (tokens[i].kind == TokenKind::KwI64) { call_type_arg = "i64"; i++; }
+          else if (tokens[i].kind == TokenKind::KwF64) { call_type_arg = "f64"; i++; }
+        }
+      }
+      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return nullptr;
+      i++;
+      std::vector<ExprPtr> args;
+      args.push_back(std::move(s_expr));
+      return Expr::make_call("from_str", std::move(args), std::move(call_type_arg));
+    }
     std::vector<ExprPtr> args;
     if (!at_eof(tokens, i) && tokens[i].kind != TokenKind::RParen) {
       ExprPtr arg = parse_expr(tokens, i);
@@ -254,16 +330,48 @@ static ExprPtr parse_primary(const std::vector<Token>& tokens, size_t& i) {
   return nullptr;
 }
 
-/* Additive level: primary, Plus*, optional "as" cast. */
-static ExprPtr parse_additive(const std::vector<Token>& tokens, size_t& i) {
+/* Postfix: primary followed by [ expr ]* (subscript). */
+static ExprPtr parse_postfix(const std::vector<Token>& tokens, size_t& i, ExprPtr base) {
+  while (!at_eof(tokens, i) && tokens[i].kind == TokenKind::LBracket) {
+    i++;
+    ExprPtr index_expr = parse_expr(tokens, i);
+    if (!index_expr || at_eof(tokens, i) || tokens[i].kind != TokenKind::RBracket) return nullptr;
+    i++;
+    base = Expr::make_index(std::move(base), std::move(index_expr));
+  }
+  return base;
+}
+
+/* Multiplicative level: primary, postfix [expr]*, then Star/Slash*. */
+static ExprPtr parse_multiplicative(const std::vector<Token>& tokens, size_t& i) {
   ExprPtr left = parse_primary(tokens, i);
   if (!left) return nullptr;
+  left = parse_postfix(tokens, i, std::move(left));
+  if (!left) return nullptr;
 
-  while (!at_eof(tokens, i) && tokens[i].kind == TokenKind::Plus) {
+  while (!at_eof(tokens, i) && (tokens[i].kind == TokenKind::Star || tokens[i].kind == TokenKind::Slash)) {
+    BinOp op = (tokens[i].kind == TokenKind::Star) ? BinOp::Mul : BinOp::Div;
     i++;
     ExprPtr right = parse_primary(tokens, i);
     if (!right) return nullptr;
-    left = Expr::make_binop(BinOp::Add, std::move(left), std::move(right));
+    right = parse_postfix(tokens, i, std::move(right));
+    if (!right) return nullptr;
+    left = Expr::make_binop(op, std::move(left), std::move(right));
+  }
+  return left;
+}
+
+/* Additive level: multiplicative, (Plus|Minus)*, optional "as" cast. */
+static ExprPtr parse_additive(const std::vector<Token>& tokens, size_t& i) {
+  ExprPtr left = parse_multiplicative(tokens, i);
+  if (!left) return nullptr;
+
+  while (!at_eof(tokens, i) && (tokens[i].kind == TokenKind::Plus || tokens[i].kind == TokenKind::Minus)) {
+    BinOp op = (tokens[i].kind == TokenKind::Plus) ? BinOp::Add : BinOp::Sub;
+    i++;
+    ExprPtr right = parse_multiplicative(tokens, i);
+    if (!right) return nullptr;
+    left = Expr::make_binop(op, std::move(left), std::move(right));
   }
 
   if (!at_eof(tokens, i) && tokens[i].kind == TokenKind::KwAs) {
@@ -272,6 +380,10 @@ static ExprPtr parse_additive(const std::vector<Token>& tokens, size_t& i) {
     std::string type_name;
     if (tokens[i].kind == TokenKind::KwPtr) type_name = "ptr";
     else if (tokens[i].kind == TokenKind::KwCstring) type_name = "cstring";
+    else if (tokens[i].kind == TokenKind::KwI64) type_name = "i64";
+    else if (tokens[i].kind == TokenKind::KwI32) type_name = "i32";
+    else if (tokens[i].kind == TokenKind::KwF64) type_name = "f64";
+    else if (tokens[i].kind == TokenKind::KwF32) type_name = "f32";
     else return nullptr;
     i++;
     left = Expr::make_cast(std::move(left), std::move(type_name));
@@ -485,8 +597,31 @@ static StmtPtr parse_stmt(const std::vector<Token>& tokens, size_t& i) {
     std::vector<StmtPtr> else_body = parse_elif_else_chain(tokens, i);
     return Stmt::make_if(std::move(cond), std::move(then_body), std::move(else_body));
   }
+  if (tokens[i].kind == TokenKind::KwFor) {
+    i++;
+    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return nullptr;
+    std::string loop_var = tokens[i].ident;
+    i++;
+    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::KwIn) return nullptr;
+    i++;
+    ExprPtr iterable = parse_expr(tokens, i);
+    if (!iterable || at_eof(tokens, i) || tokens[i].kind != TokenKind::LCurly) return nullptr;
+    std::vector<StmtPtr> body;
+    if (!parse_block(tokens, i, body)) return nullptr;
+    return Stmt::make_for(std::move(loop_var), std::move(iterable), std::move(body));
+  }
   ExprPtr expr = parse_expr(tokens, i);
-  if (!expr || at_eof(tokens, i) || tokens[i].kind != TokenKind::Semicolon) return nullptr;
+  if (!expr) return nullptr;
+  if (!at_eof(tokens, i) && tokens[i].kind == TokenKind::Equals) {
+    if (expr->kind == Expr::Kind::VarRef || expr->kind == Expr::Kind::Index) {
+      i++;
+      ExprPtr value = parse_expr(tokens, i);
+      if (!value || at_eof(tokens, i) || tokens[i].kind != TokenKind::Semicolon) return nullptr;
+      i++;
+      return Stmt::make_assign(std::move(expr), std::move(value));
+    }
+  }
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Semicolon) return nullptr;
   i++;
   return Stmt::make_expr(std::move(expr));
 }
@@ -614,8 +749,7 @@ ParseResult parse(const std::vector<Token>& tokens) {
     }
   }
 
-  /* Ordered list of let bindings and expressions (at least one expression required). */
-  bool has_expr = false;
+  /* Ordered list of let bindings, if/for statements, assignments, and expressions (any mix). */
   while (!at_eof(tokens, i) && tokens[i].kind != TokenKind::Eof) {
     if (tokens[i].kind == TokenKind::KwLet) {
       if (!parse_let_binding(tokens, i, *prog)) {
@@ -625,12 +759,12 @@ ParseResult parse(const std::vector<Token>& tokens) {
       }
       continue;
     }
-    if (tokens[i].kind == TokenKind::KwIf) {
+    if (tokens[i].kind == TokenKind::KwIf || tokens[i].kind == TokenKind::KwFor) {
       StmtPtr stmt = parse_stmt(tokens, i);
       if (!stmt) {
         size_t line = 1, col = 1;
         if (i < tokens.size()) { line = tokens[i].line; col = tokens[i].column; }
-        return fail("invalid if statement", line, col);
+        return fail("invalid statement", line, col);
       }
       prog->top_level.push_back(std::move(stmt));
       if (!at_eof(tokens, i) && tokens[i].kind == TokenKind::Semicolon)
@@ -644,18 +778,24 @@ ParseResult parse(const std::vector<Token>& tokens) {
         line = tokens[i].line;
         col = tokens[i].column;
       }
-      if (has_expr)
-        return fail("parse error", line, col);
       return fail("expected expression or let binding", line, col);
     }
-    prog->top_level.push_back(std::move(expr));
-    has_expr = true;
+    if (!at_eof(tokens, i) && tokens[i].kind == TokenKind::Equals &&
+        (expr->kind == Expr::Kind::VarRef || expr->kind == Expr::Kind::Index)) {
+      i++;
+      ExprPtr value = parse_expr(tokens, i);
+      if (!value) {
+        size_t line = 1, col = 1;
+        if (i < tokens.size()) { line = tokens[i].line; col = tokens[i].column; }
+        return fail("invalid assignment", line, col);
+      }
+      prog->top_level.push_back(Stmt::make_assign(std::move(expr), std::move(value)));
+    } else {
+      prog->top_level.push_back(std::move(expr));
+    }
     if (!at_eof(tokens, i) && tokens[i].kind == TokenKind::Semicolon) {
       i++;
     }
-  }
-  if (!has_expr) {
-    return fail("expected expression", tokens.empty() ? 1u : tokens.back().line, tokens.empty() ? 1u : tokens.back().column);
   }
   ParseResult r;
   r.program = std::move(prog);

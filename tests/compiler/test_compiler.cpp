@@ -43,6 +43,49 @@ TEST(LexerTests, TokenizesSpaces) {
   EXPECT_EQ(tokens[2].int_value, 2);
 }
 
+TEST(LexerTests, TokenizesStarAndSlash) {
+  auto tokens = fusion::lex("2*3 6/2");
+  ASSERT_GE(tokens.size(), 5u);
+  EXPECT_EQ(tokens[0].kind, fusion::TokenKind::IntLiteral);
+  EXPECT_EQ(tokens[0].int_value, 2);
+  EXPECT_EQ(tokens[1].kind, fusion::TokenKind::Star);
+  EXPECT_EQ(tokens[2].kind, fusion::TokenKind::IntLiteral);
+  EXPECT_EQ(tokens[2].int_value, 3);
+  EXPECT_EQ(tokens[3].kind, fusion::TokenKind::IntLiteral);
+  EXPECT_EQ(tokens[3].int_value, 6);
+  EXPECT_EQ(tokens[4].kind, fusion::TokenKind::Slash);
+}
+
+TEST(LexerTests, TokenizesMinus) {
+  auto tokens = fusion::lex("5-2");
+  ASSERT_GE(tokens.size(), 3u);
+  EXPECT_EQ(tokens[0].kind, fusion::TokenKind::IntLiteral);
+  EXPECT_EQ(tokens[0].int_value, 5);
+  EXPECT_EQ(tokens[1].kind, fusion::TokenKind::Minus);
+  EXPECT_EQ(tokens[2].kind, fusion::TokenKind::IntLiteral);
+  EXPECT_EQ(tokens[2].int_value, 2);
+}
+
+TEST(LexerTests, TokenizesBracketsAndForIn) {
+  auto tokens = fusion::lex("for i in range(10) { print(arr[i]); }");
+  ASSERT_GE(tokens.size(), 3u);
+  EXPECT_EQ(tokens[0].kind, fusion::TokenKind::KwFor);
+  EXPECT_EQ(tokens[1].kind, fusion::TokenKind::Ident);
+  EXPECT_EQ(tokens[1].ident, "i");
+  size_t in_pos = 0;
+  for (size_t i = 0; i < tokens.size(); ++i)
+    if (tokens[i].kind == fusion::TokenKind::KwIn) { in_pos = i; break; }
+  EXPECT_EQ(tokens[in_pos].kind, fusion::TokenKind::KwIn);
+  size_t lb = 0;
+  for (size_t i = 0; i < tokens.size(); ++i)
+    if (tokens[i].kind == fusion::TokenKind::LBracket) { lb = i; break; }
+  EXPECT_EQ(tokens[lb].kind, fusion::TokenKind::LBracket);
+  size_t rb = 0;
+  for (size_t i = 0; i < tokens.size(); ++i)
+    if (tokens[i].kind == fusion::TokenKind::RBracket) { rb = i; break; }
+  EXPECT_EQ(tokens[rb].kind, fusion::TokenKind::RBracket);
+}
+
 // --- ParserTests ---
 TEST(ParserTests, ParsesPrintOnePlusTwo) {
   auto tokens = fusion::lex("print(1+2)");
@@ -65,6 +108,68 @@ TEST(ParserTests, ParsesPrintOnePlusTwo) {
   ASSERT_TRUE(arg->right);
   EXPECT_EQ(arg->right->kind, fusion::Expr::Kind::IntLiteral);
   EXPECT_EQ(arg->right->int_value, 2);
+}
+
+TEST(ParserTests, ParsesSub) {
+  auto tokens = fusion::lex("print(5-2)");
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok());
+  ASSERT_TRUE(result.program);
+  ASSERT_EQ(result.program->top_level.size(), 1u);
+  fusion::Expr* root = result.root_expr();
+  ASSERT_TRUE(root);
+  EXPECT_EQ(root->kind, fusion::Expr::Kind::Call);
+  EXPECT_EQ(root->callee, "print");
+  ASSERT_EQ(root->args.size(), 1u);
+  auto* arg = root->args[0].get();
+  ASSERT_TRUE(arg);
+  EXPECT_EQ(arg->kind, fusion::Expr::Kind::BinaryOp);
+  EXPECT_EQ(arg->bin_op, fusion::BinOp::Sub);
+  EXPECT_EQ(arg->left->int_value, 5);
+  EXPECT_EQ(arg->right->int_value, 2);
+}
+
+TEST(ParserTests, ParsesMulAndDiv) {
+  auto tokens = fusion::lex("print(2*3); print(6/2);");
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok());
+  ASSERT_TRUE(result.program);
+  ASSERT_GE(result.program->top_level.size(), 2u);
+  ASSERT_TRUE(std::holds_alternative<fusion::ExprPtr>(result.program->top_level[0]));
+  fusion::Expr* first = std::get<fusion::ExprPtr>(result.program->top_level[0]).get();
+  ASSERT_TRUE(first);
+  EXPECT_EQ(first->kind, fusion::Expr::Kind::Call);
+  EXPECT_EQ(first->callee, "print");
+  ASSERT_EQ(first->args.size(), 1u);
+  auto* mul_arg = first->args[0].get();
+  ASSERT_TRUE(mul_arg);
+  EXPECT_EQ(mul_arg->kind, fusion::Expr::Kind::BinaryOp);
+  EXPECT_EQ(mul_arg->bin_op, fusion::BinOp::Mul);
+  EXPECT_EQ(mul_arg->left->int_value, 2);
+  EXPECT_EQ(mul_arg->right->int_value, 3);
+  ASSERT_TRUE(std::holds_alternative<fusion::ExprPtr>(result.program->top_level[1]));
+  fusion::Expr* second = std::get<fusion::ExprPtr>(result.program->top_level[1]).get();
+  ASSERT_TRUE(second);
+  EXPECT_EQ(second->kind, fusion::Expr::Kind::Call);
+  ASSERT_EQ(second->args.size(), 1u);
+  auto* div_arg = second->args[0].get();
+  ASSERT_TRUE(div_arg);
+  EXPECT_EQ(div_arg->kind, fusion::Expr::Kind::BinaryOp);
+  EXPECT_EQ(div_arg->bin_op, fusion::BinOp::Div);
+  EXPECT_EQ(div_arg->left->int_value, 6);
+  EXPECT_EQ(div_arg->right->int_value, 2);
+}
+
+TEST(ParserTests, ParsesLetAndForOnlyNoExpression) {
+  auto tokens = fusion::lex("let n = 1; for i in range(n) { }");
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok());
+  ASSERT_TRUE(result.program);
+  ASSERT_EQ(result.program->top_level.size(), 2u);
+  ASSERT_TRUE(std::holds_alternative<fusion::LetBinding>(result.program->top_level[0]));
+  EXPECT_EQ(std::get<fusion::LetBinding>(result.program->top_level[0]).name, "n");
+  ASSERT_TRUE(std::holds_alternative<fusion::StmtPtr>(result.program->top_level[1]));
+  EXPECT_TRUE(result.root_expr() == nullptr);
 }
 
 TEST(ParserTests, RejectsInvalidPrint) {
@@ -285,6 +390,98 @@ TEST(ParserTests, ParsesTopLevelIf) {
   EXPECT_EQ(root->args[0]->int_value, 2);
 }
 
+TEST(ParserTests, ParsesAllocArray) {
+  auto tokens = fusion::lex("let a = alloc_array(i64, 5); print(a[0])");
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok()) << result.error.message;
+  ASSERT_TRUE(result.program);
+  ASSERT_EQ(result.program->top_level.size(), 2u);
+  const fusion::LetBinding* binding = std::get_if<fusion::LetBinding>(&result.program->top_level[0]);
+  ASSERT_NE(binding, nullptr);
+  EXPECT_EQ(binding->name, "a");
+  ASSERT_TRUE(binding->init);
+  EXPECT_EQ(binding->init->kind, fusion::Expr::Kind::AllocArray);
+  EXPECT_EQ(binding->init->var_name, "i64");
+  ASSERT_TRUE(binding->init->left);
+  EXPECT_EQ(binding->init->left->kind, fusion::Expr::Kind::IntLiteral);
+  EXPECT_EQ(binding->init->left->int_value, 5);
+  fusion::Expr* root = std::get<fusion::ExprPtr>(result.program->top_level[1]).get();
+  ASSERT_TRUE(root);
+  EXPECT_EQ(root->kind, fusion::Expr::Kind::Call);
+  EXPECT_EQ(root->callee, "print");
+  ASSERT_EQ(root->args.size(), 1u);
+  ASSERT_TRUE(root->args[0]);
+  EXPECT_EQ(root->args[0]->kind, fusion::Expr::Kind::Index);
+  EXPECT_EQ(root->args[0]->left->kind, fusion::Expr::Kind::VarRef);
+  EXPECT_EQ(root->args[0]->left->var_name, "a");
+  EXPECT_EQ(root->args[0]->right->kind, fusion::Expr::Kind::IntLiteral);
+  EXPECT_EQ(root->args[0]->right->int_value, 0);
+}
+
+TEST(ParserTests, ParsesForInRange) {
+  auto tokens = fusion::lex("for i in range(10) { print(i); } print(0)");
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok()) << result.error.message;
+  ASSERT_TRUE(result.program);
+  ASSERT_GE(result.program->top_level.size(), 1u);
+  const fusion::StmtPtr* stmt = std::get_if<fusion::StmtPtr>(&result.program->top_level[0]);
+  ASSERT_NE(stmt, nullptr);
+  ASSERT_TRUE(*stmt);
+  EXPECT_EQ((*stmt)->kind, fusion::Stmt::Kind::For);
+  EXPECT_EQ((*stmt)->name, "i");
+  ASSERT_TRUE((*stmt)->iterable);
+  EXPECT_EQ((*stmt)->iterable->kind, fusion::Expr::Kind::Call);
+  EXPECT_EQ((*stmt)->iterable->callee, "range");
+  ASSERT_EQ((*stmt)->iterable->args.size(), 1u);
+  EXPECT_EQ((*stmt)->iterable->args[0]->kind, fusion::Expr::Kind::IntLiteral);
+  EXPECT_EQ((*stmt)->iterable->args[0]->int_value, 10);
+  ASSERT_GE((*stmt)->body.size(), 1u);
+  EXPECT_EQ((*stmt)->body[0]->kind, fusion::Stmt::Kind::Expr);
+  EXPECT_EQ((*stmt)->body[0]->expr->kind, fusion::Expr::Kind::Call);
+  EXPECT_EQ((*stmt)->body[0]->expr->callee, "print");
+}
+
+TEST(ParserTests, ParsesRangeWithType) {
+  auto tokens = fusion::lex("let r = range(5, f64); print(0)");
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok()) << result.error.message;
+  ASSERT_TRUE(result.program);
+  const fusion::LetBinding* b = std::get_if<fusion::LetBinding>(&result.program->top_level[0]);
+  ASSERT_NE(b, nullptr);
+  ASSERT_TRUE(b->init);
+  EXPECT_EQ(b->init->kind, fusion::Expr::Kind::Call);
+  EXPECT_EQ(b->init->callee, "range");
+  ASSERT_EQ(b->init->args.size(), 1u);
+  EXPECT_EQ(b->init->call_type_arg, "f64");
+
+  tokens = fusion::lex("let r = range(0, 3, i64); print(0)");
+  result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok()) << result.error.message;
+  b = std::get_if<fusion::LetBinding>(&result.program->top_level[0]);
+  ASSERT_NE(b, nullptr);
+  ASSERT_TRUE(b->init);
+  EXPECT_EQ(b->init->callee, "range");
+  ASSERT_EQ(b->init->args.size(), 2u);
+  EXPECT_EQ(b->init->call_type_arg, "i64");
+}
+
+TEST(ParserTests, ParsesAssignmentToIndex) {
+  auto tokens = fusion::lex("let a = alloc_array(i64, 3); a[0] = 42; print(a[0])");
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok()) << result.error.message;
+  ASSERT_TRUE(result.program);
+  ASSERT_EQ(result.program->top_level.size(), 3u);
+  const fusion::StmtPtr* assign = std::get_if<fusion::StmtPtr>(&result.program->top_level[1]);
+  ASSERT_NE(assign, nullptr);
+  ASSERT_TRUE(*assign);
+  EXPECT_EQ((*assign)->kind, fusion::Stmt::Kind::Assign);
+  ASSERT_TRUE((*assign)->expr);
+  EXPECT_EQ((*assign)->expr->kind, fusion::Expr::Kind::Index);
+  ASSERT_TRUE((*assign)->init);
+  EXPECT_EQ((*assign)->init->kind, fusion::Expr::Kind::IntLiteral);
+  EXPECT_EQ((*assign)->init->int_value, 42);
+}
+
 // --- LayoutTests ---
 TEST(LayoutTests, PointSizeAlignmentOffsets) {
   fusion::StructDef point;
@@ -320,11 +517,20 @@ TEST(SemaTests, AcceptsPrintOnePlusTwo) {
 }
 
 TEST(SemaTests, RejectsWrongArity) {
-  auto tokens = fusion::lex("print(1,2)");
+  /* print accepts 1 or 2 args; 3 args is wrong arity */
+  auto tokens = fusion::lex("print(1, 2, 3)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
   EXPECT_FALSE(sema_result.ok);
+}
+
+TEST(SemaTests, AcceptsMulAndDiv) {
+  auto tokens = fusion::lex("print(2*3); print(6.0/2.0)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
 }
 
 TEST(SemaTests, AcceptsPrintCos) {
@@ -371,6 +577,49 @@ TEST(SemaTests, RejectsReturnAtTopLevel) {
     << "expected error message to mention return, got: " << sema_result.error.message;
 }
 
+TEST(SemaTests, AcceptsAllocArrayAndIndex) {
+  auto tokens = fusion::lex("let a = alloc_array(i64, 10); print(a[0]); print(a[1])");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, AcceptsRangeAndForIn) {
+  auto tokens = fusion::lex("for i in range(5) { print(i); } print(99)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, AcceptsForInOverArray) {
+  auto tokens = fusion::lex("let arr = alloc_array(i64, 3); for x in arr { print(x); } print(0)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, AcceptsRangeWithF64) {
+  auto tokens = fusion::lex("for x in range(2, f64) { print(x); } print(0)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, RejectsForInNonArray) {
+  auto tokens = fusion::lex("let n = 5; for i in n { print(i); } print(0)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_FALSE(sema_result.ok);
+  EXPECT_TRUE(sema_result.error.message.find("for-in") != std::string::npos ||
+              sema_result.error.message.find("array") != std::string::npos)
+    << "expected for-in/array error, got: " << sema_result.error.message;
+}
+
 #ifdef FUSION_HAVE_LLVM
 // --- CodegenTests ---
 TEST(CodegenTests, EmitsModuleWithFusionMain) {
@@ -389,6 +638,45 @@ TEST(CodegenTests, EmitsModuleWithFusionMain) {
 // --- JitTests ---
 TEST(JitTests, ExecutesPrintOnePlusTwo) {
   auto tokens = fusion::lex("print(1+2)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok);
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+}
+
+TEST(JitTests, ExecutesSub) {
+  auto tokens = fusion::lex("print(5-2)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok);
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+}
+
+TEST(JitTests, ExecutesLetAndForOnly) {
+  auto tokens = fusion::lex("let n = 1; for i in range(n) { }");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok);
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+}
+
+TEST(JitTests, ExecutesMulAndDiv) {
+  auto tokens = fusion::lex("print(3*4); print(10/2)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -635,5 +923,174 @@ TEST(JitTests, ExecutesTopLevelIf) {
   }
   EXPECT_TRUE(stdout_capture.find("1") != std::string::npos) << "captured: " << stdout_capture;
   EXPECT_TRUE(stdout_capture.find("2") != std::string::npos) << "captured: " << stdout_capture;
+}
+
+TEST(JitTests, ExecutesAllocArrayAndIndex) {
+  /* alloc_array(i64, n), store via a[i]=v, load via a[i] and print */
+  const char* path = "/tmp/fusion_jit_array_index_test.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex(
+      "let a = alloc_array(i64, 3); a[0] = 10; a[1] = 20; a[2] = 30; print(a[0]); print(a[1]); print(a[2])");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[64];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  EXPECT_STREQ(buf, "10\n");
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  EXPECT_STREQ(buf, "20\n");
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  EXPECT_STREQ(buf, "30\n");
+  fclose(cap);
+  unlink(path);
+}
+
+TEST(JitTests, ExecutesForInRange) {
+  /* for i in range(5) { print(i); } print(0) => prints 0,1,2,3,4 then 0 */
+  const char* path = "/tmp/fusion_jit_for_range_test.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex("for i in range(5) { print(i); } print(0)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[32];
+  for (int expected = 0; expected < 5; ++expected) {
+    ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr) << "expected line " << expected;
+    EXPECT_EQ(std::atoi(buf), expected) << "line " << expected;
+  }
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  EXPECT_EQ(std::atoi(buf), 0) << "trailing print(0)";
+  fclose(cap);
+  unlink(path);
+}
+
+TEST(JitTests, ExecutesForInArray) {
+  /* let arr = alloc_array(i64, 3); arr[0]=1; ... for x in arr { print(x); } print(0) => 1,2,3,0 */
+  const char* path = "/tmp/fusion_jit_for_arr_test.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex(
+      "let arr = alloc_array(i64, 3); arr[0] = 1; arr[1] = 2; arr[2] = 3; for x in arr { print(x); } print(0)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[32];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  EXPECT_STREQ(buf, "1\n");
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  EXPECT_STREQ(buf, "2\n");
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  EXPECT_STREQ(buf, "3\n");
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  EXPECT_STREQ(buf, "0\n");
+  fclose(cap);
+  unlink(path);
+}
+
+TEST(JitTests, ExecutesRangeTwoArgs) {
+  /* for x in range(2, 6) { print(x); } print(0) => 2,3,4,5,0 */
+  const char* path = "/tmp/fusion_jit_range_two_test.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex("for x in range(2, 6) { print(x); } print(0)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[32];
+  for (int expected = 2; expected <= 5; ++expected) {
+    ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr) << "expected " << expected;
+    EXPECT_EQ(std::atoi(buf), expected) << "expected " << expected;
+  }
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  EXPECT_EQ(std::atoi(buf), 0);
+  fclose(cap);
+  unlink(path);
+}
+
+TEST(JitTests, ExecutesForInRangeF64) {
+  /* for x in range(3, f64) { print(x); } print(0) => 0.0, 1.0, 2.0, 0 */
+  const char* path = "/tmp/fusion_jit_range_f64_test.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex("for x in range(3, f64) { print(x); } print(0)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[64];
+  for (double expected = 0.0; expected <= 2.0; expected += 1.0) {
+    ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr) << "expected " << expected;
+    EXPECT_NEAR(std::atof(buf), expected, 0.0001) << "expected " << expected << " got " << buf;
+  }
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  EXPECT_EQ(std::atoi(buf), 0);
+  fclose(cap);
+  unlink(path);
 }
 #endif

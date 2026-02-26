@@ -17,7 +17,12 @@ enum class TokenKind {
   RParen,
   LCurly,  // {
   RCurly,  // }
+  LBracket,  // [
+  RBracket,  // ]
   Plus,
+  Minus,  // -
+  Star,   // *
+  Slash,  // /
   Comma,
   Semicolon,
   Colon,
@@ -44,6 +49,8 @@ enum class TokenKind {
   KwIf,
   KwElse,
   KwElif,
+  KwFor,
+  KwIn,
   // Comparison (two-char before single where applicable)
   EqEq,   // ==
   Ne,     // !=

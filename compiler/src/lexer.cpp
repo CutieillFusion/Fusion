@@ -25,6 +25,8 @@ static TokenKind keyword_from_ident(const std::string& ident) {
   if (ident == "if") return TokenKind::KwIf;
   if (ident == "else") return TokenKind::KwElse;
   if (ident == "elif") return TokenKind::KwElif;
+  if (ident == "for") return TokenKind::KwFor;
+  if (ident == "in") return TokenKind::KwIn;
   return TokenKind::Ident;
 }
 
@@ -144,6 +146,11 @@ std::vector<Token> lex(const std::string& source) {
       advance();
       continue;
     }
+    if (source[i] == '-') {
+      tokens.push_back({TokenKind::Minus, 0, 0.0, {}, {}, start_line, start_col});
+      advance();
+      continue;
+    }
 
     if (source[i] == '(') {
       tokens.push_back({TokenKind::LParen, 0, 0.0, {}, {}, start_line, start_col});
@@ -165,8 +172,28 @@ std::vector<Token> lex(const std::string& source) {
       advance();
       continue;
     }
+    if (source[i] == '[') {
+      tokens.push_back({TokenKind::LBracket, 0, 0.0, {}, {}, start_line, start_col});
+      advance();
+      continue;
+    }
+    if (source[i] == ']') {
+      tokens.push_back({TokenKind::RBracket, 0, 0.0, {}, {}, start_line, start_col});
+      advance();
+      continue;
+    }
     if (source[i] == '+') {
       tokens.push_back({TokenKind::Plus, 0, 0.0, {}, {}, start_line, start_col});
+      advance();
+      continue;
+    }
+    if (source[i] == '*') {
+      tokens.push_back({TokenKind::Star, 0, 0.0, {}, {}, start_line, start_col});
+      advance();
+      continue;
+    }
+    if (source[i] == '/') {
+      tokens.push_back({TokenKind::Slash, 0, 0.0, {}, {}, start_line, start_col});
       advance();
       continue;
     }
