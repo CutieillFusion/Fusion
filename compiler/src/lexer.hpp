@@ -30,6 +30,8 @@ enum class TokenKind {
   Arrow,   // ->
   // Keywords (recognized as ident then mapped in parser, or distinct kinds)
   KwExtern,
+  KwImport,
+  KwExport,
   KwLib,
   KwFn,
   KwF64,
@@ -40,7 +42,6 @@ enum class TokenKind {
   KwU32,
   KwVoid,
   KwPtr,
-  KwCstring,
   KwAs,
   KwLet,
   KwReturn,

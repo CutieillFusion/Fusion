@@ -23,15 +23,13 @@ static FfiType token_to_ffi_type(TokenKind k) {
     case TokenKind::KwF32: return FfiType::F32;
     case TokenKind::KwF64: return FfiType::F64;
     case TokenKind::KwPtr: return FfiType::Ptr;
-    case TokenKind::KwCstring: return FfiType::Ptr;
     default: return FfiType::Void;  // invalid, caller checks
   }
 }
 
 static bool is_type_keyword(TokenKind k) {
   return k == TokenKind::KwVoid || k == TokenKind::KwI32 || k == TokenKind::KwI64 ||
-         k == TokenKind::KwF32 || k == TokenKind::KwF64 || k == TokenKind::KwPtr ||
-         k == TokenKind::KwCstring;
+         k == TokenKind::KwF32 || k == TokenKind::KwF64 || k == TokenKind::KwPtr;
 }
 
 static bool parse_opaque_decl(const std::vector<Token>& tokens, size_t& i, Program& prog) {
@@ -46,11 +44,18 @@ static bool parse_opaque_decl(const std::vector<Token>& tokens, size_t& i, Progr
 }
 
 static bool parse_struct_def(const std::vector<Token>& tokens, size_t& i, Program& prog) {
+  if (at_eof(tokens, i)) return false;
+  bool exported = false;
+  if (tokens[i].kind == TokenKind::KwExport) {
+    exported = true;
+    i++;
+  }
   if (at_eof(tokens, i) || tokens[i].kind != TokenKind::KwStruct) return false;
   i++;
   if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return false;
   StructDef def;
   def.name = tokens[i].ident;
+  def.exported = exported;
   i++;
   if (at_eof(tokens, i) || tokens[i].kind != TokenKind::LCurly) return false;
   i++;
@@ -134,7 +139,6 @@ static ExprPtr parse_primary(const std::vector<Token>& tokens, size_t& i) {
           case TokenKind::KwF32: type_name = "f32"; break;
           case TokenKind::KwF64: type_name = "f64"; break;
           case TokenKind::KwPtr: type_name = "ptr"; break;
-          case TokenKind::KwCstring: type_name = "cstring"; break;
           default: return nullptr;
         }
       } else {
@@ -157,7 +161,6 @@ static ExprPtr parse_primary(const std::vector<Token>& tokens, size_t& i) {
           case TokenKind::KwF32: elem_type = "f32"; break;
           case TokenKind::KwF64: elem_type = "f64"; break;
           case TokenKind::KwPtr: elem_type = "ptr"; break;
-          case TokenKind::KwCstring: elem_type = "cstring"; break;
           default: return nullptr;
         }
       } else {
@@ -379,7 +382,6 @@ static ExprPtr parse_additive(const std::vector<Token>& tokens, size_t& i) {
     if (at_eof(tokens, i)) return nullptr;
     std::string type_name;
     if (tokens[i].kind == TokenKind::KwPtr) type_name = "ptr";
-    else if (tokens[i].kind == TokenKind::KwCstring) type_name = "cstring";
     else if (tokens[i].kind == TokenKind::KwI64) type_name = "i64";
     else if (tokens[i].kind == TokenKind::KwI32) type_name = "i32";
     else if (tokens[i].kind == TokenKind::KwF64) type_name = "f64";
@@ -468,6 +470,53 @@ static bool parse_fn_decl(const std::vector<Token>& tokens, size_t& i, ExternFn&
   i++;
   if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Semicolon) return false;
   i++;
+  return true;
+}
+
+/* Same as parse_fn_decl but fills FnDecl (for import lib block). */
+static bool parse_fn_decl_fndecl(const std::vector<Token>& tokens, size_t& i, FnDecl& out) {
+  ExternFn ext;
+  if (!parse_fn_decl(tokens, i, ext)) return false;
+  out.name = std::move(ext.name);
+  out.params = std::move(ext.params);
+  out.param_type_names = std::move(ext.param_type_names);
+  out.return_type = ext.return_type;
+  out.return_type_name = std::move(ext.return_type_name);
+  return true;
+}
+
+/* Parses "import lib "name" { struct X; struct Y; fn foo(...) -> ret; }; " at top level. */
+static bool parse_import_lib(const std::vector<Token>& tokens, size_t& i, Program& prog) {
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::KwImport) return false;
+  i++;
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::KwLib) return false;
+  i++;
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::StringLiteral) return false;
+  ImportLib imp;
+  imp.name = tokens[i].str_value;
+  i++;
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::LCurly) return false;
+  i++;
+  while (!at_eof(tokens, i) && tokens[i].kind != TokenKind::RCurly) {
+    if (tokens[i].kind == TokenKind::KwStruct) {
+      i++;
+      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return false;
+      imp.struct_names.push_back(tokens[i].ident);
+      i++;
+      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Semicolon) return false;
+      i++;
+    } else if (tokens[i].kind == TokenKind::KwFn) {
+      FnDecl fdecl;
+      if (!parse_fn_decl_fndecl(tokens, i, fdecl)) return false;
+      imp.fn_decls.push_back(std::move(fdecl));
+    } else {
+      return false;
+    }
+  }
+  if (at_eof(tokens, i) || tokens[i].kind != TokenKind::RCurly) return false;
+  i++;
+  if (!at_eof(tokens, i) && tokens[i].kind == TokenKind::Semicolon) i++;
+  prog.import_libs.push_back(std::move(imp));
   return true;
 }
 
@@ -641,11 +690,18 @@ static bool parse_block(const std::vector<Token>& tokens, size_t& i, std::vector
 }
 
 static bool parse_fn_def(const std::vector<Token>& tokens, size_t& i, Program& prog) {
+  if (at_eof(tokens, i)) return false;
+  bool exported = false;
+  if (tokens[i].kind == TokenKind::KwExport) {
+    exported = true;
+    i++;
+  }
   if (at_eof(tokens, i) || tokens[i].kind != TokenKind::KwFn) return false;
   i++;
   if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return false;
   FnDef def;
   def.name = tokens[i].ident;
+  def.exported = exported;
   i++;
   if (at_eof(tokens, i) || tokens[i].kind != TokenKind::LParen) return false;
   i++;
@@ -710,19 +766,33 @@ ParseResult parse(const std::vector<Token>& tokens) {
   size_t i = 0;
   auto prog = std::make_unique<Program>();
 
-  while (!at_eof(tokens, i) && tokens[i].kind == TokenKind::KwOpaque) {
-    if (!parse_opaque_decl(tokens, i, *prog)) {
+  while (!at_eof(tokens, i) && tokens[i].kind == TokenKind::KwImport) {
+    if (!parse_import_lib(tokens, i, *prog)) {
       size_t line = 1, col = 1;
       if (i < tokens.size()) { line = tokens[i].line; col = tokens[i].column; }
-      return fail("invalid opaque declaration", line, col);
+      return fail("invalid import lib", line, col);
     }
   }
 
-  while (!at_eof(tokens, i) && tokens[i].kind == TokenKind::KwStruct) {
-    if (!parse_struct_def(tokens, i, *prog)) {
+  while (!at_eof(tokens, i) && (tokens[i].kind == TokenKind::KwOpaque || tokens[i].kind == TokenKind::KwStruct || tokens[i].kind == TokenKind::KwExport)) {
+    if (tokens[i].kind == TokenKind::KwOpaque) {
+      if (!parse_opaque_decl(tokens, i, *prog)) {
+        size_t line = 1, col = 1;
+        if (i < tokens.size()) { line = tokens[i].line; col = tokens[i].column; }
+        return fail("invalid opaque declaration", line, col);
+      }
+    } else {
+      /* When we see "export fn", try parse_fn_def first so it consumes "export" and sets exported=true. */
+      if (tokens[i].kind == TokenKind::KwExport && !at_eof(tokens, i + 1) && tokens[i + 1].kind == TokenKind::KwFn) {
+        if (parse_fn_def(tokens, i, *prog)) continue;
+      } else if (parse_struct_def(tokens, i, *prog)) {
+        continue;
+      } else if (parse_fn_def(tokens, i, *prog)) {
+        continue;
+      }
       size_t line = 1, col = 1;
       if (i < tokens.size()) { line = tokens[i].line; col = tokens[i].column; }
-      return fail("invalid struct definition", line, col);
+      return fail("invalid struct or function definition", line, col);
     }
   }
 
@@ -741,7 +811,7 @@ ParseResult parse(const std::vector<Token>& tokens) {
     break;
   }
 
-  while (!at_eof(tokens, i) && tokens[i].kind == TokenKind::KwFn) {
+  while (!at_eof(tokens, i) && (tokens[i].kind == TokenKind::KwFn || tokens[i].kind == TokenKind::KwExport)) {
     if (!parse_fn_def(tokens, i, *prog)) {
       size_t line = 1, col = 1;
       if (i < tokens.size()) { line = tokens[i].line; col = tokens[i].column; }

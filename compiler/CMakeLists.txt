@@ -5,6 +5,7 @@ set(FUSION_COMPILER_SOURCES
   src/layout.cpp
   src/sema.cpp
   src/codegen.cpp
+  src/multifile.cpp
 )
 add_library(fusion_compiler STATIC ${FUSION_COMPILER_SOURCES})
 target_include_directories(fusion_compiler PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src ${LLVM_INCLUDE_DIRS})

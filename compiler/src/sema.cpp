@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <variant>
+#include <vector>
 
 namespace fusion {
 
@@ -11,15 +12,38 @@ struct SemaContext {
   std::unordered_set<std::string> lib_names;
   std::unordered_map<std::string, ExternFn> extern_fn_by_name;
   std::unordered_map<std::string, FnDef*> user_fn_by_name;
-  std::unordered_map<std::string, FfiType> var_types;
-  std::unordered_map<std::string, FfiType> array_element_by_var;  // var name -> element type when value is array
+  std::vector<std::unordered_map<std::string, FfiType>> var_scope_stack;
+  std::vector<std::unordered_map<std::string, FfiType>> array_element_scope_stack;
   LayoutMap* layout_map = nullptr;  // from Program::struct_defs
   Program* program = nullptr;
   SemaError* err = nullptr;
 };
 
+/* Lookup variable type from innermost to outermost scope. */
+static bool var_type_lookup(SemaContext* ctx, const std::string& name, FfiType* out) {
+  if (!ctx || ctx->var_scope_stack.empty()) return false;
+  for (auto it = ctx->var_scope_stack.rbegin(); it != ctx->var_scope_stack.rend(); ++it) {
+    auto fit = it->find(name);
+    if (fit != it->end()) {
+      *out = fit->second;
+      return true;
+    }
+  }
+  return false;
+}
+
+/* Lookup array element type from innermost to outermost scope. */
+static FfiType array_elem_lookup(SemaContext* ctx, const std::string& name) {
+  if (!ctx || ctx->array_element_scope_stack.empty()) return FfiType::Void;
+  for (auto it = ctx->array_element_scope_stack.rbegin(); it != ctx->array_element_scope_stack.rend(); ++it) {
+    auto fit = it->find(name);
+    if (fit != it->end()) return fit->second;
+  }
+  return FfiType::Void;
+}
+
 static bool is_alloc_type(const std::string& name, Program* program) {
-  if (name == "i32" || name == "i64" || name == "f32" || name == "f64" || name == "ptr" || name == "cstring")
+  if (name == "i32" || name == "i64" || name == "f32" || name == "f64" || name == "ptr")
     return true;
   if (program)
     for (const auto& s : program->struct_defs)
@@ -33,9 +57,7 @@ static FfiType expr_type(Expr* expr, SemaContext* ctx);  // returns type of expr
 static FfiType get_array_element_type(Expr* expr, SemaContext* ctx) {
   if (!expr || !ctx) return FfiType::Void;
   if (expr->kind == Expr::Kind::VarRef) {
-    auto it = ctx->array_element_by_var.find(expr->var_name);
-    if (it != ctx->array_element_by_var.end()) return it->second;
-    return FfiType::Void;
+    return array_elem_lookup(ctx, expr->var_name);
   }
   if (expr->kind == Expr::Kind::Call && expr->callee == "range") {
     if (!expr->call_type_arg.empty()) {
@@ -52,7 +74,7 @@ static FfiType get_array_element_type(Expr* expr, SemaContext* ctx) {
     if (t == "i64") return FfiType::I64;
     if (t == "f32") return FfiType::F32;
     if (t == "f64") return FfiType::F64;
-    if (t == "ptr" || t == "cstring") return FfiType::Ptr;
+    if (t == "ptr") return FfiType::Ptr;
     return FfiType::Void;
   }
   return FfiType::Void;
@@ -256,8 +278,8 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
       return false;
     }
     case Expr::Kind::VarRef: {
-      auto it = ctx.var_types.find(expr->var_name);
-      if (it == ctx.var_types.end()) {
+      FfiType ty;
+      if (!var_type_lookup(&ctx, expr->var_name, &ty)) {
         ctx.err->message = "undefined variable '" + expr->var_name + "'";
         return false;
       }
@@ -378,9 +400,9 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
       if (!expr->left || expr->var_name.empty()) return false;
       if (!check_expr(expr->left.get(), ctx)) return false;
       FfiType from = expr_type(expr->left.get(), &ctx);
-      if (expr->var_name == "ptr" || expr->var_name == "cstring") {
+      if (expr->var_name == "ptr") {
         if (from != FfiType::Ptr) {
-          ctx.err->message = "cast to ptr/cstring: operand must be a pointer";
+          ctx.err->message = "cast to ptr: operand must be a pointer";
           return false;
         }
         return true;
@@ -393,7 +415,7 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
         }
         return true;
       }
-      ctx.err->message = "cast: target type must be ptr, cstring, i64, i32, f64, or f32";
+      ctx.err->message = "cast: target type must be ptr, i64, i32, f64, or f32";
       return false;
     }
     case Expr::Kind::Compare: {
@@ -457,8 +479,8 @@ static FfiType expr_type(Expr* expr, SemaContext* ctx) {
     }
     case Expr::Kind::VarRef:
       if (ctx) {
-        auto it = ctx->var_types.find(expr->var_name);
-        if (it != ctx->var_types.end()) return it->second;
+        FfiType ty;
+        if (var_type_lookup(ctx, expr->var_name, &ty)) return ty;
       }
       return FfiType::Void;
     case Expr::Kind::Alloc:
@@ -486,7 +508,7 @@ static FfiType expr_type(Expr* expr, SemaContext* ctx) {
       return FfiType::Void;
     }
     case Expr::Kind::Cast:
-      if (expr->var_name == "ptr" || expr->var_name == "cstring") return FfiType::Ptr;
+      if (expr->var_name == "ptr") return FfiType::Ptr;
       if (expr->var_name == "i64") return FfiType::I64;
       if (expr->var_name == "i32") return FfiType::I32;
       if (expr->var_name == "f64") return FfiType::F64;
@@ -528,24 +550,24 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
       return true;
     case Stmt::Kind::Let: {
       if (!check_expr(stmt->init.get(), ctx)) return false;
-      if (ctx.var_types.count(stmt->name)) {
+      if (ctx.var_scope_stack.empty() || ctx.var_scope_stack.back().count(stmt->name)) {
         ctx.err->message = def
           ? "duplicate variable '" + stmt->name + "' in function '" + def->name + "'"
           : "duplicate variable '" + stmt->name + "'";
         return false;
       }
       FfiType let_ty = expr_type(stmt->init.get(), &ctx);
-      ctx.var_types[stmt->name] = let_ty;
+      ctx.var_scope_stack.back()[stmt->name] = let_ty;
       FfiType elem_ty = get_array_element_type(stmt->init.get(), &ctx);
       if (elem_ty != FfiType::Void) {
-        ctx.array_element_by_var[stmt->name] = elem_ty;
+        ctx.array_element_scope_stack.back()[stmt->name] = elem_ty;
       } else if (let_ty == FfiType::Ptr && stmt->init->kind == Expr::Kind::LoadField) {
         Expr* e = stmt->init.get();
         auto it = ctx.layout_map->find(e->load_field_struct);
         if (it != ctx.layout_map->end()) {
           for (const auto& f : it->second.fields)
             if (f.first == e->load_field_field && f.second.type == FfiType::Ptr) {
-              ctx.array_element_by_var[stmt->name] = FfiType::Ptr;
+              ctx.array_element_scope_stack.back()[stmt->name] = FfiType::Ptr;
               break;
             }
         }
@@ -556,10 +578,27 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
       return check_expr(stmt->expr.get(), ctx);
     case Stmt::Kind::If:
       if (!check_expr(stmt->cond.get(), ctx)) return false;
+      ctx.var_scope_stack.push_back({});
+      ctx.array_element_scope_stack.push_back({});
       for (StmtPtr& s : stmt->then_body)
-        if (!check_stmt(ctx, def, s.get())) return false;
+        if (!check_stmt(ctx, def, s.get())) {
+          ctx.var_scope_stack.pop_back();
+          ctx.array_element_scope_stack.pop_back();
+          return false;
+        }
+      ctx.var_scope_stack.pop_back();
+      ctx.array_element_scope_stack.pop_back();
+      if (stmt->else_body.empty()) return true;
+      ctx.var_scope_stack.push_back({});
+      ctx.array_element_scope_stack.push_back({});
       for (StmtPtr& s : stmt->else_body)
-        if (!check_stmt(ctx, def, s.get())) return false;
+        if (!check_stmt(ctx, def, s.get())) {
+          ctx.var_scope_stack.pop_back();
+          ctx.array_element_scope_stack.pop_back();
+          return false;
+        }
+      ctx.var_scope_stack.pop_back();
+      ctx.array_element_scope_stack.pop_back();
       return true;
     case Stmt::Kind::For: {
       if (!stmt->iterable || !check_expr(stmt->iterable.get(), ctx)) return false;
@@ -568,18 +607,26 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
         ctx.err->message = "for-in requires an array (e.g. range(n) or alloc_array)";
         return false;
       }
-      if (ctx.var_types.count(stmt->name)) {
+      ctx.var_scope_stack.push_back({});
+      ctx.array_element_scope_stack.push_back({});
+      if (ctx.var_scope_stack.back().count(stmt->name)) {
         ctx.err->message = def
           ? "duplicate variable '" + stmt->name + "' in function '" + def->name + "'"
           : "duplicate variable '" + stmt->name + "'";
+        ctx.var_scope_stack.pop_back();
+        ctx.array_element_scope_stack.pop_back();
         return false;
       }
-      ctx.var_types[stmt->name] = elem_ty;
-      ctx.array_element_by_var[stmt->name] = elem_ty;  // loop var is not an array, but keep consistent
+      ctx.var_scope_stack.back()[stmt->name] = elem_ty;
+      ctx.array_element_scope_stack.back()[stmt->name] = elem_ty;
       for (StmtPtr& s : stmt->body)
-        if (!check_stmt(ctx, def, s.get())) return false;
-      ctx.var_types.erase(stmt->name);
-      ctx.array_element_by_var.erase(stmt->name);
+        if (!check_stmt(ctx, def, s.get())) {
+          ctx.var_scope_stack.pop_back();
+          ctx.array_element_scope_stack.pop_back();
+          return false;
+        }
+      ctx.var_scope_stack.pop_back();
+      ctx.array_element_scope_stack.pop_back();
       return true;
     }
     case Stmt::Kind::Assign: {
@@ -619,18 +666,20 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
 
 static bool check_fn_def(SemaContext& ctx, FnDef& def) {
   std::unordered_map<std::string, FfiType> local;
+  std::unordered_map<std::string, FfiType> array_local;
   for (size_t j = 0; j < def.params.size(); ++j)
     local[def.params[j].first] = def.params[j].second;
+  for (const auto& p : def.params)
+    if (p.second == FfiType::Ptr)
+      array_local[p.first] = FfiType::Ptr;
   SemaContext fn_ctx;
   fn_ctx.err = ctx.err;
   fn_ctx.layout_map = ctx.layout_map;
   fn_ctx.program = ctx.program;
   fn_ctx.extern_fn_by_name = ctx.extern_fn_by_name;
   fn_ctx.user_fn_by_name = ctx.user_fn_by_name;
-  fn_ctx.var_types = local;
-  for (const auto& p : def.params)
-    if (p.second == FfiType::Ptr)
-      fn_ctx.array_element_by_var[p.first] = FfiType::Ptr;
+  fn_ctx.var_scope_stack.push_back(std::move(local));
+  fn_ctx.array_element_scope_stack.push_back(std::move(array_local));
   for (StmtPtr& stmt : def.body) {
     if (!check_stmt(fn_ctx, &def, stmt.get())) return false;
   }
@@ -691,18 +740,20 @@ SemaResult check(Program* program) {
   for (FnDef& def : program->user_fns) {
     if (!check_fn_def(ctx, def)) return r;
   }
+  ctx.var_scope_stack.push_back({});
+  ctx.array_element_scope_stack.push_back({});
   for (const TopLevelItem& item : program->top_level) {
     if (const LetBinding* binding = std::get_if<LetBinding>(&item)) {
       if (!check_expr(binding->init.get(), ctx)) return r;
       FfiType ty = expr_type(binding->init.get(), &ctx);
-      if (ctx.var_types.count(binding->name)) {
+      if (ctx.var_scope_stack.back().count(binding->name)) {
         ctx.err->message = "duplicate variable '" + binding->name + "'";
         return r;
       }
-      ctx.var_types[binding->name] = ty;
+      ctx.var_scope_stack.back()[binding->name] = ty;
       FfiType elem_ty = get_array_element_type(binding->init.get(), &ctx);
       if (elem_ty != FfiType::Void)
-        ctx.array_element_by_var[binding->name] = elem_ty;
+        ctx.array_element_scope_stack.back()[binding->name] = elem_ty;
     } else if (const ExprPtr* expr = std::get_if<ExprPtr>(&item)) {
       if (!check_expr(expr->get(), ctx)) return r;
     } else {

@@ -25,6 +25,7 @@
 #include <dlfcn.h>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 using namespace llvm;
 using namespace llvm::orc;
@@ -134,7 +135,6 @@ static FfiType expr_type(Expr* expr, Program* program,
     }
     case Expr::Kind::Cast:
       if (expr->var_name == "ptr") return FfiType::Ptr;
-      if (expr->var_name == "cstring") return FfiType::Ptr;
       return FfiType::Void;
     case Expr::Kind::Compare:
       return FfiType::I64;  /* condition produces i1 in IR */
@@ -150,20 +150,35 @@ struct CodegenEnv {
   IRBuilder<>* builder = nullptr;
   LayoutMap* layout_map = nullptr;
   std::unordered_map<std::string, Value*> lib_handles;
-  std::unordered_map<std::string, Value*> vars;
+  std::vector<std::unordered_map<std::string, Value*>> vars_scope_stack;
+  std::vector<std::unordered_map<std::string, FfiType>> array_element_scope_stack;
   std::unordered_map<std::string, Function*> user_fns;
   const std::unordered_map<std::string, FfiType>* var_types = nullptr;
   std::unordered_map<std::string, FfiType>* fn_var_types = nullptr;
-  std::unordered_map<std::string, FfiType> array_element_by_var;  // var name -> element type when value is array
 };
+
+/* Lookup variable from innermost to outermost scope. */
+static Value* vars_lookup(CodegenEnv& env, const std::string& name) {
+  for (auto it = env.vars_scope_stack.rbegin(); it != env.vars_scope_stack.rend(); ++it) {
+    auto fit = it->find(name);
+    if (fit != it->end()) return fit->second;
+  }
+  return nullptr;
+}
+
+static FfiType array_elem_lookup(CodegenEnv& env, const std::string& name) {
+  for (auto it = env.array_element_scope_stack.rbegin(); it != env.array_element_scope_stack.rend(); ++it) {
+    auto fit = it->find(name);
+    if (fit != it->end()) return fit->second;
+  }
+  return FfiType::Void;
+}
 
 /* Returns element type if expr is an array; otherwise FfiType::Void. */
 static FfiType array_element_type_from_expr(Expr* expr, CodegenEnv& env) {
   if (!expr) return FfiType::Void;
   if (expr->kind == Expr::Kind::VarRef) {
-    auto it = env.array_element_by_var.find(expr->var_name);
-    if (it != env.array_element_by_var.end()) return it->second;
-    return FfiType::Void;
+    return array_elem_lookup(env, expr->var_name);
   }
   if (expr->kind == Expr::Kind::Call && expr->callee == "range") {
     if (!expr->call_type_arg.empty()) {
@@ -180,7 +195,7 @@ static FfiType array_element_type_from_expr(Expr* expr, CodegenEnv& env) {
     if (t == "i64") return FfiType::I64;
     if (t == "f32") return FfiType::F32;
     if (t == "f64") return FfiType::F64;
-    if (t == "ptr" || t == "cstring") return FfiType::Ptr;
+    if (t == "ptr") return FfiType::Ptr;
     return FfiType::Void;
   }
   return FfiType::Void;
@@ -195,9 +210,9 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
 
   switch (expr->kind) {
     case Expr::Kind::VarRef: {
-      auto it = env.vars.find(expr->var_name);
-      if (it == env.vars.end()) return nullptr;
-      AllocaInst* alloca = cast<AllocaInst>(it->second);
+      Value* alloca_val = vars_lookup(env, expr->var_name);
+      if (!alloca_val) return nullptr;
+      AllocaInst* alloca = cast<AllocaInst>(alloca_val);
       return B.CreateLoad(alloca->getAllocatedType(), alloca, expr->var_name + ".load");
     }
     case Expr::Kind::IntLiteral:
@@ -601,7 +616,7 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         Value* slot = B.CreateAlloca(B.getDoubleTy(), nullptr, "alloc.f64");
         return B.CreatePointerCast(slot, i8ptr);
       }
-      if (tn == "ptr" || tn == "cstring") {
+      if (tn == "ptr") {
         Value* slot = B.CreateAlloca(i8ptr, nullptr, "alloc.ptr");
         return B.CreatePointerCast(slot, i8ptr);
       }
@@ -629,7 +644,7 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       const std::string& elem_name = expr->var_name;
       size_t elem_size = 8;
       if (elem_name == "i32" || elem_name == "f32") elem_size = 4;
-      else if (elem_name == "i64" || elem_name == "f64" || elem_name == "ptr" || elem_name == "cstring") elem_size = 8;
+      else if (elem_name == "i64" || elem_name == "f64" || elem_name == "ptr") elem_size = 8;
       else if (prog && env.layout_map) {
         auto it = env.layout_map->find(elem_name);
         if (it != env.layout_map->end()) elem_size = it->second.size;
@@ -652,9 +667,8 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
     }
     case Expr::Kind::AddrOf: {
       if (!expr->left || expr->left->kind != Expr::Kind::VarRef) return nullptr;
-      auto it = env.vars.find(expr->left->var_name);
-      if (it == env.vars.end()) return nullptr;
-      Value* alloca = it->second;
+      Value* alloca = vars_lookup(env, expr->left->var_name);
+      if (!alloca) return nullptr;
       return B.CreatePointerCast(alloca, PointerType::get(Type::getInt8Ty(ctx), 0));
     }
     case Expr::Kind::Load: {
@@ -831,7 +845,7 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       if (!v) return nullptr;
       const std::string& to = expr->var_name;
       Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
-      if (to == "ptr" || to == "cstring") {
+      if (to == "ptr") {
         if (v->getType()->isPointerTy()) return v;
         return nullptr;
       }
@@ -946,23 +960,23 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
       AllocaInst* slot;
       if (slot_ty) {
         slot = B.CreateAlloca(slot_ty, nullptr, stmt->name);
-        env.vars[stmt->name] = slot;
+        env.vars_scope_stack.back()[stmt->name] = slot;
       } else {
         Value* init_val = emit_expr(env, stmt->init.get());
         if (!init_val) return false;
         slot = B.CreateAlloca(init_val->getType(), nullptr, stmt->name);
-        env.vars[stmt->name] = slot;
+        env.vars_scope_stack.back()[stmt->name] = slot;
         B.CreateStore(init_val, slot);
         FfiType elem_ty = array_element_type_from_expr(stmt->init.get(), env);
         if (elem_ty != FfiType::Void) {
-          env.array_element_by_var[stmt->name] = elem_ty;
+          env.array_element_scope_stack.back()[stmt->name] = elem_ty;
         } else if (stmt->init->kind == Expr::Kind::LoadField && env.layout_map) {
           Expr* e = stmt->init.get();
           auto it = env.layout_map->find(e->load_field_struct);
           if (it != env.layout_map->end()) {
             for (const auto& f : it->second.fields)
               if (f.first == e->load_field_field && f.second.type == FfiType::Ptr) {
-                env.array_element_by_var[stmt->name] = FfiType::Ptr;
+                env.array_element_scope_stack.back()[stmt->name] = FfiType::Ptr;
                 break;
               }
           }
@@ -974,14 +988,14 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
       B.CreateStore(init_val, slot);
       FfiType elem_ty = array_element_type_from_expr(stmt->init.get(), env);
       if (elem_ty != FfiType::Void) {
-        env.array_element_by_var[stmt->name] = elem_ty;
+        env.array_element_scope_stack.back()[stmt->name] = elem_ty;
       } else if (stmt->init->kind == Expr::Kind::LoadField && env.layout_map) {
         Expr* e = stmt->init.get();
         auto it = env.layout_map->find(e->load_field_struct);
         if (it != env.layout_map->end()) {
           for (const auto& f : it->second.fields)
             if (f.first == e->load_field_field && f.second.type == FfiType::Ptr) {
-              env.array_element_by_var[stmt->name] = FfiType::Ptr;
+              env.array_element_scope_stack.back()[stmt->name] = FfiType::Ptr;
               break;
             }
         }
@@ -1010,9 +1024,13 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
       B.CreateCondBr(cond_val, then_bb, else_bb);
 
       B.SetInsertPoint(then_bb);
+      env.vars_scope_stack.push_back({});
+      env.array_element_scope_stack.push_back({});
       for (StmtPtr& s : stmt->then_body) {
         if (!emit_stmt(env, def, fn, s.get())) return false;
       }
+      env.vars_scope_stack.pop_back();
+      env.array_element_scope_stack.pop_back();
       if (!B.GetInsertBlock()->getTerminator())
         B.CreateBr(merge_bb);
 
@@ -1020,9 +1038,13 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
       if (stmt->else_body.empty()) {
         B.CreateBr(merge_bb);
       } else {
+        env.vars_scope_stack.push_back({});
+        env.array_element_scope_stack.push_back({});
         for (StmtPtr& s : stmt->else_body) {
           if (!emit_stmt(env, def, fn, s.get())) return false;
         }
+        env.vars_scope_stack.pop_back();
+        env.array_element_scope_stack.pop_back();
         if (!B.GetInsertBlock()->getTerminator())
           B.CreateBr(merge_bb);
       }
@@ -1035,9 +1057,9 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
       Value* val = emit_expr(env, stmt->init.get());
       if (!val) return false;
       if (stmt->expr->kind == Expr::Kind::VarRef) {
-        auto it = env.vars.find(stmt->expr->var_name);
-        if (it == env.vars.end()) return false;
-        AllocaInst* alloca = cast<AllocaInst>(it->second);
+        Value* alloca_val = vars_lookup(env, stmt->expr->var_name);
+        if (!alloca_val) return false;
+        AllocaInst* alloca = cast<AllocaInst>(alloca_val);
         if (val->getType() != alloca->getAllocatedType()) {
           if (alloca->getAllocatedType() == B.getDoubleTy() && val->getType() == B.getInt64Ty())
             val = B.CreateSIToFP(val, B.getDoubleTy());
@@ -1145,11 +1167,15 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
         Value* loaded = B.CreateLoad(B.getInt64Ty(), elem_ptr);
         B.CreateStore(loaded, loop_var_alloca);
       }
-      env.vars[stmt->name] = loop_var_alloca;
+      env.vars_scope_stack.push_back({});
+      env.array_element_scope_stack.push_back({});
+      env.vars_scope_stack.back()[stmt->name] = loop_var_alloca;
+      env.array_element_scope_stack.back()[stmt->name] = elem_ty;
       for (StmtPtr& s : stmt->body) {
         if (!emit_stmt(env, def, fn, s.get())) return false;
       }
-      env.vars.erase(stmt->name);
+      env.vars_scope_stack.pop_back();
+      env.array_element_scope_stack.pop_back();
       B.CreateStore(B.CreateAdd(idx, B.getInt64(1)), index_alloca);
       B.CreateBr(cond_bb);
       B.SetInsertPoint(exit_bb);
@@ -1165,8 +1191,10 @@ static bool emit_user_fn_body(CodegenEnv& env, FnDef& def, Function* fn) {
   Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
   BasicBlock* entry = &fn->getEntryBlock();
   B.SetInsertPoint(entry);
-  std::unordered_map<std::string, Value*> saved_vars = std::move(env.vars);
-  env.vars.clear();
+  std::vector<std::unordered_map<std::string, Value*>> saved_vars_stack = std::move(env.vars_scope_stack);
+  std::vector<std::unordered_map<std::string, FfiType>> saved_array_stack = std::move(env.array_element_scope_stack);
+  env.vars_scope_stack.push_back({});
+  env.array_element_scope_stack.push_back({});
   std::unordered_map<std::string, FfiType> fn_var_types;
   for (const auto& p : def.params)
     fn_var_types[p.first] = p.second;
@@ -1179,9 +1207,9 @@ static bool emit_user_fn_body(CodegenEnv& env, FnDef& def, Function* fn) {
     Type* ty = ffi_type_to_llvm(def.params[j].second, ctx, B);
     AllocaInst* alloca = B.CreateAlloca(ty, nullptr, def.params[j].first + ".param");
     B.CreateStore(arg_it, alloca);
-    env.vars[def.params[j].first] = alloca;
+    env.vars_scope_stack.back()[def.params[j].first] = alloca;
     if (def.params[j].second == FfiType::Ptr)
-      env.array_element_by_var[def.params[j].first] = FfiType::Ptr;
+      env.array_element_scope_stack.back()[def.params[j].first] = FfiType::Ptr;
   }
   for (StmtPtr& stmt : def.body) {
     if (!emit_stmt(env, def, fn, stmt.get())) return false;
@@ -1194,7 +1222,8 @@ static bool emit_user_fn_body(CodegenEnv& env, FnDef& def, Function* fn) {
   }
   env.var_types = saved_var_types;
   env.fn_var_types = saved_fn_var_types;
-  env.vars = std::move(saved_vars);
+  env.vars_scope_stack = std::move(saved_vars_stack);
+  env.array_element_scope_stack = std::move(saved_array_stack);
   return true;
 }
 
@@ -1325,6 +1354,8 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
     std::unordered_map<std::string, FfiType>* saved_fn_var_types = env.fn_var_types;
     env.var_types = &top_var_types;
     env.fn_var_types = &top_var_types;
+    env.vars_scope_stack.push_back({});
+    env.array_element_scope_stack.push_back({});
     FnDef dummy_main;
     dummy_main.return_type = FfiType::Void;
     for (const TopLevelItem& item : program->top_level) {
@@ -1349,10 +1380,10 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
         else if (ty != FfiType::F64 && ty != FfiType::Ptr && init_val->getType() == builder.getDoubleTy())
           init_val = builder.CreateFPToSI(init_val, builder.getInt64Ty());
         builder.CreateStore(init_val, slot);
-        env.vars[binding->name] = slot;
+        env.vars_scope_stack.back()[binding->name] = slot;
         FfiType elem_ty = array_element_type_from_expr(binding->init.get(), env);
         if (elem_ty != FfiType::Void)
-          env.array_element_by_var[binding->name] = elem_ty;
+          env.array_element_scope_stack.back()[binding->name] = elem_ty;
       } else if (const StmtPtr* stmt = std::get_if<StmtPtr>(&item)) {
         if (!emit_stmt(env, dummy_main, main_fn, stmt->get())) {
           if (s_codegen_error.empty())

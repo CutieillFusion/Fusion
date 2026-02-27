@@ -1,0 +1,22 @@
+# main_vec.fusion – imports the vec library and uses it.
+# Run from repo root so "vec" resolves to examples/vec.fusion (or add examples/ to path).
+#   ./build/fusion examples/main_vec.fusion
+
+import lib "vec" { 
+    struct Vector; 
+    fn make_vec(x: f64, y: f64) -> Vector; 
+    fn add_vec(a: Vector, b: Vector) -> Vector; 
+    fn cos_vec(t: f64) -> Vector;
+};
+
+let u = make_vec(1.0, 2.0);
+let v = make_vec(3.0, 4.0);
+let w = add_vec(u, v);
+let z = cos_vec(0.0);
+
+print("Vector w: ");
+print(load_field(w, Vector, x));
+print(load_field(w, Vector, y));
+print("Cosine vector: ");
+print(load_field(z, Vector, x));
+print(load_field(z, Vector, y));

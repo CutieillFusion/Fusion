@@ -5,11 +5,15 @@
     { "include": "#comments" },
     { "include": "#strings" },
     { "include": "#function-decl" },
+    { "include": "#import-lib" },
+    { "include": "#struct-decl" },
     { "include": "#variable" },
+    { "include": "#builtin-calls" },
     { "include": "#function-call" },
     { "include": "#keywords" },
     { "include": "#types" },
     { "include": "#builtins" },
+    { "include": "#struct-use" },
     { "include": "#identifiers" },
     { "include": "#numbers" },
     { "include": "#punctuation" }
@@ -44,12 +48,93 @@
           }
         },
         {
+          "name": "meta.function.definition.export.fusion",
+          "match": "\\b(export)\\s+(fn)\\s+([a-zA-Z_][a-zA-Z0-9_]*)(?=\\s*\\()",
+          "captures": {
+            "1": { "name": "keyword.control" },
+            "2": { "name": "storage.type" },
+            "3": { "name": "entity.name.function" }
+          }
+        },
+        {
           "name": "meta.function.definition.fusion",
           "match": "\\b(fn)\\s+([a-zA-Z_][a-zA-Z0-9_]*)(?=\\s*\\()",
           "captures": {
             "1": { "name": "storage.type" },
             "2": { "name": "entity.name.function" }
           }
+        }
+      ]
+    },
+    "import-lib": {
+      "patterns": [
+        {
+          "name": "meta.import.fusion",
+          "match": "\\b(import)\\s+(lib)\\s+",
+          "captures": {
+            "1": { "name": "keyword.control" },
+            "2": { "name": "storage.type" }
+          }
+        }
+      ]
+    },
+    "struct-decl": {
+      "patterns": [
+        {
+          "name": "meta.struct.fusion",
+          "match": "\\b(struct)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type" },
+            "2": { "name": "entity.name.type" }
+          }
+        },
+        {
+          "name": "meta.struct.export.fusion",
+          "match": "\\b(export)\\s+(struct)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.control" },
+            "2": { "name": "storage.type" },
+            "3": { "name": "entity.name.type" }
+          }
+        }
+      ]
+    },
+    "struct-use": {
+      "patterns": [
+        {
+          "name": "meta.struct.use.alloc.fusion",
+          "match": "\\balloc\\s*\\(\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\)",
+          "captures": { "1": { "name": "entity.name.type" } }
+        },
+        {
+          "name": "meta.struct.use.alloc_array.fusion",
+          "match": "\\balloc_array\\s*\\(\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*,",
+          "captures": { "1": { "name": "entity.name.type" } }
+        },
+        {
+          "name": "meta.struct.use.return.fusion",
+          "match": "->\\s+(?!(?:i32|i64|u32|u64|f32|f64|void|ptr)\\b)([a-zA-Z_][a-zA-Z0-9_]*)",
+          "captures": { "1": { "name": "entity.name.type" } }
+        },
+        {
+          "name": "meta.struct.use.param.fusion",
+          "match": ":\\s*(?!(?:i32|i64|u32|u64|f32|f64|void|ptr)\\b)([a-zA-Z_][a-zA-Z0-9_]*)\\s*[,)]",
+          "captures": { "1": { "name": "entity.name.type" } }
+        },
+        {
+          "name": "meta.struct.use.load_field.fusion",
+          "match": "load_field\\s*\\([^)]*,\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*,",
+          "captures": { "1": { "name": "entity.name.type" } }
+        },
+        {
+          "name": "meta.struct.use.store_field.fusion",
+          "match": "store_field\\s*\\([^)]*,\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*,",
+          "captures": { "1": { "name": "entity.name.type" } }
+        },
+        {
+          "name": "meta.struct.use.import.fusion",
+          "match": "\\bstruct\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*;",
+          "captures": { "1": { "name": "entity.name.type" } }
         }
       ]
     },
@@ -75,6 +160,30 @@
         }
       ]
     },
+    "builtin-calls": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.range.fusion",
+          "match": "\\b(range)\\s*\\(",
+          "captures": { "1": { "name": "support.function.builtin.range" } }
+        },
+        {
+          "name": "support.function.builtin.io.fusion",
+          "match": "\\b(print)\\s*\\(",
+          "captures": { "1": { "name": "support.function.builtin.io" } }
+        },
+        {
+          "name": "support.function.builtin.alloc.fusion",
+          "match": "\\b(alloc|alloc_array|alloc_bytes)\\s*\\(",
+          "captures": { "1": { "name": "support.function.builtin.alloc" } }
+        },
+        {
+          "name": "support.function.builtin.memory.fusion",
+          "match": "\\b(load|store|load_field|store_field|load_f64|load_i32|load_ptr|addr_of)\\s*\\(",
+          "captures": { "1": { "name": "support.function.builtin.memory" } }
+        }
+      ]
+    },
     "keywords": {
       "patterns": [
         {
@@ -83,7 +192,7 @@
         },
         {
           "name": "keyword.control",
-          "match": "\\b(extern|struct|opaque|as|return|if|else|elif|for|in)\\b"
+          "match": "\\b(import|export|extern|struct|opaque|as|return|if|else|elif|for|in)\\b"
         }
       ]
     },
@@ -91,15 +200,27 @@
       "patterns": [
         {
           "name": "storage.type",
-          "match": "\\b(i32|i64|u32|u64|f32|f64|void|ptr|cstring)\\b"
+          "match": "\\b(i32|i64|u32|u64|f32|f64|void|ptr)\\b"
         }
       ]
     },
     "builtins": {
       "patterns": [
         {
-          "name": "support.function",
-          "match": "\\b(alloc|alloc_bytes|load|store|load_field|store_field|load_i32|load_ptr|addr_of|print)\\b"
+          "name": "support.function.builtin.range",
+          "match": "\\b(range)\\b"
+        },
+        {
+          "name": "support.function.builtin.io",
+          "match": "\\b(print)\\b"
+        },
+        {
+          "name": "support.function.builtin.alloc",
+          "match": "\\b(alloc|alloc_array|alloc_bytes)\\b"
+        },
+        {
+          "name": "support.function.builtin.memory",
+          "match": "\\b(load|store|load_field|store_field|load_f64|load_i32|load_ptr|addr_of)\\b"
         }
       ]
     },

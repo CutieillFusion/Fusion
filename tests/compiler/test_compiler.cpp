@@ -2,11 +2,13 @@
 #include "codegen.hpp"
 #include "layout.hpp"
 #include "lexer.hpp"
+#include "multifile.hpp"
 #include "parser.hpp"
 #include "sema.hpp"
 #include <gtest/gtest.h>
 #include <cstdlib>
 #include <cstdio>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -84,6 +86,20 @@ TEST(LexerTests, TokenizesBracketsAndForIn) {
   for (size_t i = 0; i < tokens.size(); ++i)
     if (tokens[i].kind == fusion::TokenKind::RBracket) { rb = i; break; }
   EXPECT_EQ(tokens[rb].kind, fusion::TokenKind::RBracket);
+}
+
+TEST(LexerTests, TokenizesImportExportLib) {
+  auto tokens = fusion::lex("import lib \"vec\" { struct V; fn f() -> void; }; export struct S { x: f64; }; export fn g() -> i64 { return 0; }");
+  ASSERT_GE(tokens.size(), 5u);
+  size_t imp = 0, exp = 0, lib = 0;
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    if (tokens[i].kind == fusion::TokenKind::KwImport) imp = i + 1;
+    if (tokens[i].kind == fusion::TokenKind::KwExport) exp = i + 1;
+    if (tokens[i].kind == fusion::TokenKind::KwLib) lib = i + 1;
+  }
+  EXPECT_GT(imp, 0u) << "expected KwImport";
+  EXPECT_GT(lib, 0u) << "expected KwLib";
+  EXPECT_GT(exp, 0u) << "expected KwExport";
 }
 
 // --- ParserTests ---
@@ -314,6 +330,61 @@ TEST(ParserTests, ParsesStructPoint) {
   EXPECT_EQ(result.program->struct_defs[0].fields[0].second, fusion::FfiType::F64);
   EXPECT_EQ(result.program->struct_defs[0].fields[1].first, "y");
   EXPECT_EQ(result.program->struct_defs[0].fields[1].second, fusion::FfiType::F64);
+}
+
+TEST(ParserTests, ParsesImportLibBlock) {
+  auto tokens = fusion::lex(
+      "import lib \"vec\" { struct Vector; fn create(x: f64, y: f64) -> Vector; }; print(1)");
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok()) << result.error.message;
+  ASSERT_TRUE(result.program);
+  ASSERT_EQ(result.program->import_libs.size(), 1u);
+  EXPECT_EQ(result.program->import_libs[0].name, "vec");
+  ASSERT_EQ(result.program->import_libs[0].struct_names.size(), 1u);
+  EXPECT_EQ(result.program->import_libs[0].struct_names[0], "Vector");
+  ASSERT_EQ(result.program->import_libs[0].fn_decls.size(), 1u);
+  EXPECT_EQ(result.program->import_libs[0].fn_decls[0].name, "create");
+  EXPECT_EQ(result.program->import_libs[0].fn_decls[0].params.size(), 2u);
+  EXPECT_EQ(result.program->import_libs[0].fn_decls[0].return_type_name, "Vector");
+  ASSERT_EQ(result.program->top_level.size(), 1u);
+}
+
+TEST(ParserTests, ParsesExportStructAndFn) {
+  auto tokens = fusion::lex(
+      "export struct Point { x: f64; y: f64; }; export fn zero() -> Point { let p = alloc(Point); store_field(p, Point, x, 0.0); store_field(p, Point, y, 0.0); return p; } print(1)");
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok()) << result.error.message;
+  ASSERT_TRUE(result.program);
+  ASSERT_EQ(result.program->struct_defs.size(), 1u);
+  EXPECT_TRUE(result.program->struct_defs[0].exported);
+  EXPECT_EQ(result.program->struct_defs[0].name, "Point");
+  ASSERT_EQ(result.program->user_fns.size(), 1u);
+  EXPECT_TRUE(result.program->user_fns[0].exported);
+  EXPECT_EQ(result.program->user_fns[0].name, "zero");
+}
+
+TEST(ParserTests, ParsesNonExportStructAndFn) {
+  auto tokens = fusion::lex("struct Internal { x: i64; }; fn helper() -> i64 { return 42; } print(helper())");
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok()) << result.error.message;
+  ASSERT_TRUE(result.program);
+  ASSERT_EQ(result.program->struct_defs.size(), 1u);
+  EXPECT_FALSE(result.program->struct_defs[0].exported);
+  ASSERT_EQ(result.program->user_fns.size(), 1u);
+  EXPECT_FALSE(result.program->user_fns[0].exported);
+}
+
+TEST(ParserTests, ParsesMultipleImportLibs) {
+  auto tokens = fusion::lex(
+      "import lib \"a\" { struct A; }; import lib \"b\" { fn bar() -> i64; }; print(1)");
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok()) << result.error.message;
+  ASSERT_EQ(result.program->import_libs.size(), 2u);
+  EXPECT_EQ(result.program->import_libs[0].name, "a");
+  EXPECT_EQ(result.program->import_libs[0].struct_names.size(), 1u);
+  EXPECT_EQ(result.program->import_libs[1].name, "b");
+  EXPECT_EQ(result.program->import_libs[1].fn_decls.size(), 1u);
+  EXPECT_EQ(result.program->import_libs[1].fn_decls[0].name, "bar");
 }
 
 TEST(ParserTests, ParsesIfWithComparison) {
@@ -619,6 +690,217 @@ TEST(SemaTests, RejectsForInNonArray) {
               sema_result.error.message.find("array") != std::string::npos)
     << "expected for-in/array error, got: " << sema_result.error.message;
 }
+
+// --- MultifileTests ---
+// Helper: create temp dir, write library_file_content to lib_name.fusion, parse main_source, run resolve_imports_and_merge.
+// Returns (error_message, merged_program). If error_message is non-empty, merge failed.
+static std::pair<std::string, fusion::ProgramPtr> run_multifile_merge(
+    const std::string& main_source,
+    const std::string& lib_name,
+    const std::string& library_file_content) {
+  char dir_tpl[] = "/tmp/fusion_mf_XXXXXX";
+  if (!mkdtemp(dir_tpl)) return {"mkdtemp failed", nullptr};
+  std::string dir(dir_tpl);
+  std::string lib_path = dir + "/" + lib_name + ".fusion";
+  std::ofstream lib_file(lib_path);
+  if (!lib_file) { rmdir(dir_tpl); return {"cannot write lib file", nullptr}; }
+  lib_file << library_file_content;
+  lib_file.close();
+
+  auto tokens = fusion::lex(main_source);
+  auto parse_result = fusion::parse(tokens);
+  if (!parse_result.ok()) {
+    unlink(lib_path.c_str());
+    rmdir(dir_tpl);
+    return {"parse failed: " + parse_result.error.message, nullptr};
+  }
+  std::string main_path = dir + "/main.fusion";
+  std::string err = fusion::resolve_imports_and_merge(main_path, parse_result.program.get());
+  unlink(lib_path.c_str());
+  rmdir(dir_tpl);
+  if (!err.empty()) return {err, nullptr};
+  return {"", std::move(parse_result.program)};
+}
+
+TEST(MultifileTests, NoImportLibsLeavesProgramUnchanged) {
+  auto tokens = fusion::lex("struct Point { x: f64; y: f64; }; print(1)");
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok());
+  std::string err = fusion::resolve_imports_and_merge("/tmp/any.fusion", result.program.get());
+  EXPECT_TRUE(err.empty());
+  EXPECT_EQ(result.program->struct_defs.size(), 1u);
+  EXPECT_EQ(result.program->import_libs.size(), 0u);
+}
+
+TEST(MultifileTests, ImportOneLibMergesStructAndFn) {
+  std::string main_src = R"(import lib "vec" { struct Vector; fn make_vec(x: f64, y: f64) -> Vector; };
+let v = make_vec(1.0, 2.0);
+print(load_field(v, Vector, x));
+print(load_field(v, Vector, y)))";
+  std::string lib_src = R"(export struct Vector { x: f64; y: f64; };
+export fn make_vec(x: f64, y: f64) -> Vector {
+  let p = alloc(Vector);
+  store_field(p, Vector, x, x);
+  store_field(p, Vector, y, y);
+  return p;
+})";
+  auto [err, prog] = run_multifile_merge(main_src, "vec", lib_src);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_TRUE(prog);
+  EXPECT_EQ(prog->struct_defs.size(), 1u);
+  EXPECT_EQ(prog->struct_defs[0].name, "Vector");
+  EXPECT_EQ(prog->user_fns.size(), 1u);
+  EXPECT_EQ(prog->user_fns[0].name, "make_vec");
+}
+
+TEST(MultifileTests, ImportLibWithExternMergesExtern) {
+  std::string main_src = R"(import lib "mylib" { fn get_one() -> f64; };
+print(get_one()))";
+  std::string lib_src = R"(extern lib "libm.so.6" { fn cos(x: f64) -> f64; };
+export fn get_one() -> f64 { return cos(0.0); })";
+  auto [err, prog] = run_multifile_merge(main_src, "mylib", lib_src);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_TRUE(prog);
+  EXPECT_GE(prog->libs.size(), 1u);
+  EXPECT_GE(prog->extern_fns.size(), 1u);
+  bool has_cos = false;
+  for (const auto& e : prog->extern_fns) if (e.name == "cos") { has_cos = true; break; }
+  EXPECT_TRUE(has_cos);
+}
+
+TEST(MultifileTests, MissingLibraryFileReturnsError) {
+  std::string main_src = R"(import lib "nonexistent" { struct X; }; print(1))";
+  auto tokens = fusion::lex(main_src);
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok());
+  std::string main_path = "/tmp/main.fusion";
+  std::string err = fusion::resolve_imports_and_merge(main_path, result.program.get());
+  EXPECT_FALSE(err.empty());
+  EXPECT_TRUE(err.find("cannot open") != std::string::npos || err.find("nonexistent") != std::string::npos);
+}
+
+TEST(MultifileTests, MissingExportedStructReturnsError) {
+  std::string main_src = R"(import lib "vec" { struct Vector; }; print(1))";
+  std::string lib_src = R"(struct Point { x: f64; y: f64; })";
+  auto [err, prog] = run_multifile_merge(main_src, "vec", lib_src);
+  EXPECT_FALSE(err.empty());
+  EXPECT_TRUE(err.find("missing exported struct") != std::string::npos);
+  EXPECT_TRUE(err.find("Vector") != std::string::npos);
+}
+
+TEST(MultifileTests, NonExportedStructNotMerged) {
+  std::string main_src = R"(import lib "vec" { struct Vector; }; print(1))";
+  std::string lib_src = R"(struct Vector { x: f64; y: f64; })";
+  auto [err, prog] = run_multifile_merge(main_src, "vec", lib_src);
+  EXPECT_FALSE(err.empty());
+  EXPECT_TRUE(err.find("missing exported struct") != std::string::npos);
+}
+
+TEST(MultifileTests, MissingExportedFnReturnsError) {
+  std::string main_src = R"(import lib "vec" { fn make() -> i64; }; print(1))";
+  std::string lib_src = R"(fn helper() -> i64 { return 1; })";
+  auto [err, prog] = run_multifile_merge(main_src, "vec", lib_src);
+  EXPECT_FALSE(err.empty());
+  EXPECT_TRUE(err.find("missing") != std::string::npos || err.find("signature mismatch") != std::string::npos);
+}
+
+TEST(MultifileTests, NonExportedFnNotMerged) {
+  std::string main_src = R"(import lib "vec" { fn pub_fn() -> i64; }; print(1))";
+  std::string lib_src = R"(fn pub_fn() -> i64 { return 42; })";
+  auto [err, prog] = run_multifile_merge(main_src, "vec", lib_src);
+  EXPECT_FALSE(err.empty());
+}
+
+TEST(MultifileTests, FnSignatureMismatchReturnsError) {
+  std::string main_src = R"(import lib "vec" { fn add(a: i64, b: i64) -> i64; }; print(1))";
+  std::string lib_src = R"(export fn add(a: i64, b: i64) -> f64 { return 0.0; })";
+  auto [err, prog] = run_multifile_merge(main_src, "vec", lib_src);
+  EXPECT_FALSE(err.empty());
+  EXPECT_TRUE(err.find("signature mismatch") != std::string::npos || err.find("missing") != std::string::npos);
+}
+
+TEST(MultifileTests, SubsetImportOnlyMergesRequested) {
+  std::string main_src = R"(import lib "vec" { struct Vector; fn make_vec(x: f64, y: f64) -> Vector; };
+let v = make_vec(1.0, 2.0);
+print(load_field(v, Vector, x)))";
+  std::string lib_src = R"(export struct Vector { x: f64; y: f64; };
+export struct Point { x: i64; y: i64; };
+export fn make_vec(x: f64, y: f64) -> Vector {
+  let p = alloc(Vector);
+  store_field(p, Vector, x, x);
+  store_field(p, Vector, y, y);
+  return p;
+}
+export fn make_point(x: i64, y: i64) -> Point { let p = alloc(Point); store_field(p, Point, x, x); store_field(p, Point, y, y); return p; })";
+  auto [err, prog] = run_multifile_merge(main_src, "vec", lib_src);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_TRUE(prog);
+  EXPECT_EQ(prog->struct_defs.size(), 1u);
+  EXPECT_EQ(prog->struct_defs[0].name, "Vector");
+  EXPECT_EQ(prog->user_fns.size(), 1u);
+  EXPECT_EQ(prog->user_fns[0].name, "make_vec");
+}
+
+TEST(MultifileTests, DuplicateSymbolFromMainReturnsError) {
+  /* Import first so it is parsed; then struct Vector in main duplicates the one we merge from lib. */
+  std::string main_src = R"(import lib "vec" { struct Vector; };
+struct Vector { x: f64; };
+print(1))";
+  std::string lib_src = R"(export struct Vector { x: f64; y: f64; };)" ;
+  auto [err, prog] = run_multifile_merge(main_src, "vec", lib_src);
+  EXPECT_FALSE(err.empty());
+  EXPECT_TRUE(err.find("duplicate symbol") != std::string::npos);
+}
+
+TEST(MultifileTests, CircularImportReturnsError) {
+  char dir_tpl[] = "/tmp/fusion_mf_XXXXXX";
+  ASSERT_TRUE(mkdtemp(dir_tpl));
+  std::string dir(dir_tpl);
+  std::string a_path = dir + "/a.fusion";
+  std::string b_path = dir + "/b.fusion";
+  std::ofstream(a_path) << "import lib \"b\" { }; print(1)";
+  std::ofstream(b_path) << "import lib \"a\" { }; print(1)";
+  auto tokens = fusion::lex("import lib \"a\" { }; print(1)");
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok());
+  std::string main_path = dir + "/main.fusion";
+  std::string err = fusion::resolve_imports_and_merge(main_path, result.program.get());
+  unlink(a_path.c_str());
+  unlink(b_path.c_str());
+  rmdir(dir_tpl);
+  EXPECT_FALSE(err.empty());
+  EXPECT_TRUE(err.find("circular") != std::string::npos);
+}
+
+TEST(MultifileTests, SemaPassesAfterMerge) {
+  std::string main_src = R"(import lib "vec" { struct V; fn id(x: i64) -> i64; };
+print(id(7)))";
+  std::string lib_src = R"(export struct V { x: i64; };
+export fn id(x: i64) -> i64 { return x; })";
+  auto [err, prog] = run_multifile_merge(main_src, "vec", lib_src);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_TRUE(prog);
+  auto sema_result = fusion::check(prog.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+#ifdef FUSION_HAVE_LLVM
+TEST(MultifileTests, JitRunsAfterMerge) {
+  std::string main_src = R"(import lib "vec" { fn answer() -> i64; };
+print(answer()))";
+  std::string lib_src = R"(export fn answer() -> i64 { return 42; })";
+  auto [err, prog] = run_multifile_merge(main_src, "vec", lib_src);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_TRUE(prog);
+  auto sema_result = fusion::check(prog.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, prog.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+}
+#endif
 
 #ifdef FUSION_HAVE_LLVM
 // --- CodegenTests ---

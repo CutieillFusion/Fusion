@@ -1,0 +1,10 @@
+# Read from stdin, print it, and save to a file (uses read_line, print, open, write_file, close).
+
+print("Enter something: ");
+let line = read_line();
+print(line);
+
+let f = open("out.txt", "w");
+write_file(f, line);
+close(f);
+print("Done.");

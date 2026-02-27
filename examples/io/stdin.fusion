@@ -1,0 +1,6 @@
+# Native IO: read_line() — reads one line from stdin.
+# Returns a ptr (managed string). Valid until next read_line() or to_str().
+
+print("Enter a line: ");
+let line = read_line();
+print(line);

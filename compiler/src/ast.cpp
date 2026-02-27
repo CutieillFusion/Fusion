@@ -205,4 +205,49 @@ StmtPtr Stmt::make_assign(ExprPtr target, ExprPtr value) {
   return s;
 }
 
+ExprPtr Expr::clone() const {
+  auto e = std::make_unique<Expr>();
+  e->kind = kind;
+  e->int_value = int_value;
+  e->float_value = float_value;
+  e->str_value = str_value;
+  e->bin_op = bin_op;
+  e->compare_op = compare_op;
+  e->callee = callee;
+  e->call_type_arg = call_type_arg;
+  e->var_name = var_name;
+  e->load_field_struct = load_field_struct;
+  e->load_field_field = load_field_field;
+  if (left) e->left = left->clone();
+  if (right) e->right = right->clone();
+  for (const auto& a : args) e->args.push_back(a ? a->clone() : nullptr);
+  return e;
+}
+
+StmtPtr Stmt::clone() const {
+  auto s = std::make_unique<Stmt>();
+  s->kind = kind;
+  s->name = name;
+  if (expr) s->expr = expr->clone();
+  if (init) s->init = init->clone();
+  if (cond) s->cond = cond->clone();
+  if (iterable) s->iterable = iterable->clone();
+  for (const auto& t : then_body) s->then_body.push_back(t ? t->clone() : nullptr);
+  for (const auto& t : else_body) s->else_body.push_back(t ? t->clone() : nullptr);
+  for (const auto& b : body) s->body.push_back(b ? b->clone() : nullptr);
+  return s;
+}
+
+FnDef FnDef::clone() const {
+  FnDef c;
+  c.name = name;
+  c.params = params;
+  c.param_type_names = param_type_names;
+  c.return_type = return_type;
+  c.return_type_name = return_type_name;
+  c.exported = exported;
+  for (const auto& b : body) c.body.push_back(b ? b->clone() : nullptr);
+  return c;
+}
+
 }  // namespace fusion

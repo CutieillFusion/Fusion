@@ -6,6 +6,8 @@ namespace fusion {
 
 static TokenKind keyword_from_ident(const std::string& ident) {
   if (ident == "extern") return TokenKind::KwExtern;
+  if (ident == "import") return TokenKind::KwImport;
+  if (ident == "export") return TokenKind::KwExport;
   if (ident == "lib") return TokenKind::KwLib;
   if (ident == "fn") return TokenKind::KwFn;
   if (ident == "f64") return TokenKind::KwF64;
@@ -16,7 +18,6 @@ static TokenKind keyword_from_ident(const std::string& ident) {
   if (ident == "u32") return TokenKind::KwU32;
   if (ident == "void") return TokenKind::KwVoid;
   if (ident == "ptr") return TokenKind::KwPtr;
-  if (ident == "cstring") return TokenKind::KwCstring;
   if (ident == "as") return TokenKind::KwAs;
   if (ident == "let") return TokenKind::KwLet;
   if (ident == "return") return TokenKind::KwReturn;

@@ -1,0 +1,391 @@
+# Make-moons dataset: two interleaving semicircles (class 0 and class 1).
+# Like sklearn.datasets.make_moons: points on two arcs in 2D.
+#
+# Moon 0 (class 0): upper semicircle  x = cos(t), y = sin(t),  t in [0, pi]
+# Moon 1 (class 1): shifted semicircle x = 1 - cos(t), y = 1 - sin(t) - 0.5
+# Angles t evenly spaced. Gaussian noise (sigma) added via Box-Muller from rand().
+
+struct Point { x: f64; y: f64; class: f64; };
+
+struct Value {
+  data: f64;
+  grad: f64;
+  prev: ptr;
+  op: i64;
+};
+
+extern lib "libm.so.6" {
+  fn cos(x: f64) -> f64;
+  fn sin(x: f64) -> f64;
+  fn log(x: f64) -> f64;
+  fn sqrt(x: f64) -> f64;
+};
+
+extern lib "libc.so.6" {  
+  fn rand() -> i32;
+};
+
+fn rand_uniform_neg1_1() -> f64 {
+  # Returns a random f64 in [-1, 1] using libc rand()
+  let r = rand() as f64;
+  return 2.0 * (r / 2147483647.0) - 1.0;
+}
+
+
+fn add_forward(a: ptr, b: ptr) -> ptr {
+  let out = alloc(Value);
+  store_field(out, Value, data, load_field(a, Value, data) + load_field(b, Value, data));
+  store_field(out, Value, grad, load_field(a, Value, grad) + load_field(b, Value, grad));
+  let prev = alloc_array(ptr, 2);
+  prev[0] = a;
+  prev[1] = b;
+  store_field(out, Value, prev, prev);
+  store_field(out, Value, op, 0);
+  return out;
+}
+
+fn add_backward(out: ptr) -> void {
+  let prev = load_field(out, Value, prev);
+  let a = prev[0] as ptr;
+  let b = prev[1] as ptr;
+  store_field(a, Value, grad, load_field(a, Value, grad) + load_field(out, Value, grad));
+  store_field(b, Value, grad, load_field(b, Value, grad) + load_field(out, Value, grad));
+}
+
+fn mul_forward(a: ptr, b: ptr) -> ptr {
+  let out = alloc(Value);
+  store_field(out, Value, data, load_field(a, Value, data) * load_field(b, Value, data));
+  store_field(out, Value, grad, load_field(a, Value, grad) * load_field(b, Value, grad));
+  let prev = alloc_array(ptr, 2);
+  prev[0] = a;
+  prev[1] = b;
+  store_field(out, Value, prev, prev);
+  store_field(out, Value, op, 1);
+  return out;
+}
+
+fn mul_backward(out: ptr) -> void {
+  let prev = load_field(out, Value, prev);
+  let a = prev[0] as ptr;
+  let b = prev[1] as ptr;
+  store_field(a, Value, grad, load_field(b, Value, data) * load_field(out, Value, grad));
+  store_field(b, Value, grad, load_field(a, Value, data) * load_field(out, Value, grad));
+}
+
+fn relu_forward(x: ptr) -> ptr {
+  let out = alloc(Value);
+  let v = 0.0;
+  if (load_field(x, Value, data) > 0.0) {
+    v = load_field(x, Value, data);
+  }
+  store_field(out, Value, data, v);
+  let prev = alloc_array(ptr, 1);
+  prev[0] = x;
+  store_field(out, Value, prev, prev);
+  store_field(out, Value, op, 2);
+  return out;
+}
+
+fn relu_backward(out: ptr) -> void {
+  let prev = load_field(out, Value, prev);
+  let x = prev[0] as ptr;
+  let v = 0.0;
+  if (load_field(out, Value, data) > 0.0) {
+    v = 1.0;
+  }
+  store_field(x, Value, grad, v * load_field(out, Value, grad));
+}
+
+fn build_topo(v: ptr, topo: ptr, topo_count: i64) -> i64 {
+  let mut_count = topo_count;
+  let op = load_field(v, Value, op);
+  if (op == 0) {
+    let children = load_field(v, Value, prev);
+    for j in range(2, i64) {
+      let child = children[j] as ptr;
+      mut_count = build_topo(child, topo, mut_count);
+    }
+  } else if (op == 1) {
+    let children = load_field(v, Value, prev);
+    for j in range(2, i64) {
+      let child = children[j] as ptr;
+      mut_count = build_topo(child, topo, mut_count);
+    }
+  } else if (op == 2) {
+    let children = load_field(v, Value, prev);
+    for j in range(1, i64) {
+      let child = children[j] as ptr;
+      mut_count = build_topo(child, topo, mut_count);
+    }
+  }
+  topo[mut_count] = v;
+  mut_count = mut_count + 1;
+  return mut_count;
+}
+
+fn backward(root: ptr) -> void {
+  print("backward_enter");
+  let children_count = 1000;
+  let topo = alloc_array(ptr, children_count);
+
+  let total_topo_count = build_topo(root, topo, 0);
+  print("backward_after_build_topo");
+
+  let reverse_topo = alloc_array(ptr, total_topo_count);
+  print("backward_before_reverse");
+  for i in range(total_topo_count, i64) {
+    reverse_topo[i] = topo[total_topo_count - 1 - i];
+  }
+
+  print("backward_before_ops");
+  for i in range(total_topo_count, i64) {
+    let v = reverse_topo[i] as ptr;
+    let op = load_field(v, Value, op);
+    if (op == 0) {
+      add_backward(v);
+    } else if (op == 1) {
+      mul_backward(v);
+    } else if (op == 2) {
+      relu_backward(v);
+    }
+  }
+}
+
+print("start");
+let n = 200;
+let pi = 3.14159265358979;
+let sigma = 0.1;
+let rand_max = 2147483647.0;
+
+# Arrays of pointers to Point (one per moon)
+let moons = alloc_array(ptr, n * 2);
+
+print("before_moon0");
+# Moon 0: upper semicircle + N(0, sigma^2) noise
+for i in range(n, f64) {
+  let t = pi * i / (n - 1.0);
+  let x = cos(t);
+  let y = sin(t);
+  let r1 = rand() as f64;
+  let r2 = rand() as f64;
+  let u1 = (r1 + 1.0) / (rand_max + 1.0);
+  let u2 = (r2 + 1.0) / (rand_max + 1.0);
+  let z1 = sqrt((0.0 - 2.0) * log(u1)) * cos(2.0 * pi * u2);
+  let z2 = sqrt((0.0 - 2.0) * log(u1)) * sin(2.0 * pi * u2);
+  let x_n = x + sigma * z1;
+  let y_n = y + sigma * z2;
+  let p1 = alloc(Point);
+  store_field(p1, Point, x, x_n);
+  store_field(p1, Point, y, y_n);
+  store_field(p1, Point, class, 0.0 - 1.0);
+  moons[i as i64] = p1;
+}
+print("after_moon0");
+
+print("before_moon1");
+# Moon 1: shifted semicircle (nests with moon 0) + N(0, sigma^2) noise
+for i in range(n, f64) {
+  let t = pi * i / (n - 1.0);
+  let x = 1.0 - cos(t);
+  let y = 1.0 - sin(t) - 0.5;
+  let r1 = rand() as f64;
+  let r2 = rand() as f64;
+  let u1 = (r1 + 1.0) / (rand_max + 1.0);
+  let u2 = (r2 + 1.0) / (rand_max + 1.0);
+  let z1 = sqrt((0.0 - 2.0) * log(u1)) * cos(2.0 * pi * u2);
+  let z2 = sqrt((0.0 - 2.0) * log(u1)) * sin(2.0 * pi * u2);
+  let x_n = x + sigma * z1;
+  let y_n = y + sigma * z2;
+  let p2 = alloc(Point);
+  store_field(p2, Point, x, x_n);
+  store_field(p2, Point, y, y_n);
+  store_field(p2, Point, class, 1.0);
+  moons[n + i as i64] = p2;
+}
+print("after_moon1");
+
+let input_size = 2;
+let hidden_size = 16;
+let output_size = 1;
+let num_epochs = 1;
+
+let W1 = alloc_array(ptr, input_size * hidden_size);
+let W2 = alloc_array(ptr, hidden_size * output_size);
+let b1 = alloc_array(ptr, hidden_size);
+let b2 = alloc_array(ptr, output_size);
+
+print("before_W1_init");
+for i in range(input_size, i64) {
+  for j in range(hidden_size, i64) {
+    W1[i * hidden_size + j] = alloc(Value);
+    store_field(W1[i * hidden_size + j], Value, data, rand_uniform_neg1_1());
+  }
+}
+
+for i in range(hidden_size, i64) {
+  for j in range(output_size, i64) {
+    W2[i * output_size + j] = alloc(Value);
+    store_field(W2[i * output_size + j], Value, data, rand_uniform_neg1_1());
+  }
+}
+print("after_W2_init");
+
+for i in range(hidden_size, i64) {
+  b1[i] = alloc(Value);
+  store_field(b1[i], Value, data, 0.0);
+}
+
+for i in range(output_size, i64) {
+  b2[i] = alloc(Value);
+  store_field(b2[i], Value, data, 0.0);
+}
+print("after_b_init");
+
+let X = alloc_array(ptr, input_size);
+let y = alloc_array(ptr, output_size);
+
+let x_0 = alloc(Value);
+let y_0 = alloc(Value);
+let class_0 = alloc(Value);
+store_field(x_0, Value, data, load_field(moons[0], Point, x));
+store_field(y_0, Value, data, load_field(moons[0], Point, y));
+store_field(class_0, Value, data, load_field(moons[0], Point, class) as f64);
+
+X[0] = x_0;
+X[1] = y_0;
+y[0] = class_0;
+print("after_X_y");
+
+let h1 = alloc_array(ptr, input_size * hidden_size);
+let h2 = alloc_array(ptr, hidden_size * output_size);
+let losses = alloc_array(ptr, output_size);
+for i in range(output_size, i64) {
+  losses[i] = alloc(Value);
+}
+let loss_acc = alloc(Value);
+store_field(loss_acc, Value, data, 0.0);
+store_field(loss_acc, Value, grad, 0.0);
+store_field(loss_acc, Value, op, 0 - 1);
+let loss_acc_prev = alloc_array(ptr, 1);
+loss_acc_prev[0] = loss_acc;
+store_field(loss_acc, Value, prev, loss_acc_prev);
+let learning_rate = 1.0 - 0.9 / 100.0;
+print("before_epoch_loop");
+
+for epoch in range(num_epochs, i64) {
+  print("Epoch:");
+  print(epoch);
+  print("epoch_forward_start");
+  # Forward
+  for i in range(input_size, i64) {
+    for j in range(hidden_size, i64) {
+      let mat_mul = mul_forward(X[i], W1[i * hidden_size + j]);
+      let add = add_forward(mat_mul, b1[j]);
+      let relu = relu_forward(add);
+      h1[i * hidden_size + j] = relu;
+    }
+  }
+  print("after_forward_h1");
+  for i in range(hidden_size, i64) {
+    for j in range(output_size, i64) {
+      let mat_mul = mul_forward(h1[i], W2[i * output_size + j]);
+      let add = add_forward(mat_mul, b2[j]);
+      let relu = relu_forward(add);
+      h2[i * output_size + j] = relu;
+    }
+  }
+  print("after_forward_h2");
+  # Loss: hinge loss relu(1.0 - target * pred) using differentiable ops
+  print("before_loss");
+  for i in range(output_size, i64) {
+    # Create constant 1.0 as a Value leaf node (prev needed for struct layout)
+    let one = alloc(Value);
+    store_field(one, Value, data, 1.0);
+    store_field(one, Value, grad, 0.0);
+    store_field(one, Value, op, 0 - 1);
+    let one_prev = alloc_array(ptr, 1);
+    one_prev[0] = one;
+    store_field(one, Value, prev, one_prev);
+    # Create constant -1.0 as a Value leaf node
+    let neg_one = alloc(Value);
+    store_field(neg_one, Value, data, 0.0 - 1.0);
+    store_field(neg_one, Value, grad, 0.0);
+    store_field(neg_one, Value, op, 0 - 1);
+    let neg_one_prev = alloc_array(ptr, 1);
+    neg_one_prev[0] = neg_one;
+    store_field(neg_one, Value, prev, neg_one_prev);
+    # Compute target * pred
+    let target_pred = mul_forward(y[i], h2[i]);
+    # Compute -1.0 * target_pred = -target*pred
+    let neg_target_pred = mul_forward(neg_one, target_pred);
+    # Compute 1.0 + (-target*pred) = 1 - target*pred
+    let loss_value = add_forward(one, neg_target_pred);
+    # Apply relu to get hinge loss
+    losses[i] = relu_forward(loss_value);
+  }
+  print("after_loss");
+  store_field(loss_acc, Value, data, 0.0);
+  print("before_loss_acc");
+  let running = loss_acc;
+  for loss_item in losses {
+    running = add_forward(running, loss_item);
+  }
+  store_field(running, Value, grad, 1.0);
+  print("before_backward");
+  backward(running);
+  print("after_backward");
+  # Update
+  print("before_update_W1");
+  for i in range(input_size, i64) {
+    for j in range(hidden_size, i64) {
+      let w1_grad = load_field(W1[i * hidden_size + j], Value, grad);
+      let w1_data = load_field(W1[i * hidden_size + j], Value, data);
+      let new_data = w1_data - learning_rate * w1_grad;
+      store_field(W1[i * hidden_size + j], Value, data, new_data);
+      store_field(W1[i * hidden_size + j], Value, grad, 0.0);
+    }
+  }
+  print("after_update_W1");
+  for i in range(hidden_size, i64) {
+    for j in range(output_size, i64) {
+      let w2_grad = load_field(W2[i * output_size + j], Value, grad);
+      let w2_data = load_field(W2[i * output_size + j], Value, data);
+      print("data then grad W2:");
+      print(w2_data);
+      print(w2_grad);
+      store_field(W2[i * output_size + j], Value, data, w2_data - learning_rate * w2_grad);
+      store_field(W2[i * output_size + j], Value, grad, 0.0);
+    }
+  }
+  print("after_update_W2");
+  for i in range(hidden_size, i64) {
+    let b1_grad = load_field(b1[i], Value, grad);
+    let b1_data = load_field(b1[i], Value, data);
+    let new_data = b1_data - learning_rate * b1_grad;
+    store_field(b1[i], Value, data, new_data);
+    store_field(b1[i], Value, grad, 0.0);
+  }
+  print("after_update_b1");
+  for i in range(output_size, i64) {
+    let b2_grad = load_field(b2[i], Value, grad);
+    let b2_data = load_field(b2[i], Value, data);
+    let new_data = b2_data - learning_rate * b2_grad;
+    store_field(b2[i], Value, data, new_data);
+    store_field(b2[i], Value, grad, 0.0);
+  }
+  print("after_update_b2");
+}
+
+print("after_epoch_loop");
+print("X:");
+for i in range(input_size, i64) {
+  print(load_field(X[i], Value, data));
+}
+print("h1:");
+for i in range(hidden_size, i64) {
+  print(load_field(h1[i], Value, data));
+}
+print("h2:");
+for i in range(output_size, i64) {
+  print(load_field(h2[i], Value, data));
+}

@@ -68,6 +68,9 @@ struct Expr {
   static ExprPtr make_store_field(ExprPtr ptr, std::string struct_name, std::string field_name, ExprPtr value);
   static ExprPtr make_cast(ExprPtr operand, std::string target_type_name);
   static ExprPtr make_compare(CompareOp op, ExprPtr left, ExprPtr right);
+
+  /** Deep copy for multifile merge. */
+  ExprPtr clone() const;
 };
 
 /* extern lib "path"; or extern lib "path" as name; */
@@ -85,6 +88,22 @@ struct ExternFn {
   FfiType return_type;
   std::string return_type_name;  // non-empty = named type (opaque/struct) -> PTR
   std::string lib_name;  // empty = default lib
+};
+
+/* Signature-only function declaration (for import lib block). Same shape as ExternFn but for Fusion fns. */
+struct FnDecl {
+  std::string name;
+  std::vector<std::pair<std::string, FfiType>> params;
+  std::vector<std::string> param_type_names;
+  FfiType return_type = FfiType::Void;
+  std::string return_type_name;
+};
+
+/* import lib "name" { struct X; fn foo(...) -> ret; }; struct_names are name-only. */
+struct ImportLib {
+  std::string name;
+  std::vector<std::string> struct_names;
+  std::vector<FnDecl> fn_decls;
 };
 
 /* let name = init; */
@@ -113,6 +132,9 @@ struct Stmt {
   static StmtPtr make_if(ExprPtr cond, std::vector<StmtPtr> then_body, std::vector<StmtPtr> else_body);
   static StmtPtr make_for(std::string loop_var, ExprPtr iterable, std::vector<StmtPtr> body);
   static StmtPtr make_assign(ExprPtr target, ExprPtr value);
+
+  /** Deep copy for multifile merge. */
+  StmtPtr clone() const;
 };
 
 /* User-defined function: fn name(params) -> ret { body }. */
@@ -123,12 +145,17 @@ struct FnDef {
   FfiType return_type = FfiType::Void;
   std::string return_type_name;  // non-empty = named type -> PTR
   std::vector<StmtPtr> body;
+  bool exported = false;
+
+  /** Deep copy for multifile merge. */
+  FnDef clone() const;
 };
 
 /* struct Name { field: type; ... }; fields use primitive FfiType only in v1. */
 struct StructDef {
   std::string name;
   std::vector<std::pair<std::string, FfiType>> fields;
+  bool exported = false;
 };
 
 struct Program;
@@ -137,8 +164,9 @@ using ProgramPtr = std::unique_ptr<Program>;
 /* One top-level item: let binding, expression, or statement (e.g. if). */
 using TopLevelItem = std::variant<LetBinding, ExprPtr, StmtPtr>;
 
-/* Top-level: opaque/struct decls, extern decls, user fn defs, then let-bindings and expressions. */
+/* Top-level: import_libs first, then opaque/struct decls, extern decls, user fn defs, then let-bindings and expressions. */
 struct Program {
+  std::vector<ImportLib> import_libs;
   std::vector<std::string> opaque_types;
   std::vector<StructDef> struct_defs;
   std::vector<ExternLib> libs;

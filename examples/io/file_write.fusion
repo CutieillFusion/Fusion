@@ -1,0 +1,11 @@
+# Native IO: open, write_file, close.
+# write_file(handle, value) — value can be i64, f64, or ptr (string).
+
+let f = open("out.txt", "w");
+
+write_file(f, 42);
+write_file(f, 3.14);
+write_file(f, "hello");
+
+close(f);
+print("Done.");

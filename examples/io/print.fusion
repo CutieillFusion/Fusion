@@ -1,0 +1,10 @@
+# Native IO: print built-in.
+# print(value) — value can be i64, f64, or ptr (string).
+# print(value, stream) — optional stream: 0 = stdout, 1 = stderr.
+
+print(42);
+print(3.14);
+print("hello");
+
+# Optional second argument: stream (1 = stderr).
+print("this goes to stderr", 1);

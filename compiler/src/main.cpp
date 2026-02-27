@@ -11,6 +11,7 @@
 #include "ast.hpp"
 #include "codegen.hpp"
 #include "lexer.hpp"
+#include "multifile.hpp"
 #include "parser.hpp"
 #include "sema.hpp"
 
@@ -33,6 +34,12 @@ static int run_file(const std::string& path) {
   if (!parse_result.ok()) {
     std::cerr << "fusion: parse error at " << parse_result.error.line << ":"
               << parse_result.error.column << " " << parse_result.error.message << "\n";
+    return 1;
+  }
+
+  std::string merge_err = fusion::resolve_imports_and_merge(path, parse_result.program.get());
+  if (!merge_err.empty()) {
+    std::cerr << "fusion: " << merge_err << "\n";
     return 1;
   }
 

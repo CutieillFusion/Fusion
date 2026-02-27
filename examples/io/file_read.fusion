@@ -1,0 +1,28 @@
+# Native IO: open, read_line_file, eof_file, line_count_file, close.
+# Run file_write.fusion first to create out.txt, then run this.
+
+let path = "out.txt";
+let mode = "r";
+
+# First, open a handle just to count how many lines the file has.
+let f_count = open(path, mode);
+let total_lines = line_count_file(f_count);
+close(f_count);
+
+print("Total lines in file:");
+print(total_lines);
+
+# Now open again and read each line.
+let f = open(path, mode);
+
+for i in range(total_lines) {
+  let line = read_line_file(f);
+  print(line);
+}
+
+# Demonstrate eof_file (0 = not EOF, non-zero = EOF).
+let at_eof = eof_file(f);
+print(at_eof);
+
+close(f);
+print("Done.");

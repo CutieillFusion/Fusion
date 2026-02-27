@@ -1,0 +1,19 @@
+# Native IO: to_str and from_str — convert between numbers and strings.
+# to_str(x): x is i64 or f64, returns ptr to string.
+# from_str(s, T): s is ptr, T is i64 or f64; returns 0 / 0.0 on invalid input.
+
+let n = 42;
+let s = to_str(n);
+print(s);
+
+let x = 3.14;
+let xs = to_str(x);
+print(xs);
+
+let num_str = "100";
+let parsed_i = from_str(num_str, i64);
+print(parsed_i);
+
+let float_str = "2.5";
+let parsed_f = from_str(float_str, f64);
+print(parsed_f);
