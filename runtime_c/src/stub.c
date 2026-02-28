@@ -114,3 +114,22 @@ void rt_panic(const char *msg) {
     fprintf(stderr, "fusion panic\n");
   abort();
 }
+
+static int64_t g_value_allocs = 0;
+static int64_t g_value_frees = 0;
+
+void rt_value_alloc_inc(void) {
+  g_value_allocs++;
+}
+
+void rt_value_free_inc(void) {
+  g_value_frees++;
+}
+
+int64_t rt_value_alloc_count(void) {
+  return g_value_allocs;
+}
+
+int64_t rt_value_free_count(void) {
+  return g_value_frees;
+}

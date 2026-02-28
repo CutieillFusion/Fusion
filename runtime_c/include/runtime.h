@@ -37,6 +37,12 @@ int64_t rt_line_count_file(void *handle);
 /* Print message to stderr and abort. Used when dlopen/dlsym/ffi_call fails. */
 void rt_panic(const char *msg);
 
+/* Value alloc/free counters for leak diagnosis (e.g. autograd graph nodes). */
+void rt_value_alloc_inc(void);
+void rt_value_free_inc(void);
+int64_t rt_value_alloc_count(void);
+int64_t rt_value_free_count(void);
+
 /* Dynamic loading (dlopen/dlsym). Handles are opaque pointers from dlopen/dlsym. */
 typedef void *rt_lib_handle_t;
 

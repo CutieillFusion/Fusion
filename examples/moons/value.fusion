@@ -7,6 +7,7 @@ export struct Value {
 };
 
 export fn free_value(v: ptr) -> void {
+    rt_value_free_inc();
     let prev = load_field(v, Value, prev);
     free_array(as_array(prev, ptr));
     free(as_heap(v));
@@ -19,6 +20,7 @@ export fn alloc_value(data: f64, prev: ptr, children_count: i64, backward: ptr) 
   store_field(value, Value, prev, prev);
   store_field(value, Value, children_count, children_count);
   store_field(value, Value, backward, backward);
+  rt_value_alloc_inc();
   return value;
 }
 

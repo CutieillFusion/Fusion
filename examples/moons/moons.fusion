@@ -58,3 +58,10 @@ export fn create_moons(n: i64, sigma: f64) -> ptr {
 
     return moons;
 }
+
+export fn free_moons(moons: ptr, n: i64) -> void {
+    for (let i = 0; i < n; i = i + 1) {
+        free(as_heap(moons[i]));
+    }
+    free_array(as_array(moons, ptr));
+}

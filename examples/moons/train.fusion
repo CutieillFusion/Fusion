@@ -8,6 +8,7 @@
 import lib "moons" {
 	struct Point;
 	fn create_moons(n: i64, sigma: f64) -> ptr;
+	fn free_moons(moons: ptr, n: i64) -> void;
 }
 
 import lib "value" {
@@ -17,15 +18,25 @@ import lib "value" {
 	fn mul_forward(a: ptr, b: ptr) -> ptr;
 	fn relu_forward(x: ptr) -> ptr;
 	fn make_leaf(data: f64) -> ptr;
+	fn free_value(v: ptr) -> void;
 }
 
 import lib "autograd" {
 	fn backward(root: ptr) -> void;
 	fn backward_with_free(root: ptr, weight_ptrs: ptr, weight_count: i64) -> void;
+	fn free_graph(root: ptr, weight_ptrs: ptr, weight_count: i64) -> void;
 }
 
 import lib "rand" {
 	fn rand_uniform_neg1_1() -> f64;
+}
+
+# Process-global Value alloc/free counters for leak diagnosis.
+extern lib "" {
+	fn rt_value_alloc_inc() -> void;
+	fn rt_value_free_inc() -> void;
+	fn rt_value_alloc_count() -> i64;
+	fn rt_value_free_count() -> i64;
 };
 
 # Scale init so ReLUs don't all go dead after first update (ReLU grad is 0 when pre-act <= 0).
@@ -36,7 +47,7 @@ let moons = create_moons(n_moons, 0.1);
 let batch_size = 500;
 
 let input_size = 2;
-let hidden_size = 3;
+let hidden_size = 16;
 let output_size = 1;
 let num_epochs = 100;
 # Keep LR small to avoid overshooting: hinge + ReLU can collapse to constant predictor if steps are too large.
@@ -97,9 +108,6 @@ let y = heap_array(ptr, output_size);
 let h1 = heap_array(ptr, hidden_size);
 let h2 = heap_array(ptr, output_size);
 let losses = heap_array(ptr, output_size);
-for (let i = 0; i < output_size; i = i + 1) {
-	losses[i] = make_leaf(0.0);
-}
 
 for (let epoch = 0; epoch < num_epochs; epoch = epoch + 1) {
 	print("Epoch:");
@@ -164,6 +172,7 @@ for (let epoch = 0; epoch < num_epochs; epoch = epoch + 1) {
 
 	let total_correct = load_field(running_correct, Value, data);
 
+	free_graph(running_correct, weight_ptrs, num_weights);
 	backward_with_free(running, weight_ptrs, num_weights);
 
 	for (let i = 0; i < input_size; i = i + 1) {
@@ -206,3 +215,40 @@ for (let epoch = 0; epoch < num_epochs; epoch = epoch + 1) {
 	print("accuracy:");
 	print(accuracy);
 }
+
+# Free all long-lived allocations so LeakSanitizer reports no leaks.
+free_moons(moons, n_moons);
+for (let i = 0; i < input_size; i = i + 1) {
+	for (let j = 0; j < hidden_size; j = j + 1) {
+		free_value(W1[i * hidden_size + j]);
+	}
+}
+for (let i = 0; i < hidden_size; i = i + 1) {
+	for (let j = 0; j < output_size; j = j + 1) {
+		free_value(W2[i * output_size + j]);
+	}
+}
+for (let i = 0; i < hidden_size; i = i + 1) {
+	free_value(b1[i]);
+}
+for (let i = 0; i < output_size; i = i + 1) {
+	free_value(b2[i]);
+}
+free_array(as_array(W1, ptr));
+free_array(as_array(W2, ptr));
+free_array(as_array(b1, ptr));
+free_array(as_array(b2, ptr));
+free_array(as_array(weight_ptrs, ptr));
+free_array(as_array(X, ptr));
+free_array(as_array(y, ptr));
+free_array(as_array(h1, ptr));
+free_array(as_array(h2, ptr));
+free_array(as_array(losses, ptr));
+
+# Leak diagnosis: Value alloc/free counters.
+print("value allocs:");
+print(rt_value_alloc_count());
+print("value frees:");
+print(rt_value_free_count());
+print("allocs - frees:");
+print(rt_value_alloc_count() - rt_value_free_count());

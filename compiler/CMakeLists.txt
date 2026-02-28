@@ -1,3 +1,4 @@
+find_package(Threads REQUIRED)
 set(FUSION_COMPILER_SOURCES
   src/ast.cpp
   src/lexer.cpp
@@ -18,7 +19,7 @@ include("${CMAKE_SOURCE_DIR}/cmake/LinkFusionLLVM.cmake")
 fusion_target_link_llvm(fusion)
 # Force-include static runtime so rt_print_i64 is in the binary (nothing references it at link time).
 # Export global symbols so dlsym(RTLD_DEFAULT, "rt_print_i64") finds it at JIT run time.
-target_link_libraries(fusion PRIVATE ${CMAKE_DL_LIBS})
+target_link_libraries(fusion PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
 if(FUSION_LIBFFI_FOUND)
   target_link_libraries(fusion PRIVATE LibFFI::LibFFI)
 endif()

@@ -7,6 +7,10 @@ import lib "value" {
     fn free_value(v: ptr) -> void;
 }
 
+extern lib "" {
+    fn rt_panic(msg: ptr) -> void;
+};
+
 fn is_in_weight_set(weight_ptrs: ptr, weight_count: i64, v: ptr) -> i64 {
     for (let i = 0; i < weight_count; i = i + 1) {
         if (weight_ptrs[i] as ptr == v) {
@@ -25,24 +29,78 @@ fn already_in_topo(v: ptr, topo: ptr, topo_count: i64) -> i64 {
     return 0;
 }
 
-fn build_topo(v: ptr, topo: ptr, topo_count: i64) -> i64 {
-    if (already_in_topo(v, topo, topo_count) != 0) {
-        return topo_count;
+# Iterative DFS (post-order) to avoid stack overflow on deep graphs (e.g. long add_forward chains).
+fn build_topo(root: ptr, topo: ptr, _ignored: i64) -> i64 {
+    let max_nodes = 100000;
+    let max_iters = 300000;
+    let stack_v = heap_array(ptr, max_nodes);
+    let stack_j = heap_array(i64, max_nodes);
+    stack_v[0] = root;
+    stack_j[0] = 0;
+    let stack_top = 1;
+    let topo_count = 0;
+    let done = 0;
+    for (let iter = 0; iter < max_iters; iter = iter + 1) {
+        if (done != 0) {
+        } else {
+            if (stack_top <= 0) {
+                done = 1;
+            } else {
+                stack_top = stack_top - 1;
+                let v = stack_v[stack_top] as ptr;
+                let j = stack_j[stack_top];
+                if (j == 0) {
+                    if (already_in_topo(v, topo, topo_count) != 0) {
+                    } else {
+                        let children = load_field(v, Value, prev);
+                        let n = load_field(v, Value, children_count);
+                        if (n == 0) {
+                            if (topo_count >= max_nodes) {
+                                rt_panic("autograd topo overflow: graph too large");
+                            }
+                            topo[topo_count] = v;
+                            topo_count = topo_count + 1;
+                        } else {
+                            if (stack_top + 2 > max_nodes) {
+                                rt_panic("autograd stack overflow: graph too large");
+                            }
+                            stack_v[stack_top] = v;
+                            stack_j[stack_top] = 1;
+                            stack_top = stack_top + 1;
+                            let child0 = children[0] as ptr;
+                            stack_v[stack_top] = child0;
+                            stack_j[stack_top] = 0;
+                            stack_top = stack_top + 1;
+                        }
+                    }
+                } else {
+                    let children = load_field(v, Value, prev);
+                    let n = load_field(v, Value, children_count);
+                    if (j < n) {
+                        if (stack_top + 2 > max_nodes) {
+                            rt_panic("autograd stack overflow: graph too large");
+                        }
+                        stack_v[stack_top] = v;
+                        stack_j[stack_top] = j + 1;
+                        stack_top = stack_top + 1;
+                        let c = children[j] as ptr;
+                        stack_v[stack_top] = c;
+                        stack_j[stack_top] = 0;
+                        stack_top = stack_top + 1;
+                    } else {
+                        if (topo_count >= max_nodes) {
+                            rt_panic("autograd topo overflow: graph too large");
+                        }
+                        topo[topo_count] = v;
+                        topo_count = topo_count + 1;
+                    }
+                }
+            }
+        }
     }
-
-    let mut_count = topo_count;
-
-    let children = load_field(v, Value, prev);
-    let n = load_field(v, Value, children_count);
-
-    for (let j = 0; j < n; j = j + 1) {
-        let child = children[j] as ptr;
-        mut_count = build_topo(child, topo, mut_count);
-    }
-
-    topo[mut_count] = v;
-    let new_count = mut_count + 1;
-    return new_count;
+    free_array(stack_v);
+    free_array(stack_j);
+    return topo_count;
 }
 
 export fn backward(root: ptr) -> void {
@@ -60,6 +118,20 @@ export fn backward(root: ptr) -> void {
         let backward = load_field(v, Value, backward);
         call(backward, v);
     }
+}
+
+# Free all graph nodes except weights (no backward). Use for non-loss roots e.g. running_correct.
+export fn free_graph(root: ptr, weight_ptrs: ptr, weight_count: i64) -> void {
+    let max_nodes = 100000;
+    let topo = heap_array(ptr, max_nodes);
+    let total_topo_count = build_topo(root, topo, 0);
+    for (let i = 0; i < total_topo_count; i = i + 1) {
+        let v = topo[i] as ptr;
+        if (is_in_weight_set(weight_ptrs, weight_count, v) == 0) {
+            free_value(v);
+        }
+    }
+    free_array(topo);
 }
 
 # Backward then free all graph nodes except weights (avoids leak when training many epochs).

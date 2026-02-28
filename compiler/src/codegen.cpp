@@ -22,8 +22,10 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/DynamicLibrary.h"
 #include "llvm/Support/TargetSelect.h"
+#include <algorithm>
 #include <cstring>
 #include <dlfcn.h>
+#include <pthread.h>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -380,7 +382,11 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
     case Expr::Kind::BinaryOp: {
       Value* L = emit_expr(env, expr->left.get());
       Value* R = emit_expr(env, expr->right.get());
-      if (!L || !R) return nullptr;
+      if (!L || !R) {
+        if (s_codegen_error.empty())
+          s_codegen_error = "binary op: left or right expression failed";
+        return nullptr;
+      }
       FfiType tyL = expr_type(expr->left.get(), prog, env.var_types);
       FfiType tyR = expr_type(expr->right.get(), prog, env.var_types);
       bool is_f64 = (tyL == FfiType::F64 || tyR == FfiType::F64);
@@ -401,6 +407,8 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         case BinOp::Div:
           return is_f64 ? B.CreateFDiv(L, R, "div") : B.CreateSDiv(L, R, "div");
       }
+      if (s_codegen_error.empty())
+        s_codegen_error = "binary op: unknown operator";
       return nullptr;
     }
     case Expr::Kind::Call: {
@@ -948,9 +956,15 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       return B.getInt64(0);
     }
     case Expr::Kind::LoadField: {
-      if (!env.layout_map) return nullptr;
+      if (!env.layout_map) {
+        s_codegen_error = "load_field: no struct layout map";
+        return nullptr;
+      }
       auto it = env.layout_map->find(expr->load_field_struct);
-      if (it == env.layout_map->end()) return nullptr;
+      if (it == env.layout_map->end()) {
+        s_codegen_error = "load_field: struct '" + expr->load_field_struct + "' not found in layout";
+        return nullptr;
+      }
       size_t offset = 0;
       FfiType field_ty = FfiType::Void;
       for (const auto& f : it->second.fields) {
@@ -960,9 +974,16 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
           break;
         }
       }
-      if (field_ty == FfiType::Void) return nullptr;
+      if (field_ty == FfiType::Void) {
+        s_codegen_error = "load_field: field '" + expr->load_field_field + "' not found in struct '" + expr->load_field_struct + "'";
+        return nullptr;
+      }
       Value* base = emit_expr(env, expr->left.get());
-      if (!base) return nullptr;
+      if (!base) {
+        if (s_codegen_error.empty())
+          s_codegen_error = "load_field: base expression failed";
+        return nullptr;
+      }
       Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
       if (base->getType() != i8ptr) {
         if (base->getType() == B.getInt64Ty())
@@ -1027,7 +1048,11 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
     case Expr::Kind::Index: {
       Value* elem_base = emit_expr(env, expr->left.get());
       Value* index_val = emit_expr(env, expr->right.get());
-      if (!elem_base || !index_val) return nullptr;
+      if (!elem_base || !index_val) {
+        if (s_codegen_error.empty())
+          s_codegen_error = "array index: base or index expression failed";
+        return nullptr;
+      }
       Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
       if (elem_base->getType() != i8ptr) elem_base = B.CreatePointerCast(elem_base, i8ptr);
       if (index_val->getType() != B.getInt64Ty())
@@ -1041,7 +1066,10 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       FfiType elem_ty = array_element_type_from_expr(expr->left.get(), env);
       if (elem_ty == FfiType::Void) elem_ty = FfiType::I64;
       Function* rt_panic_fn = M->getFunction("rt_panic");
-      if (!rt_panic_fn) return nullptr;
+      if (!rt_panic_fn) {
+        s_codegen_error = "array index: rt_panic not found in module";
+        return nullptr;
+      }
       Value* oob = B.CreateOr(
         B.CreateICmpSLT(index_val, B.getInt64(0)),
         B.CreateICmpSGE(index_val, len), "index.oob");
@@ -1117,7 +1145,11 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
     case Expr::Kind::Compare: {
       Value* L = emit_expr(env, expr->left.get());
       Value* R = emit_expr(env, expr->right.get());
-      if (!L || !R) return nullptr;
+      if (!L || !R) {
+        if (s_codegen_error.empty())
+          s_codegen_error = "comparison: left or right expression failed";
+        return nullptr;
+      }
       FfiType tyL = expr_type(expr->left.get(), prog, env.var_types);
       FfiType tyR = expr_type(expr->right.get(), prog, env.var_types);
       if (tyL == FfiType::Ptr && tyR == FfiType::Ptr) {
@@ -1156,10 +1188,41 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       return B.CreateICmp(pred, L, R, "cmp");
     }
   }
+  if (expr && s_codegen_error.empty())
+    s_codegen_error = "unknown or unsupported expression kind in emit_expr";
   return nullptr;
 }
 
 static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt);
+
+/* Collect (name, type) of Let in the direct loop body only; skip loop-var name. Used for hoisting. */
+static void collect_loop_body_let_types(const std::vector<StmtPtr>& body, Program* program,
+    const std::unordered_map<std::string, FfiType>* var_types,
+    CodegenEnv& env,
+    const std::string& for_init_name,
+    std::unordered_map<std::string, FfiType>& out) {
+  std::unordered_map<std::string, FfiType> combined;
+  if (var_types)
+    for (const auto& p : *var_types) combined[p.first] = p.second;
+  for (const StmtPtr& s : body) {
+    if (!s) continue;
+    if (s->kind == Stmt::Kind::Let) {
+      if (!for_init_name.empty() && s->name == for_init_name) continue;
+      FfiType ty;
+      if (s->init && s->init->kind == Expr::Kind::Index) {
+        ty = array_element_type_from_expr(s->init->left.get(), env);
+        if (ty == FfiType::Void)
+          ty = expr_type(s->init.get(), program, &combined);
+      } else {
+        ty = expr_type(s->init.get(), program, &combined);
+      }
+      if (ty != FfiType::Void && out.find(s->name) == out.end()) {
+        out[s->name] = ty;
+        combined[s->name] = ty;  /* so later lets in same body see this type */
+      }
+    }
+  }
+}
 
 static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
   if (!stmt) return false;
@@ -1191,37 +1254,74 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
       FfiType let_ty = expr_type(stmt->init.get(), env.program, env.var_types);
       if (env.fn_var_types)
         (*env.fn_var_types)[stmt->name] = let_ty;
-      Type* slot_ty = (let_ty != FfiType::Void) ? ffi_type_to_llvm(let_ty, ctx, B) : nullptr;
-      AllocaInst* slot;
-      if (slot_ty) {
-        slot = B.CreateAlloca(slot_ty, nullptr, stmt->name);
-        env.vars_scope_stack.back()[stmt->name] = slot;
-      } else {
-        Value* init_val = emit_expr(env, stmt->init.get());
-        if (!init_val) return false;
-        slot = B.CreateAlloca(init_val->getType(), nullptr, stmt->name);
-        env.vars_scope_stack.back()[stmt->name] = slot;
-        B.CreateStore(init_val, slot);
-        FfiType elem_ty = array_element_type_from_expr(stmt->init.get(), env);
-        if (elem_ty != FfiType::Void) {
-          env.array_element_scope_stack.back()[stmt->name] = elem_ty;
-        } else if (stmt->init->kind == Expr::Kind::LoadField && env.layout_map) {
-          Expr* e = stmt->init.get();
-          auto it = env.layout_map->find(e->load_field_struct);
-          if (it != env.layout_map->end()) {
-            for (const auto& f : it->second.fields)
-              if (f.first == e->load_field_field && f.second.type == FfiType::Ptr) {
-                env.array_element_scope_stack.back()[stmt->name] = FfiType::Ptr;
-                break;
-              }
-          }
-        } else if (stmt->init->kind == Expr::Kind::Call && init_val->getType()->isPointerTy())
-          env.array_element_scope_stack.back()[stmt->name] = FfiType::Ptr;
-        return true;
+      AllocaInst* slot = nullptr;
+      if (!env.vars_scope_stack.empty()) {
+        auto it = env.vars_scope_stack.back().find(stmt->name);
+        if (it != env.vars_scope_stack.back().end())
+          slot = dyn_cast<AllocaInst>(it->second);
       }
-      Value* init_val = emit_expr(env, stmt->init.get());
-      if (!init_val) return false;
-      B.CreateStore(init_val, slot);
+      if (slot) {
+        Value* init_val = emit_expr(env, stmt->init.get());
+        if (!init_val) {
+          if (s_codegen_error.empty())
+            s_codegen_error = "let '" + stmt->name + "': init expression failed";
+          return false;
+        }
+        Type* alloc_ty = slot->getAllocatedType();
+        if (init_val->getType() != alloc_ty) {
+          if (alloc_ty == B.getDoubleTy() && init_val->getType() == B.getInt64Ty())
+            init_val = B.CreateSIToFP(init_val, B.getDoubleTy());
+          else if (alloc_ty == B.getInt64Ty() && init_val->getType() == B.getDoubleTy())
+            init_val = B.CreateFPToSI(init_val, B.getInt64Ty());
+          else if (alloc_ty->isPointerTy() && init_val->getType()->isPointerTy())
+            init_val = B.CreatePointerCast(init_val, alloc_ty);
+          else {
+            if (s_codegen_error.empty())
+              s_codegen_error = "let '" + stmt->name + "': type mismatch between init and slot";
+            return false;
+          }
+        }
+        B.CreateStore(init_val, slot);
+      } else {
+        Type* slot_ty = (let_ty != FfiType::Void) ? ffi_type_to_llvm(let_ty, ctx, B) : nullptr;
+        if (slot_ty) {
+          slot = B.CreateAlloca(slot_ty, nullptr, stmt->name);
+          env.vars_scope_stack.back()[stmt->name] = slot;
+        } else {
+          Value* init_val = emit_expr(env, stmt->init.get());
+          if (!init_val) {
+            if (s_codegen_error.empty())
+              s_codegen_error = "let '" + stmt->name + "': init expression failed";
+            return false;
+          }
+          slot = B.CreateAlloca(init_val->getType(), nullptr, stmt->name);
+          env.vars_scope_stack.back()[stmt->name] = slot;
+          B.CreateStore(init_val, slot);
+          FfiType elem_ty = array_element_type_from_expr(stmt->init.get(), env);
+          if (elem_ty != FfiType::Void) {
+            env.array_element_scope_stack.back()[stmt->name] = elem_ty;
+          } else if (stmt->init->kind == Expr::Kind::LoadField && env.layout_map) {
+            Expr* e = stmt->init.get();
+            auto it = env.layout_map->find(e->load_field_struct);
+            if (it != env.layout_map->end()) {
+              for (const auto& f : it->second.fields)
+                if (f.first == e->load_field_field && f.second.type == FfiType::Ptr) {
+                  env.array_element_scope_stack.back()[stmt->name] = FfiType::Ptr;
+                  break;
+                }
+            }
+          } else if (stmt->init->kind == Expr::Kind::Call && init_val->getType()->isPointerTy())
+            env.array_element_scope_stack.back()[stmt->name] = FfiType::Ptr;
+          return true;
+        }
+        Value* init_val = emit_expr(env, stmt->init.get());
+        if (!init_val) {
+          if (s_codegen_error.empty())
+            s_codegen_error = "let '" + stmt->name + "': init expression failed";
+          return false;
+        }
+        B.CreateStore(init_val, slot);
+      }
       if (let_ty == FfiType::Ptr) {
         FnPtrSig sig;
         if (codegen_lookup_fnptr_sig(env, stmt->init.get(), &sig))
@@ -1358,7 +1458,11 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
         FfiType elem_ty = array_element_type_from_expr(base_expr, env);
         if (elem_ty == FfiType::Void) elem_ty = FfiType::I64;
         Function* rt_panic_fn = env.module->getFunction("rt_panic");
-        if (!rt_panic_fn) return false;
+        if (!rt_panic_fn) {
+          if (s_codegen_error.empty())
+            s_codegen_error = "assign to array element: rt_panic not found in module";
+          return false;
+        }
         Value* oob = B.CreateOr(
           B.CreateICmpSLT(index_val, B.getInt64(0)),
           B.CreateICmpSGE(index_val, len), "assign.oob");
@@ -1400,19 +1504,36 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
       env.fnptr_scope_stack.push_back({});
       if (stmt->for_init) {
         if (!emit_stmt(env, def, fn, stmt->for_init.get())) {
+          if (s_codegen_error.empty())
+            s_codegen_error = "for loop: init statement failed";
           env.vars_scope_stack.pop_back();
           env.array_element_scope_stack.pop_back();
           env.fnptr_scope_stack.pop_back();
           return false;
         }
       }
+      std::string for_init_name;
+      if (stmt->for_init && stmt->for_init->kind == Stmt::Kind::Let)
+        for_init_name = stmt->for_init->name;
+      std::unordered_map<std::string, FfiType> hoisted;
+      collect_loop_body_let_types(stmt->body, env.program, env.var_types, env, for_init_name, hoisted);
+      BasicBlock* preheader_bb = BasicBlock::Create(ctx, "for.preheader", fn);
       BasicBlock* cond_bb = BasicBlock::Create(ctx, "for.cond", fn);
       BasicBlock* body_bb = BasicBlock::Create(ctx, "for.body", fn);
       BasicBlock* exit_bb = BasicBlock::Create(ctx, "for.exit", fn);
+      B.CreateBr(preheader_bb);
+      B.SetInsertPoint(preheader_bb);
+      for (const auto& p : hoisted) {
+        Type* ty = ffi_type_to_llvm(p.second, ctx, B);
+        AllocaInst* a = B.CreateAlloca(ty, nullptr, p.first + ".loop");
+        env.vars_scope_stack.back()[p.first] = a;
+      }
       B.CreateBr(cond_bb);
       B.SetInsertPoint(cond_bb);
       Value* cond_val = emit_expr(env, stmt->cond.get());
       if (!cond_val) {
+        if (s_codegen_error.empty())
+          s_codegen_error = "for loop: condition expression failed";
         env.vars_scope_stack.pop_back();
         env.array_element_scope_stack.pop_back();
         env.fnptr_scope_stack.pop_back();
@@ -1424,6 +1545,8 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
         else if (cond_val->getType() == B.getDoubleTy())
           cond_val = B.CreateFCmpONE(cond_val, ConstantFP::get(B.getDoubleTy(), 0.0), "for.cond");
         else {
+          if (s_codegen_error.empty())
+            s_codegen_error = "for loop: condition must be i64, f64, or bool";
           env.vars_scope_stack.pop_back();
           env.array_element_scope_stack.pop_back();
           env.fnptr_scope_stack.pop_back();
@@ -1433,9 +1556,23 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
       B.CreateCondBr(cond_val, body_bb, exit_bb);
       B.SetInsertPoint(body_bb);
       for (size_t bi = 0; bi < stmt->body.size(); ++bi) {
-        if (!emit_stmt(env, def, fn, stmt->body[bi].get())) {
-          if (s_codegen_error.empty())
-            s_codegen_error = "inside for loop, body statement at index " + std::to_string(bi) + " failed";
+        Stmt* body_stmt = stmt->body[bi].get();
+        if (!emit_stmt(env, def, fn, body_stmt)) {
+          if (s_codegen_error.empty()) {
+            const char* kind_str = "statement";
+            if (body_stmt) {
+              switch (body_stmt->kind) {
+                case Stmt::Kind::Let: kind_str = "let"; break;
+                case Stmt::Kind::Assign: kind_str = "assign"; break;
+                case Stmt::Kind::Expr: kind_str = "expr"; break;
+                case Stmt::Kind::For: kind_str = "for"; break;
+                case Stmt::Kind::If: kind_str = "if"; break;
+                case Stmt::Kind::Return: kind_str = "return"; break;
+              }
+            }
+            s_codegen_error = "inside for loop, body " + std::string(kind_str) + " at index " + std::to_string(bi) + " failed (no detail)";
+          } else
+            s_codegen_error = "inside for loop, body statement at index " + std::to_string(bi) + ": " + s_codegen_error;
           env.vars_scope_stack.pop_back();
           env.array_element_scope_stack.pop_back();
           env.fnptr_scope_stack.pop_back();
@@ -1458,6 +1595,8 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
       return true;
     }
   }
+  if (stmt && s_codegen_error.empty())
+    s_codegen_error = "unknown or unsupported statement kind in emit_stmt";
   return false;
 }
 
@@ -1707,6 +1846,53 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
   return module;
 }
 
+struct JitThreadArgs {
+  void (*entry)();
+  std::string* error_out;
+};
+
+static void* jit_thread_main(void* p) {
+  auto* args = static_cast<JitThreadArgs*>(p);
+  try {
+    args->entry();
+  } catch (const std::exception& e) {
+    if (args->error_out) *args->error_out = e.what();
+  } catch (...) {
+    if (args->error_out) *args->error_out = "unknown exception from JIT entry";
+  }
+  return nullptr;
+}
+
+static const size_t kJitStackBytes = 64ULL * 1024ULL * 1024ULL;
+
+static bool run_with_big_stack(void (*entry)(), size_t stack_bytes, std::string* err) {
+  stack_bytes = std::max(stack_bytes, static_cast<size_t>(PTHREAD_STACK_MIN));
+  pthread_attr_t attr;
+  if (pthread_attr_init(&attr) != 0) {
+    if (err) *err = "pthread_attr_init failed";
+    return false;
+  }
+  if (pthread_attr_setstacksize(&attr, stack_bytes) != 0) {
+    if (err) *err = "pthread_attr_setstacksize failed";
+    pthread_attr_destroy(&attr);
+    return false;
+  }
+  pthread_t t;
+  JitThreadArgs args{entry, err};
+  if (pthread_create(&t, &attr, &jit_thread_main, &args) != 0) {
+    if (err) *err = "pthread_create failed";
+    pthread_attr_destroy(&attr);
+    return false;
+  }
+  pthread_attr_destroy(&attr);
+  void* ret = nullptr;
+  if (pthread_join(t, &ret) != 0) {
+    if (err) *err = "pthread_join failed";
+    return false;
+  }
+  return true;
+}
+
 CodegenResult run_jit(std::unique_ptr<llvm::Module> module,
                       std::unique_ptr<llvm::LLVMContext> ctx) {
   CodegenResult r;
@@ -1754,6 +1940,8 @@ CodegenResult run_jit(std::unique_ptr<llvm::Module> module,
       !add_sym("rt_open") || !add_sym("rt_close") || !add_sym("rt_read_line_file") ||
       !add_sym("rt_write_file_i64") || !add_sym("rt_write_file_f64") || !add_sym("rt_write_file_ptr") ||
       !add_sym("rt_eof_file") || !add_sym("rt_line_count_file") ||
+      !add_sym("rt_value_alloc_inc") || !add_sym("rt_value_free_inc") ||
+      !add_sym("rt_value_alloc_count") || !add_sym("rt_value_free_count") ||
       !add_sym("rt_dlopen") || !add_sym("rt_dlsym") || !add_sym("rt_dlerror_last") ||
       !add_sym("rt_ffi_sig_create") || !add_sym("rt_ffi_call") || !add_sym("rt_ffi_error_last")) {
     r.error = "runtime symbols not found (link runtime or use dlsym)";
@@ -1781,7 +1969,10 @@ CodegenResult run_jit(std::unique_ptr<llvm::Module> module,
   }
   using MainFn = void();
   auto entry = symOrErr->template toPtr<MainFn>();
-  entry();
+  if (!run_with_big_stack(entry, kJitStackBytes, &r.error)) {
+    if (r.error.empty()) r.error = "failed to run JIT entry on big-stack thread";
+    return r;
+  }
   r.ok = true;
   return r;
 }
