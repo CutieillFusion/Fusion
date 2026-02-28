@@ -152,18 +152,19 @@ struct Stmt {
   enum class Kind { Return, Let, Expr, If, For, Assign };
   Kind kind = Kind::Return;
   ExprPtr expr;       // for Return, ExprStmt, Assign (LHS target)
-  std::string name;   // for Let, For (loop_var)
+  std::string name;   // for Let
   ExprPtr init;       // for Let (init), Assign (RHS value)
-  ExprPtr cond;       // for If
+  ExprPtr cond;       // for If, For
   std::vector<StmtPtr> then_body;  // for If
   std::vector<StmtPtr> else_body;   // for If
-  ExprPtr iterable;   // for For (array expression)
+  StmtPtr for_init;   // for For (Let or Assign, optional)
+  StmtPtr for_update; // for For (Assign, optional)
   std::vector<StmtPtr> body;        // for For
   static StmtPtr make_return(ExprPtr expr);
   static StmtPtr make_let(std::string name, ExprPtr init);
   static StmtPtr make_expr(ExprPtr expr);
   static StmtPtr make_if(ExprPtr cond, std::vector<StmtPtr> then_body, std::vector<StmtPtr> else_body);
-  static StmtPtr make_for(std::string loop_var, ExprPtr iterable, std::vector<StmtPtr> body);
+  static StmtPtr make_for(StmtPtr init, ExprPtr cond, StmtPtr update, std::vector<StmtPtr> body);
   static StmtPtr make_assign(ExprPtr target, ExprPtr value);
 
   /** Deep copy for multifile merge. */

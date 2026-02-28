@@ -6,6 +6,16 @@ export struct Value {
   backward: ptr;
 };
 
+extern lib "libc.so.6" {
+    fn free(pointer: ptr) -> void;
+};
+
+export fn free_value(v: ptr) -> void {
+    let prev = load_field(v, Value, prev);
+    free(prev);
+    free(v);
+}
+
 export fn alloc_value(data: f64, prev: ptr, children_count: i64, backward: ptr) -> ptr {
   let value = alloc(Value);
   store_field(value, Value, data, data);
@@ -75,6 +85,7 @@ export fn relu_forward(x: ptr) -> ptr {
     return value;
 }
 
+# Vanilla ReLU backward (micrograd): pass grad when output > 0, else 0.
 fn relu_backward(out: ptr) -> void {
     let prev = load_field(out, Value, prev);
     let x = prev[0] as ptr;

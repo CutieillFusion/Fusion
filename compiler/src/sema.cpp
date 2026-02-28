@@ -70,20 +70,11 @@ static bool is_alloc_type(const std::string& name, Program* program) {
 
 static FfiType expr_type(Expr* expr, SemaContext* ctx);  // returns type of expression for type-checking
 
-/* Returns element type if expr is an array (ptr from alloc_array/range or VarRef to such); otherwise FfiType::Void. */
+/* Returns element type if expr is an array (ptr from alloc_array or VarRef to such); otherwise FfiType::Void. */
 static FfiType get_array_element_type(Expr* expr, SemaContext* ctx) {
   if (!expr || !ctx) return FfiType::Void;
   if (expr->kind == Expr::Kind::VarRef) {
     return array_elem_lookup(ctx, expr->var_name);
-  }
-  if (expr->kind == Expr::Kind::Call && expr->callee == "range") {
-    if (!expr->call_type_arg.empty()) {
-      if (expr->call_type_arg == "i32") return FfiType::I32;
-      if (expr->call_type_arg == "i64") return FfiType::I64;
-      if (expr->call_type_arg == "f32") return FfiType::F32;
-      if (expr->call_type_arg == "f64") return FfiType::F64;
-    }
-    return FfiType::I64;
   }
   if (expr->kind == Expr::Kind::AllocArray) {
     const std::string& t = expr->var_name;
@@ -345,17 +336,15 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
         }
         return true;
       }
-      if (expr->callee == "range") {
-        if (expr->args.size() != 1 && expr->args.size() != 2) {
-          ctx.err->message = "range expects 1 or 2 arguments";
+      if (expr->callee == "len") {
+        if (expr->args.size() != 1) {
+          ctx.err->message = "len expects 1 argument";
           return false;
         }
-        for (size_t j = 0; j < expr->args.size(); ++j) {
-          if (!check_expr(expr->args[j].get(), ctx)) return false;
-          if (expr_type(expr->args[j].get(), &ctx) != FfiType::I64) {
-            ctx.err->message = "range arguments must be i64";
-            return false;
-          }
+        if (!check_expr(expr->args[0].get(), ctx)) return false;
+        if (expr_type(expr->args[0].get(), &ctx) != FfiType::Ptr) {
+          ctx.err->message = "len expects a pointer (array)";
+          return false;
         }
         return true;
       }
@@ -587,7 +576,7 @@ static FfiType expr_type(Expr* expr, SemaContext* ctx) {
         return FfiType::Void;
       }
       if (expr->callee == "print") return FfiType::Void;
-      if (expr->callee == "range") return FfiType::Ptr;
+      if (expr->callee == "len") return FfiType::I64;
       if (expr->callee == "read_line" || expr->callee == "read_line_file") return FfiType::Ptr;
       if (expr->callee == "to_str") return FfiType::Ptr;
       if (expr->callee == "from_str") {
@@ -749,26 +738,51 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
       ctx.fnptr_scope_stack.pop_back();
       return true;
     case Stmt::Kind::For: {
-      if (!stmt->iterable || !check_expr(stmt->iterable.get(), ctx)) return false;
-      FfiType elem_ty = get_array_element_type(stmt->iterable.get(), &ctx);
-      if (elem_ty == FfiType::Void) {
-        ctx.err->message = "for-in requires an array (e.g. range(n) or alloc_array)";
-        return false;
-      }
+      if (!stmt->cond) return false;
       ctx.var_scope_stack.push_back({});
       ctx.array_element_scope_stack.push_back({});
       ctx.fnptr_scope_stack.push_back({});
-      if (ctx.var_scope_stack.back().count(stmt->name)) {
-        ctx.err->message = def
-          ? "duplicate variable '" + stmt->name + "' in function '" + def->name + "'"
-          : "duplicate variable '" + stmt->name + "'";
+      if (stmt->for_init) {
+        if (stmt->for_init->kind == Stmt::Kind::Let) {
+          if (!check_expr(stmt->for_init->init.get(), ctx)) {
+            ctx.var_scope_stack.pop_back();
+            ctx.array_element_scope_stack.pop_back();
+            ctx.fnptr_scope_stack.pop_back();
+            return false;
+          }
+          if (ctx.var_scope_stack.back().count(stmt->for_init->name)) {
+            ctx.err->message = def
+              ? "duplicate variable '" + stmt->for_init->name + "' in function '" + def->name + "'"
+              : "duplicate variable '" + stmt->for_init->name + "'";
+            ctx.var_scope_stack.pop_back();
+            ctx.array_element_scope_stack.pop_back();
+            ctx.fnptr_scope_stack.pop_back();
+            return false;
+          }
+          ctx.var_scope_stack.back()[stmt->for_init->name] = expr_type(stmt->for_init->init.get(), &ctx);
+        } else if (stmt->for_init->kind == Stmt::Kind::Assign) {
+          if (!check_stmt(ctx, def, stmt->for_init.get())) {
+            ctx.var_scope_stack.pop_back();
+            ctx.array_element_scope_stack.pop_back();
+            ctx.fnptr_scope_stack.pop_back();
+            return false;
+          }
+        }
+      }
+      if (!check_expr(stmt->cond.get(), ctx)) {
         ctx.var_scope_stack.pop_back();
         ctx.array_element_scope_stack.pop_back();
         ctx.fnptr_scope_stack.pop_back();
         return false;
       }
-      ctx.var_scope_stack.back()[stmt->name] = elem_ty;
-      ctx.array_element_scope_stack.back()[stmt->name] = elem_ty;
+      if (stmt->for_update) {
+        if (stmt->for_update->kind != Stmt::Kind::Assign || !check_stmt(ctx, def, stmt->for_update.get())) {
+          ctx.var_scope_stack.pop_back();
+          ctx.array_element_scope_stack.pop_back();
+          ctx.fnptr_scope_stack.pop_back();
+          return false;
+        }
+      }
       for (StmtPtr& s : stmt->body)
         if (!check_stmt(ctx, def, s.get())) {
           ctx.var_scope_stack.pop_back();

@@ -31,8 +31,12 @@ export fn create_moons(n: i64, sigma: f64) -> ptr {
     let moons = alloc_array(ptr, n * 2);
     let pi = 3.14159265358979;
 
-    for i in range(n, f64) {
-        let t = pi * i / (n - 1.0);
+    for (let i = 0; i < n; i = i + 1) {
+        let i_f64 = i as f64;
+        let t = 0.0;
+        if (n > 1) {
+            t = pi * i_f64 / (n - 1.0);
+        }
         let x = 0.0;
         let y = 0.0;
         let class = rand_0_1();
@@ -54,8 +58,14 @@ export fn create_moons(n: i64, sigma: f64) -> ptr {
         let x_n = x + sigma * z1;
         let y_n = y + sigma * z2;
 
-        moons[i as i64] = alloc_point(x_n, y_n, class);
+        moons[i] = alloc_point(x_n, y_n, class);
     }
 
     return moons;
 }
+
+let points = create_moons(1, 0.1);
+print("points[0]:");
+print(load_field(points[0], Point, x));
+print(load_field(points[0], Point, y));
+print(load_field(points[0], Point, class));

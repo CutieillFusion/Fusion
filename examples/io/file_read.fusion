@@ -15,7 +15,7 @@ print(total_lines);
 # Now open again and read each line.
 let f = open(path, mode);
 
-for i in range(total_lines) {
+for (let i = 0; i < total_lines; i = i + 1) {
   let line = read_line_file(f);
   print(line);
 }

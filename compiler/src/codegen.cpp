@@ -106,7 +106,7 @@ static FfiType expr_type(Expr* expr, Program* program,
       }
       if (expr->callee == "call") return FfiType::Void;
       if (expr->callee == "print") return FfiType::Void;
-      if (expr->callee == "range") return FfiType::Ptr;
+      if (expr->callee == "len") return FfiType::I64;
       if (expr->callee == "read_line" || expr->callee == "read_line_file" || expr->callee == "to_str") return FfiType::Ptr;
       if (expr->callee == "from_str") {
         if (expr->call_type_arg == "i64") return FfiType::I64;
@@ -252,15 +252,6 @@ static FfiType array_element_type_from_expr(Expr* expr, CodegenEnv& env) {
   if (expr->kind == Expr::Kind::VarRef) {
     return array_elem_lookup(env, expr->var_name);
   }
-  if (expr->kind == Expr::Kind::Call && expr->callee == "range") {
-    if (!expr->call_type_arg.empty()) {
-      if (expr->call_type_arg == "i32") return FfiType::I32;
-      if (expr->call_type_arg == "i64") return FfiType::I64;
-      if (expr->call_type_arg == "f32") return FfiType::F32;
-      if (expr->call_type_arg == "f64") return FfiType::F64;
-    }
-    return FfiType::I64;
-  }
   if (expr->kind == Expr::Kind::AllocArray) {
     const std::string& t = expr->var_name;
     if (t == "i32") return FfiType::I32;
@@ -323,7 +314,11 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
   switch (expr->kind) {
     case Expr::Kind::VarRef: {
       Value* alloca_val = vars_lookup(env, expr->var_name);
-      if (!alloca_val) return nullptr;
+      if (!alloca_val) {
+        if (s_codegen_error.empty())
+          s_codegen_error = "variable '" + expr->var_name + "' not found";
+        return nullptr;
+      }
       AllocaInst* alloca = cast<AllocaInst>(alloca_val);
       return B.CreateLoad(alloca->getAllocatedType(), alloca, expr->var_name + ".load");
     }
@@ -545,65 +540,13 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         if (!fn) return nullptr;
         return B.CreateCall(fn, h, "line_count_file");
       }
-      if (expr->callee == "range") {
-        FfiType elem_ty = FfiType::I64;
-        if (!expr->call_type_arg.empty()) {
-          if (expr->call_type_arg == "i32") elem_ty = FfiType::I32;
-          else if (expr->call_type_arg == "f32") elem_ty = FfiType::F32;
-          else if (expr->call_type_arg == "f64") elem_ty = FfiType::F64;
-        }
-        size_t elem_size = (elem_ty == FfiType::I32 || elem_ty == FfiType::F32) ? 4 : 8;
-        Value* start_val = expr->args.size() >= 1 ? emit_expr(env, expr->args[0].get()) : nullptr;
-        Value* end_val = expr->args.size() == 2 ? emit_expr(env, expr->args[1].get()) : nullptr;
-        if (!start_val) return nullptr;
-        if (start_val->getType() != B.getInt64Ty()) start_val = B.CreateIntCast(start_val, B.getInt64Ty(), true);
-        Value* n_val = start_val;
-        Value* start_i64 = B.getInt64(0);
-        if (end_val) {
-          if (end_val->getType() != B.getInt64Ty()) end_val = B.CreateIntCast(end_val, B.getInt64Ty(), true);
-          n_val = B.CreateSub(end_val, start_val, "range.n");
-          start_i64 = start_val;
-        }
-        Value* total = B.CreateAdd(B.getInt64(8), B.CreateMul(n_val, B.getInt64(elem_size)), "range.total");
-        Value* block = B.CreateAlloca(B.getInt8Ty(), total, "range");
-        Value* base = B.CreatePointerCast(block, PointerType::get(Type::getInt8Ty(ctx), 0));
+      if (expr->callee == "len") {
+        Value* base = emit_expr(env, expr->args[0].get());
+        if (!base) return nullptr;
+        Type* i8ptr_ty = PointerType::get(Type::getInt8Ty(ctx), 0);
+        if (base->getType() != i8ptr_ty) base = B.CreatePointerCast(base, i8ptr_ty);
         Value* len_ptr = B.CreatePointerCast(base, B.getInt64Ty()->getPointerTo());
-        B.CreateStore(n_val, len_ptr);
-        Function* cur_fn = B.GetInsertBlock()->getParent();
-        BasicBlock* loop_cond = BasicBlock::Create(ctx, "range.cond", cur_fn);
-        BasicBlock* loop_body = BasicBlock::Create(ctx, "range.body", cur_fn);
-        BasicBlock* loop_exit = BasicBlock::Create(ctx, "range.exit", cur_fn);
-        AllocaInst* i_alloca = B.CreateAlloca(B.getInt64Ty(), nullptr, "range.i");
-        B.CreateStore(B.getInt64(0), i_alloca);
-        B.CreateBr(loop_cond);
-        B.SetInsertPoint(loop_cond);
-        Value* i_val = B.CreateLoad(B.getInt64Ty(), i_alloca, "i");
-        Value* cond = B.CreateICmpSLT(i_val, n_val, "range.cond");
-        B.CreateCondBr(cond, loop_body, loop_exit);
-        B.SetInsertPoint(loop_body);
-        Value* val_to_store = end_val ? B.CreateAdd(start_i64, i_val, "range.val") : i_val;
-        Value* elem_offset = B.CreateAdd(B.getInt64(8), B.CreateMul(i_val, B.getInt64(elem_size)), "range.elem_off");
-        Value* elem_ptr = B.CreateGEP(B.getInt8Ty(), base, elem_offset);
-        if (elem_ty == FfiType::F64) {
-          Value* v = B.CreateSIToFP(val_to_store, B.getDoubleTy());
-          elem_ptr = B.CreatePointerCast(elem_ptr, B.getDoubleTy()->getPointerTo());
-          B.CreateStore(v, elem_ptr);
-        } else if (elem_ty == FfiType::F32) {
-          Value* v = B.CreateSIToFP(val_to_store, B.getFloatTy());
-          elem_ptr = B.CreatePointerCast(elem_ptr, B.getFloatTy()->getPointerTo());
-          B.CreateStore(v, elem_ptr);
-        } else if (elem_ty == FfiType::I32) {
-          Value* v = B.CreateTrunc(val_to_store, B.getInt32Ty());
-          elem_ptr = B.CreatePointerCast(elem_ptr, B.getInt32Ty()->getPointerTo());
-          B.CreateStore(v, elem_ptr);
-        } else {
-          elem_ptr = B.CreatePointerCast(elem_ptr, B.getInt64Ty()->getPointerTo());
-          B.CreateStore(val_to_store, elem_ptr);
-        }
-        B.CreateStore(B.CreateAdd(i_val, B.getInt64(1)), i_alloca);
-        B.CreateBr(loop_cond);
-        B.SetInsertPoint(loop_exit);
-        return base;
+        return B.CreateLoad(B.getInt64Ty(), len_ptr, "len");
       }
       /* User fn call */
       auto uf_it = env.user_fns.find(expr->callee);
@@ -612,7 +555,11 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         std::vector<Value*> args;
         for (size_t j = 0; j < expr->args.size(); ++j) {
           Value* arg_val = emit_expr(env, expr->args[j].get());
-          if (!arg_val) return nullptr;
+          if (!arg_val) {
+            if (s_codegen_error.empty())
+              s_codegen_error = "call to '" + expr->callee + "': argument " + std::to_string(j) + " failed";
+            return nullptr;
+          }
           Type* param_ty = fn->getArg(j)->getType();
           if (arg_val->getType() != param_ty) {
             if (param_ty == B.getDoubleTy() && arg_val->getType() == B.getInt64Ty())
@@ -621,8 +568,13 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
               arg_val = B.CreateFPToSI(arg_val, B.getInt64Ty());
             else if (param_ty->isPointerTy() && arg_val->getType()->isPointerTy())
               arg_val = B.CreatePointerCast(arg_val, param_ty);
-            else
+            else if (param_ty->isPointerTy() && arg_val->getType() == B.getInt64Ty())
+              arg_val = B.CreateIntToPtr(arg_val, param_ty);
+            else {
+              if (s_codegen_error.empty())
+                s_codegen_error = "call to '" + expr->callee + "': argument " + std::to_string(j) + " type mismatch";
               return nullptr;
+            }
           }
           args.push_back(arg_val);
         }
@@ -1253,10 +1205,18 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
       if (!stmt->expr || !stmt->init) return false;
       Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
       Value* val = emit_expr(env, stmt->init.get());
-      if (!val) return false;
+      if (!val) {
+        if (s_codegen_error.empty())
+          s_codegen_error = "assignment: right-hand side expression failed";
+        return false;
+      }
       if (stmt->expr->kind == Expr::Kind::VarRef) {
         Value* alloca_val = vars_lookup(env, stmt->expr->var_name);
-        if (!alloca_val) return false;
+        if (!alloca_val) {
+          if (s_codegen_error.empty())
+            s_codegen_error = "assignment to unknown variable '" + stmt->expr->var_name + "'";
+          return false;
+        }
         AllocaInst* alloca = cast<AllocaInst>(alloca_val);
         if (val->getType() != alloca->getAllocatedType()) {
           if (alloca->getAllocatedType() == B.getDoubleTy() && val->getType() == B.getInt64Ty())
@@ -1267,8 +1227,11 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
             val = B.CreatePointerCast(val, i8ptr);
           else if (alloca->getAllocatedType() == B.getInt64Ty() && val->getType()->isPointerTy())
             val = B.CreatePtrToInt(val, B.getInt64Ty());
-          else
+          else {
+            if (s_codegen_error.empty())
+              s_codegen_error = "assignment to '" + stmt->expr->var_name + "': type mismatch";
             return false;
+          }
         }
         B.CreateStore(val, alloca);
         if (alloca->getAllocatedType() == i8ptr && !env.fnptr_scope_stack.empty()) {
@@ -1282,7 +1245,11 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
         Expr* base_expr = stmt->expr->left.get();
         Value* base = emit_expr(env, base_expr);
         Value* index_val = emit_expr(env, stmt->expr->right.get());
-        if (!base || !index_val) return false;
+        if (!base || !index_val) {
+          if (s_codegen_error.empty())
+            s_codegen_error = "assign to array element: base or index expression failed";
+          return false;
+        }
         if (base->getType() != i8ptr) base = B.CreatePointerCast(base, i8ptr);
         if (index_val->getType() != B.getInt64Ty())
           index_val = B.CreateIntCast(index_val, B.getInt64Ty(), true);
@@ -1328,62 +1295,67 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
       return false;
     }
     case Stmt::Kind::For: {
-      if (!stmt->iterable) return false;
-      Value* base = emit_expr(env, stmt->iterable.get());
-      if (!base) return false;
-      Type* i8ptr_ty = PointerType::get(Type::getInt8Ty(ctx), 0);
-      if (base->getType() != i8ptr_ty) base = B.CreatePointerCast(base, i8ptr_ty);
-      Value* len_ptr = B.CreatePointerCast(base, B.getInt64Ty()->getPointerTo());
-      Value* len = B.CreateLoad(B.getInt64Ty(), len_ptr, "for.len");
-      FfiType elem_ty = array_element_type_from_expr(stmt->iterable.get(), env);
-      if (elem_ty == FfiType::Void) elem_ty = FfiType::I64;
-      size_t elem_size = (elem_ty == FfiType::I32 || elem_ty == FfiType::F32) ? 4 : 8;
-      Type* elem_llvm_ty = ffi_type_to_llvm(elem_ty, ctx, B);
-      AllocaInst* index_alloca = B.CreateAlloca(B.getInt64Ty(), nullptr, "for.idx");
-      AllocaInst* loop_var_alloca = B.CreateAlloca(elem_llvm_ty, nullptr, stmt->name);
-      B.CreateStore(B.getInt64(0), index_alloca);
+      if (!stmt->cond) return false;
+      env.vars_scope_stack.push_back({});
+      env.array_element_scope_stack.push_back({});
+      env.fnptr_scope_stack.push_back({});
+      if (stmt->for_init) {
+        if (!emit_stmt(env, def, fn, stmt->for_init.get())) {
+          env.vars_scope_stack.pop_back();
+          env.array_element_scope_stack.pop_back();
+          env.fnptr_scope_stack.pop_back();
+          return false;
+        }
+      }
       BasicBlock* cond_bb = BasicBlock::Create(ctx, "for.cond", fn);
       BasicBlock* body_bb = BasicBlock::Create(ctx, "for.body", fn);
       BasicBlock* exit_bb = BasicBlock::Create(ctx, "for.exit", fn);
       B.CreateBr(cond_bb);
       B.SetInsertPoint(cond_bb);
-      Value* idx = B.CreateLoad(B.getInt64Ty(), index_alloca, "idx");
-      Value* cond = B.CreateICmpSLT(idx, len, "for.cond");
-      B.CreateCondBr(cond, body_bb, exit_bb);
+      Value* cond_val = emit_expr(env, stmt->cond.get());
+      if (!cond_val) {
+        env.vars_scope_stack.pop_back();
+        env.array_element_scope_stack.pop_back();
+        env.fnptr_scope_stack.pop_back();
+        return false;
+      }
+      if (cond_val->getType() != B.getInt1Ty()) {
+        if (cond_val->getType() == B.getInt64Ty())
+          cond_val = B.CreateICmpNE(cond_val, B.getInt64(0), "for.cond");
+        else if (cond_val->getType() == B.getDoubleTy())
+          cond_val = B.CreateFCmpONE(cond_val, ConstantFP::get(B.getDoubleTy(), 0.0), "for.cond");
+        else {
+          env.vars_scope_stack.pop_back();
+          env.array_element_scope_stack.pop_back();
+          env.fnptr_scope_stack.pop_back();
+          return false;
+        }
+      }
+      B.CreateCondBr(cond_val, body_bb, exit_bb);
       B.SetInsertPoint(body_bb);
-      Value* elem_offset = B.CreateAdd(B.getInt64(8), B.CreateMul(idx, B.getInt64(elem_size)), "for.off");
-      Value* elem_ptr = B.CreateGEP(B.getInt8Ty(), base, elem_offset);
-      if (elem_ty == FfiType::F64) {
-        elem_ptr = B.CreatePointerCast(elem_ptr, B.getDoubleTy()->getPointerTo());
-        Value* loaded = B.CreateLoad(B.getDoubleTy(), elem_ptr);
-        B.CreateStore(loaded, loop_var_alloca);
-      } else if (elem_ty == FfiType::Ptr) {
-        elem_ptr = B.CreatePointerCast(elem_ptr, B.getInt64Ty()->getPointerTo());
-        Value* loaded = B.CreateLoad(B.getInt64Ty(), elem_ptr);
-        B.CreateStore(B.CreateIntToPtr(loaded, i8ptr_ty), loop_var_alloca);
-      } else if (elem_ty == FfiType::I32) {
-        elem_ptr = B.CreatePointerCast(elem_ptr, B.getInt32Ty()->getPointerTo());
-        Value* loaded = B.CreateLoad(B.getInt32Ty(), elem_ptr);
-        B.CreateStore(loaded, loop_var_alloca);
-      } else {
-        elem_ptr = B.CreatePointerCast(elem_ptr, B.getInt64Ty()->getPointerTo());
-        Value* loaded = B.CreateLoad(B.getInt64Ty(), elem_ptr);
-        B.CreateStore(loaded, loop_var_alloca);
+      for (size_t bi = 0; bi < stmt->body.size(); ++bi) {
+        if (!emit_stmt(env, def, fn, stmt->body[bi].get())) {
+          if (s_codegen_error.empty())
+            s_codegen_error = "inside for loop, body statement at index " + std::to_string(bi) + " failed";
+          env.vars_scope_stack.pop_back();
+          env.array_element_scope_stack.pop_back();
+          env.fnptr_scope_stack.pop_back();
+          return false;
+        }
       }
-      env.vars_scope_stack.push_back({});
-      env.array_element_scope_stack.push_back({});
-      env.fnptr_scope_stack.push_back({});
-      env.vars_scope_stack.back()[stmt->name] = loop_var_alloca;
-      env.array_element_scope_stack.back()[stmt->name] = elem_ty;
-      for (StmtPtr& s : stmt->body) {
-        if (!emit_stmt(env, def, fn, s.get())) return false;
+      if (stmt->for_update) {
+        if (!emit_stmt(env, def, fn, stmt->for_update.get())) {
+          env.vars_scope_stack.pop_back();
+          env.array_element_scope_stack.pop_back();
+          env.fnptr_scope_stack.pop_back();
+          return false;
+        }
       }
+      B.CreateBr(cond_bb);
+      B.SetInsertPoint(exit_bb);
       env.vars_scope_stack.pop_back();
       env.array_element_scope_stack.pop_back();
       env.fnptr_scope_stack.pop_back();
-      B.CreateStore(B.CreateAdd(idx, B.getInt64(1)), index_alloca);
-      B.CreateBr(cond_bb);
-      B.SetInsertPoint(exit_bb);
       return true;
     }
   }
@@ -1567,7 +1539,8 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
     env.fnptr_scope_stack.push_back({});
     FnDef dummy_main;
     dummy_main.return_type = FfiType::Void;
-    for (const TopLevelItem& item : program->top_level) {
+    for (size_t idx = 0; idx < program->top_level.size(); ++idx) {
+      const TopLevelItem& item = program->top_level[idx];
       if (const LetBinding* binding = std::get_if<LetBinding>(&item)) {
         FfiType ty = binding_type(*binding, program);
         Value* init_val = emit_expr(env, binding->init.get());
@@ -1604,8 +1577,20 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
           env.array_element_scope_stack.back()[binding->name] = FfiType::Ptr;
       } else if (const StmtPtr* stmt = std::get_if<StmtPtr>(&item)) {
         if (!emit_stmt(env, dummy_main, main_fn, stmt->get())) {
-          if (s_codegen_error.empty())
-            s_codegen_error = "top-level if/statement emit failed";
+          if (s_codegen_error.empty()) {
+            const Stmt* s = stmt->get();
+            const char* kind_str = "statement";
+            switch (s->kind) {
+              case Stmt::Kind::For: kind_str = "for"; break;
+              case Stmt::Kind::If: kind_str = "if"; break;
+              case Stmt::Kind::Let: kind_str = "let"; break;
+              case Stmt::Kind::Expr: kind_str = "expr"; break;
+              case Stmt::Kind::Assign: kind_str = "assign"; break;
+              case Stmt::Kind::Return: kind_str = "return"; break;
+            }
+            s_codegen_error = "top-level " + std::string(kind_str) + " statement";
+            s_codegen_error += " at index " + std::to_string(idx) + " emit failed";
+          }
           return nullptr;
         }
       } else {

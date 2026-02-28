@@ -21,11 +21,11 @@ import lib "value" {
 
 import lib "autograd" {
 	fn backward(root: ptr) -> void;
+	fn backward_with_free(root: ptr, weight_ptrs: ptr, weight_count: i64) -> void;
 }
 
 extern lib "libc.so.6" {
 	fn rand() -> i32;
-	fn free(p: ptr) -> void;
 };
 
 fn rand_uniform_neg1_1() -> f64 {
@@ -34,87 +34,113 @@ fn rand_uniform_neg1_1() -> f64 {
 	return 2.0 * (r / 2147483647.0) - 1.0;
 }
 
-let n_moons = 200;
+# Scale init so ReLUs don't all go dead after first update (ReLU grad is 0 when pre-act <= 0).
+let init_scale = 0.5;
+
+let n_moons = 500;
 let moons = create_moons(n_moons, 0.1);
-let batch_size = 32;
+let batch_size = 500;
 
 let input_size = 2;
-let hidden_size = 2;
+let hidden_size = 3;
 let output_size = 1;
-let num_epochs = 2;
-let learning_rate = 0.01;
+let num_epochs = 100;
+# Keep LR small to avoid overshooting: hinge + ReLU can collapse to constant predictor if steps are too large.
+let learning_rate = 0.001;
+# Set to 1 to print gradients after each backward (for debugging stuck training).
+let DEBUGGING = 0;
 
 let W1 = alloc_array(ptr, input_size * hidden_size);
 let W2 = alloc_array(ptr, hidden_size * output_size);
 let b1 = alloc_array(ptr, hidden_size);
 let b2 = alloc_array(ptr, output_size);
 
-for i in range(input_size, i64) {
-	for j in range(hidden_size, i64) {
-		W1[i * hidden_size + j] = make_leaf(rand_uniform_neg1_1());
+for (let i = 0; i < input_size; i = i + 1) {
+	for (let j = 0; j < hidden_size; j = j + 1) {
+		W1[i * hidden_size + j] = make_leaf(init_scale * rand_uniform_neg1_1());
 	}
 }
 
-for i in range(hidden_size, i64) {
-	for j in range(output_size, i64) {
-		W2[i * output_size + j] = make_leaf(rand_uniform_neg1_1());
+for (let i = 0; i < hidden_size; i = i + 1) {
+	for (let j = 0; j < output_size; j = j + 1) {
+		W2[i * output_size + j] = make_leaf(init_scale * rand_uniform_neg1_1());
 	}
 }
 
-for i in range(hidden_size, i64) {
+for (let i = 0; i < hidden_size; i = i + 1) {
 	b1[i] = make_leaf(0.0);
 }
 
-for i in range(output_size, i64) {
+for (let i = 0; i < output_size; i = i + 1) {
 	b2[i] = make_leaf(0.0);
+}
+
+let num_weights = input_size * hidden_size + hidden_size * output_size + hidden_size + output_size;
+let weight_ptrs = alloc_array(ptr, num_weights);
+let k = 0;
+for (let i = 0; i < input_size; i = i + 1) {
+	for (let j = 0; j < hidden_size; j = j + 1) {
+		weight_ptrs[k] = W1[i * hidden_size + j];
+		k = k + 1;
+	}
+}
+for (let i = 0; i < hidden_size; i = i + 1) {
+	for (let j = 0; j < output_size; j = j + 1) {
+		weight_ptrs[k] = W2[i * output_size + j];
+		k = k + 1;
+	}
+}
+for (let i = 0; i < hidden_size; i = i + 1) {
+	weight_ptrs[k] = b1[i];
+	k = k + 1;
+}
+for (let i = 0; i < output_size; i = i + 1) {
+	weight_ptrs[k] = b2[i];
+	k = k + 1;
 }
 
 let X = alloc_array(ptr, input_size);
 let y = alloc_array(ptr, output_size);
-let X_batch = alloc_array(ptr, batch_size * 2);
-let y_batch = alloc_array(ptr, batch_size);
 
 let h1 = alloc_array(ptr, hidden_size);
 let h2 = alloc_array(ptr, output_size);
 let losses = alloc_array(ptr, output_size);
-for i in range(output_size, i64) {
+for (let i = 0; i < output_size; i = i + 1) {
 	losses[i] = make_leaf(0.0);
 }
 
-for epoch in range(num_epochs, i64) {
+for (let epoch = 0; epoch < num_epochs; epoch = epoch + 1) {
 	print("Epoch:");
 	print(epoch);
 
 	let running = make_leaf(0.0);
+	let running_correct = make_leaf(0.0);
 
-	for sample_idx in range(batch_size, i64) {
+	for (let sample_idx = 0; sample_idx < batch_size; sample_idx = sample_idx + 1) {
 		X[0] = make_leaf(load_field(moons[sample_idx], Point, x));
 		X[1] = make_leaf(load_field(moons[sample_idx], Point, y));
 		y[0] = make_leaf(load_field(moons[sample_idx], Point, class) as f64);
-		X_batch[sample_idx * 2] = X[0];
-		X_batch[sample_idx * 2 + 1] = X[1];
-		y_batch[sample_idx] = y[0];
 
 		# Forward layer 1: h1[j] = relu( sum_i X[i]*W1[i,j] + b1[j] )
-		for j in range(hidden_size, i64) {
+		for (let j = 0; j < hidden_size; j = j + 1) {
 			let acc = b1[j];
-			for i in range(input_size, i64) {
+			for (let i = 0; i < input_size; i = i + 1) {
 				acc = add_forward(acc, mul_forward(X[i], W1[i * hidden_size + j]));
 			}
 			h1[j] = relu_forward(acc);
 		}
 
-		# Forward layer 2: h2[j] = relu( sum_i h1[i]*W2[i,j] + b2[j] )
-		for j in range(output_size, i64) {
+		# Forward layer 2 (linear output, micrograd MLP): h2[j] = sum_i h1[i]*W2[i,j] + b2[j]
+		for (let j = 0; j < output_size; j = j + 1) {
 			let acc = b2[j];
-			for i in range(hidden_size, i64) {
+			for (let i = 0; i < hidden_size; i = i + 1) {
 				acc = add_forward(acc, mul_forward(h1[i], W2[i * output_size + j]));
 			}
-			h2[j] = relu_forward(acc);
+			h2[j] = acc;
 		}
 
 		# Loss: hinge loss relu(1.0 - target * pred)
-		for i in range(output_size, i64) {
+		for (let i = 0; i < output_size; i = i + 1) {
 			let one = make_leaf(1.0);
 			let neg_one = make_leaf(0.0 - 1.0);
 			let target_pred = mul_forward(y[i], h2[i]);
@@ -125,53 +151,87 @@ for epoch in range(num_epochs, i64) {
 
 		let sample_loss = losses[0];
 		running = add_forward(running, sample_loss);
+
+		# Accuracy: labels are -1 and 1; correct if pred and label have same sign
+		let pred_val = load_field(h2[0], Value, data);
+		let true_val = load_field(y[0], Value, data);
+		let correct_this = make_leaf(0.0);
+		if (pred_val > 0.0) {
+			if (true_val > 0.0) {
+				store_field(correct_this, Value, data, 1.0);
+			}
+		} else {
+			if (true_val <= 0.0) {
+				store_field(correct_this, Value, data, 1.0);
+			}
+		}
+		running_correct = add_forward(running_correct, correct_this);
 	}
 
 	store_field(running, Value, grad, 1.0);
-	backward(running);
 
-	for i in range(input_size, i64) {
-		for j in range(hidden_size, i64) {
+	let total_correct = load_field(running_correct, Value, data);
+
+	if (DEBUGGING > 0) {
+		print("running:");
+		print(load_field(running, Value, data));
+	}
+
+	backward_with_free(running, weight_ptrs, num_weights);
+
+	for (let i = 0; i < input_size; i = i + 1) {
+		for (let j = 0; j < hidden_size; j = j + 1) {
 			let w1_grad = load_field(W1[i * hidden_size + j], Value, grad);
 			let w1_data = load_field(W1[i * hidden_size + j], Value, data);
+			if (DEBUGGING > 0) {
+				print("w1_grad:");
+				print(w1_grad);
+			}
 			let new_data = w1_data - learning_rate * w1_grad;
 			store_field(W1[i * hidden_size + j], Value, data, new_data);
 			store_field(W1[i * hidden_size + j], Value, grad, 0.0);
 		}
 	}
 
-	for i in range(hidden_size, i64) {
-		for j in range(output_size, i64) {
+	for (let i = 0; i < hidden_size; i = i + 1) {
+		for (let j = 0; j < output_size; j = j + 1) {
 			let w2_grad = load_field(W2[i * output_size + j], Value, grad);
 			let w2_data = load_field(W2[i * output_size + j], Value, data);
+			if (DEBUGGING > 0) {
+				print("w2_grad:");
+				print(w2_grad);
+			}
 			let new_data = w2_data - learning_rate * w2_grad;
 			store_field(W2[i * output_size + j], Value, data, new_data);
 			store_field(W2[i * output_size + j], Value, grad, 0.0);
 		}
 	}
 
-	for i in range(hidden_size, i64) {
+	for (let i = 0; i < hidden_size; i = i + 1) {
 		let b1_grad = load_field(b1[i], Value, grad);
 		let b1_data = load_field(b1[i], Value, data);
+		if (DEBUGGING > 0) {
+			print("b1_grad:");
+			print(b1_grad);
+		}
 		let new_data = b1_data - learning_rate * b1_grad;
 		store_field(b1[i], Value, data, new_data);
 		store_field(b1[i], Value, grad, 0.0);
 	}
 
-	for i in range(output_size, i64) {
+	for (let i = 0; i < output_size; i = i + 1) {
 		let b2_grad = load_field(b2[i], Value, grad);
 		let b2_data = load_field(b2[i], Value, data);
+		if (DEBUGGING > 0) {
+			print("b2_grad:");
+			print(b2_grad);
+		}
 		let new_data = b2_data - learning_rate * b2_grad;
 		store_field(b2[i], Value, data, new_data);
 		store_field(b2[i], Value, grad, 0.0);
 	}
 
-	for k in range(batch_size, i64) {
-		free(X_batch[k * 2]);
-		free(X_batch[k * 2 + 1]);
-		free(y_batch[k]);
-	}
-
-	print("loss data:");
-	print(load_field(running, Value, data));
+	let accuracy = total_correct / (batch_size as f64);
+	print("accuracy:");
+	print(accuracy);
 }

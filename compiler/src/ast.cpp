@@ -188,11 +188,12 @@ StmtPtr Stmt::make_if(ExprPtr cond, std::vector<StmtPtr> then_body, std::vector<
   return s;
 }
 
-StmtPtr Stmt::make_for(std::string loop_var, ExprPtr iterable, std::vector<StmtPtr> body) {
+StmtPtr Stmt::make_for(StmtPtr init, ExprPtr cond, StmtPtr update, std::vector<StmtPtr> body) {
   auto s = std::make_unique<Stmt>();
   s->kind = Kind::For;
-  s->name = std::move(loop_var);
-  s->iterable = std::move(iterable);
+  s->for_init = std::move(init);
+  s->cond = std::move(cond);
+  s->for_update = std::move(update);
   s->body = std::move(body);
   return s;
 }
@@ -233,7 +234,8 @@ StmtPtr Stmt::clone() const {
   if (expr) s->expr = expr->clone();
   if (init) s->init = init->clone();
   if (cond) s->cond = cond->clone();
-  if (iterable) s->iterable = iterable->clone();
+  if (for_init) s->for_init = for_init->clone();
+  if (for_update) s->for_update = for_update->clone();
   for (const auto& t : then_body) s->then_body.push_back(t ? t->clone() : nullptr);
   for (const auto& t : else_body) s->else_body.push_back(t ? t->clone() : nullptr);
   for (const auto& b : body) s->body.push_back(b ? b->clone() : nullptr);

@@ -4,10 +4,24 @@ import lib "value" {
     fn mul_forward(a: ptr, b: ptr) -> ptr;
     fn relu_forward(x: ptr) -> ptr;
     fn make_leaf(data: f64) -> ptr;
+    fn free_value(v: ptr) -> void;
+}
+
+extern lib "libc.so.6" {
+    fn free(pointer: ptr) -> void;
+};
+
+fn is_in_weight_set(weight_ptrs: ptr, weight_count: i64, v: ptr) -> i64 {
+    for (let i = 0; i < weight_count; i = i + 1) {
+        if (weight_ptrs[i] as ptr == v) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 fn already_in_topo(v: ptr, topo: ptr, topo_count: i64) -> i64 {
-    for i in range(topo_count, i64) {
+    for (let i = 0; i < topo_count; i = i + 1) {
         if (topo[i] as ptr == v) {
             return 1;
         }
@@ -25,7 +39,7 @@ fn build_topo(v: ptr, topo: ptr, topo_count: i64) -> i64 {
     let children = load_field(v, Value, prev);
     let n = load_field(v, Value, children_count);
 
-    for j in range(n, i64) {
+    for (let j = 0; j < n; j = j + 1) {
         let child = children[j] as ptr;
         mut_count = build_topo(child, topo, mut_count);
     }
@@ -36,19 +50,41 @@ fn build_topo(v: ptr, topo: ptr, topo_count: i64) -> i64 {
 }
 
 export fn backward(root: ptr) -> void {
-    let max_nodes = 1000;
+    # Must fit full graph: batch_size * (layer1 + layer2 + loss) + chain. Increase if hidden_size or batch_size is large.
+    let max_nodes = 100000;
     let topo = alloc_array(ptr, max_nodes);
 
     let total_topo_count = build_topo(root, topo, 0);
 
     store_field(root, Value, grad, 1.0);
 
-    for i in range(total_topo_count, i64) {
+    for (let i = 0; i < total_topo_count; i = i + 1) {
         let idx = total_topo_count - 1 - i;
         let v = topo[idx] as ptr;
         let backward = load_field(v, Value, backward);
         call(backward, v);
     }
+}
+
+# Backward then free all graph nodes except weights (avoids leak when training many epochs).
+export fn backward_with_free(root: ptr, weight_ptrs: ptr, weight_count: i64) -> void {
+    let max_nodes = 100000;
+    let topo = alloc_array(ptr, max_nodes);
+    let total_topo_count = build_topo(root, topo, 0);
+    store_field(root, Value, grad, 1.0);
+    for (let i = 0; i < total_topo_count; i = i + 1) {
+        let idx = total_topo_count - 1 - i;
+        let v = topo[idx] as ptr;
+        let backward = load_field(v, Value, backward);
+        call(backward, v);
+    }
+    for (let i = 0; i < total_topo_count; i = i + 1) {
+        let v = topo[i] as ptr;
+        if (is_in_weight_set(weight_ptrs, weight_count, v) == 0) {
+            free_value(v);
+        }
+    }
+    free(topo);
 }
 
 fn test_backward_gradients() -> void {

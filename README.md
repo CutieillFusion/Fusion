@@ -264,17 +264,12 @@ if (x > 0) {
 - Conditions must be comparison expressions over numeric types or pointer equality/inequality (`==` / `!=`).
 - Pointer comparisons are restricted to `==` and `!=`.
 
-### For-in loops
+### C-style for loops
 
-Fusion supports iteration over:
-
-- Ranges produced by `range(...)`.
-- Arrays allocated with `alloc_array(...)`.
-
-Examples:
+Fusion uses C-style `for (init; cond; update) { body }` loops:
 
 ```fusion
-for i in range(5) {
+for (let i = 0; i < 5; i = i + 1) {
   print(i);
 }
 
@@ -283,19 +278,16 @@ arr[0] = 1;
 arr[1] = 2;
 arr[2] = 3;
 
-for x in arr {
+for (let i = 0; i < len(arr); i = i + 1) {
+  let x = arr[i];
   print(x);
 }
 print(0);
 ```
 
 The loop variable’s type is inferred from the iterable:
-
-- For `range(n)`, elements default to `i64`.
-- For `range(n, f64)`, elements are `f64`, etc.
-- For arrays from `alloc_array(T, n)`, elements are of type `T`.
-
-Attempting to iterate over a non-array, non-range value is a semantic error.
+- **init** (optional): `let i = 0` or `i = 0`. **cond**: e.g. `i < n`. **update** (optional): e.g. `i = i + 1`.
+- Use `len(arr)` to get array length.
 
 ### Assignments
 
@@ -392,9 +384,9 @@ a[2] = 30;
 print(a[0]);
 ```
 
-- Base expression must be a pointer produced by `alloc_array` or `range` (or a `let` binding of such).
+- Base expression must be a pointer produced by `alloc_array` (or a `let` binding of such).
 - Index expression must be `i64`.
-- The element type is inferred from the array or from the `range` type parameter.
+- The element type is inferred from the array.
 
 ### Structs and field access
 
@@ -446,31 +438,19 @@ Supported value types:
 
 The second argument, when present, must be `i64` and is interpreted as a stream identifier by the runtime (e.g., stdout/stderr).
 
-### Ranges and iteration
+### Array length and iteration
 
-`range` constructs array-like sequences backed by the runtime:
+`len(arr)` returns the length (element count) of an array as `i64`:
 
 ```fusion
-for i in range(5) {
-  print(i);
-}
-
-for x in range(3, f64) {
-  print(x);
-}
-
-for i in range(2, 6) {
-  print(i);
+let arr = alloc_array(i64, 5);
+for (let i = 0; i < len(arr); i = i + 1) {
+  arr[i] = i;
+  print(arr[i]);
 }
 ```
 
-Supported forms:
-
-- `range(end)` – yields `0 .. end-1` as `i64`.
-- `range(0, end, T)` – yields a typed range `T` (`i32`, `i64`, `f32`, `f64`).
-- `range(start, end)` – yields `start .. end-1` as `i64`.
-
-The exact overloads are implemented via the parser’s handling of optional numeric type arguments and are type-checked by semantic analysis.
+- `len(arr)` – `arr` must be a pointer to an array (from `alloc_array` or similar). Returns the stored length as `i64`.
 
 ### Strings and numeric conversion
 
@@ -659,12 +639,10 @@ Some common classes of semantic errors:
 - **Invalid FFI declaration**:
   - Extern function refers to an unknown library.
   - Extern function uses an unknown struct/opaque type name.
-- **Invalid `for` iterable**:
+- **Invalid `len` argument**:
   ```fusion
   let n = 5;
-  for i in n {      # n is not an array or range
-    print(i);
-  }
+  let x = len(n);   # len expects a pointer (array)
   ```
 - **Invalid casts** or mis-typed pointer operations:
   - `load`/`load_f64`/`load_ptr` require pointer arguments.

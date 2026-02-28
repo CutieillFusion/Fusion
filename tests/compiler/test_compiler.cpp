@@ -68,16 +68,11 @@ TEST(LexerTests, TokenizesMinus) {
   EXPECT_EQ(tokens[2].int_value, 2);
 }
 
-TEST(LexerTests, TokenizesBracketsAndForIn) {
-  auto tokens = fusion::lex("for i in range(10) { print(arr[i]); }");
+TEST(LexerTests, TokenizesBracketsAndFor) {
+  auto tokens = fusion::lex("for (let i = 0; i < 10; i = i + 1) { print(arr[i]); }");
   ASSERT_GE(tokens.size(), 3u);
   EXPECT_EQ(tokens[0].kind, fusion::TokenKind::KwFor);
-  EXPECT_EQ(tokens[1].kind, fusion::TokenKind::Ident);
-  EXPECT_EQ(tokens[1].ident, "i");
-  size_t in_pos = 0;
-  for (size_t i = 0; i < tokens.size(); ++i)
-    if (tokens[i].kind == fusion::TokenKind::KwIn) { in_pos = i; break; }
-  EXPECT_EQ(tokens[in_pos].kind, fusion::TokenKind::KwIn);
+  EXPECT_EQ(tokens[1].kind, fusion::TokenKind::LParen);
   size_t lb = 0;
   for (size_t i = 0; i < tokens.size(); ++i)
     if (tokens[i].kind == fusion::TokenKind::LBracket) { lb = i; break; }
@@ -177,7 +172,7 @@ TEST(ParserTests, ParsesMulAndDiv) {
 }
 
 TEST(ParserTests, ParsesLetAndForOnlyNoExpression) {
-  auto tokens = fusion::lex("let n = 1; for i in range(n) { }");
+  auto tokens = fusion::lex("let n = 1; for (let i = 0; i < n; i = i + 1) { }");
   auto result = fusion::parse(tokens);
   ASSERT_TRUE(result.ok());
   ASSERT_TRUE(result.program);
@@ -489,8 +484,8 @@ TEST(ParserTests, ParsesAllocArray) {
   EXPECT_EQ(root->args[0]->right->int_value, 0);
 }
 
-TEST(ParserTests, ParsesForInRange) {
-  auto tokens = fusion::lex("for i in range(10) { print(i); } print(0)");
+TEST(ParserTests, ParsesCStyleFor) {
+  auto tokens = fusion::lex("for (let i = 0; i < 10; i = i + 1) { print(i); } print(0)");
   auto result = fusion::parse(tokens);
   ASSERT_TRUE(result.ok()) << result.error.message;
   ASSERT_TRUE(result.program);
@@ -499,41 +494,34 @@ TEST(ParserTests, ParsesForInRange) {
   ASSERT_NE(stmt, nullptr);
   ASSERT_TRUE(*stmt);
   EXPECT_EQ((*stmt)->kind, fusion::Stmt::Kind::For);
-  EXPECT_EQ((*stmt)->name, "i");
-  ASSERT_TRUE((*stmt)->iterable);
-  EXPECT_EQ((*stmt)->iterable->kind, fusion::Expr::Kind::Call);
-  EXPECT_EQ((*stmt)->iterable->callee, "range");
-  ASSERT_EQ((*stmt)->iterable->args.size(), 1u);
-  EXPECT_EQ((*stmt)->iterable->args[0]->kind, fusion::Expr::Kind::IntLiteral);
-  EXPECT_EQ((*stmt)->iterable->args[0]->int_value, 10);
+  ASSERT_TRUE((*stmt)->for_init);
+  EXPECT_EQ((*stmt)->for_init->kind, fusion::Stmt::Kind::Let);
+  EXPECT_EQ((*stmt)->for_init->name, "i");
+  ASSERT_TRUE((*stmt)->cond);
+  EXPECT_EQ((*stmt)->cond->kind, fusion::Expr::Kind::Compare);
+  ASSERT_TRUE((*stmt)->for_update);
+  EXPECT_EQ((*stmt)->for_update->kind, fusion::Stmt::Kind::Assign);
   ASSERT_GE((*stmt)->body.size(), 1u);
   EXPECT_EQ((*stmt)->body[0]->kind, fusion::Stmt::Kind::Expr);
   EXPECT_EQ((*stmt)->body[0]->expr->kind, fusion::Expr::Kind::Call);
   EXPECT_EQ((*stmt)->body[0]->expr->callee, "print");
 }
 
-TEST(ParserTests, ParsesRangeWithType) {
-  auto tokens = fusion::lex("let r = range(5, f64); print(0)");
+TEST(ParserTests, ParsesLen) {
+  auto tokens = fusion::lex("let arr = alloc_array(i64, 5); let n = len(arr); print(n)");
   auto result = fusion::parse(tokens);
   ASSERT_TRUE(result.ok()) << result.error.message;
   ASSERT_TRUE(result.program);
-  const fusion::LetBinding* b = std::get_if<fusion::LetBinding>(&result.program->top_level[0]);
+  ASSERT_GE(result.program->top_level.size(), 2u);
+  const fusion::LetBinding* b = std::get_if<fusion::LetBinding>(&result.program->top_level[1]);
   ASSERT_NE(b, nullptr);
+  EXPECT_EQ(b->name, "n");
   ASSERT_TRUE(b->init);
   EXPECT_EQ(b->init->kind, fusion::Expr::Kind::Call);
-  EXPECT_EQ(b->init->callee, "range");
+  EXPECT_EQ(b->init->callee, "len");
   ASSERT_EQ(b->init->args.size(), 1u);
-  EXPECT_EQ(b->init->call_type_arg, "f64");
-
-  tokens = fusion::lex("let r = range(0, 3, i64); print(0)");
-  result = fusion::parse(tokens);
-  ASSERT_TRUE(result.ok()) << result.error.message;
-  b = std::get_if<fusion::LetBinding>(&result.program->top_level[0]);
-  ASSERT_NE(b, nullptr);
-  ASSERT_TRUE(b->init);
-  EXPECT_EQ(b->init->callee, "range");
-  ASSERT_EQ(b->init->args.size(), 2u);
-  EXPECT_EQ(b->init->call_type_arg, "i64");
+  EXPECT_EQ(b->init->args[0]->kind, fusion::Expr::Kind::VarRef);
+  EXPECT_EQ(b->init->args[0]->var_name, "arr");
 }
 
 TEST(ParserTests, ParsesGetFuncPtr) {
@@ -673,39 +661,39 @@ TEST(SemaTests, AcceptsAllocArrayAndIndex) {
   EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
 }
 
-TEST(SemaTests, AcceptsRangeAndForIn) {
-  auto tokens = fusion::lex("for i in range(5) { print(i); } print(99)");
+TEST(SemaTests, AcceptsCStyleFor) {
+  auto tokens = fusion::lex("for (let i = 0; i < 5; i = i + 1) { print(i); } print(99)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
   EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
 }
 
-TEST(SemaTests, AcceptsForInOverArray) {
-  auto tokens = fusion::lex("let arr = alloc_array(i64, 3); for x in arr { print(x); } print(0)");
+TEST(SemaTests, AcceptsForOverArrayWithLen) {
+  auto tokens = fusion::lex("let arr = alloc_array(i64, 3); for (let i = 0; i < len(arr); i = i + 1) { let x = arr[i]; print(x); } print(0)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
   EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
 }
 
-TEST(SemaTests, AcceptsRangeWithF64) {
-  auto tokens = fusion::lex("for x in range(2, f64) { print(x); } print(0)");
+TEST(SemaTests, AcceptsCStyleForWithF64) {
+  auto tokens = fusion::lex("for (let i = 0; i < 2; i = i + 1) { let x = i as f64; print(x); } print(0)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
   EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
 }
 
-TEST(SemaTests, RejectsForInNonArray) {
-  auto tokens = fusion::lex("let n = 5; for i in n { print(i); } print(0)");
+TEST(SemaTests, RejectsLenNonPtr) {
+  auto tokens = fusion::lex("let n = 5; let x = len(n); print(x)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
   EXPECT_FALSE(sema_result.ok);
-  EXPECT_TRUE(sema_result.error.message.find("for-in") != std::string::npos ||
-              sema_result.error.message.find("array") != std::string::npos)
-    << "expected for-in/array error, got: " << sema_result.error.message;
+  EXPECT_TRUE(sema_result.error.message.find("len") != std::string::npos ||
+              sema_result.error.message.find("pointer") != std::string::npos)
+    << "expected len/pointer error, got: " << sema_result.error.message;
 }
 
 TEST(SemaTests, AcceptsGetFuncPtrAndCall) {
@@ -1149,7 +1137,7 @@ TEST(JitTests, ExecutesSub) {
 }
 
 TEST(JitTests, ExecutesLetAndForOnly) {
-  auto tokens = fusion::lex("let n = 1; for i in range(n) { }");
+  auto tokens = fusion::lex("let n = 1; for (let i = 0; i < n; i = i + 1) { }");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1565,13 +1553,13 @@ TEST(JitTests, ExecutesAllocArrayAndIndex) {
   unlink(path);
 }
 
-TEST(JitTests, ExecutesForInRange) {
-  /* for i in range(5) { print(i); } print(0) => prints 0,1,2,3,4 then 0 */
+TEST(JitTests, ExecutesCStyleFor) {
+  /* for (let i = 0; i < 5; i = i + 1) { print(i); } print(0) => prints 0,1,2,3,4 then 0 */
   const char* path = "/tmp/fusion_jit_for_range_test.txt";
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("for i in range(5) { print(i); } print(0)");
+  auto tokens = fusion::lex("for (let i = 0; i < 5; i = i + 1) { print(i); } print(0)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1598,14 +1586,14 @@ TEST(JitTests, ExecutesForInRange) {
   unlink(path);
 }
 
-TEST(JitTests, ExecutesForInArray) {
-  /* let arr = alloc_array(i64, 3); arr[0]=1; ... for x in arr { print(x); } print(0) => 1,2,3,0 */
+TEST(JitTests, ExecutesForOverArrayWithLen) {
+  /* let arr = alloc_array(i64, 3); arr[0]=1; ... for (let i = 0; i < len(arr); i = i + 1) { print(arr[i]); } print(0) => 1,2,3,0 */
   const char* path = "/tmp/fusion_jit_for_arr_test.txt";
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
   auto tokens = fusion::lex(
-      "let arr = alloc_array(i64, 3); arr[0] = 1; arr[1] = 2; arr[2] = 3; for x in arr { print(x); } print(0)");
+      "let arr = alloc_array(i64, 3); arr[0] = 1; arr[1] = 2; arr[2] = 3; for (let i = 0; i < len(arr); i = i + 1) { print(arr[i]); } print(0)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1634,13 +1622,13 @@ TEST(JitTests, ExecutesForInArray) {
   unlink(path);
 }
 
-TEST(JitTests, ExecutesRangeTwoArgs) {
-  /* for x in range(2, 6) { print(x); } print(0) => 2,3,4,5,0 */
+TEST(JitTests, ExecutesCStyleForTwoArgs) {
+  /* for (let x = 2; x < 6; x = x + 1) { print(x); } print(0) => 2,3,4,5,0 */
   const char* path = "/tmp/fusion_jit_range_two_test.txt";
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("for x in range(2, 6) { print(x); } print(0)");
+  auto tokens = fusion::lex("for (let x = 2; x < 6; x = x + 1) { print(x); } print(0)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1667,13 +1655,13 @@ TEST(JitTests, ExecutesRangeTwoArgs) {
   unlink(path);
 }
 
-TEST(JitTests, ExecutesForInRangeF64) {
-  /* for x in range(3, f64) { print(x); } print(0) => 0.0, 1.0, 2.0, 0 */
+TEST(JitTests, ExecutesCStyleForF64) {
+  /* for (let i = 0; i < 3; i = i + 1) { let x = i as f64; print(x); } print(0) => 0.0, 1.0, 2.0, 0 */
   const char* path = "/tmp/fusion_jit_range_f64_test.txt";
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("for x in range(3, f64) { print(x); } print(0)");
+  auto tokens = fusion::lex("for (let i = 0; i < 3; i = i + 1) { let x = i as f64; print(x); } print(0)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());

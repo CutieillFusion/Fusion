@@ -146,7 +146,11 @@ static void collect_called_user_fns_in_stmt(
         collect_called_user_fns_in_stmt(s.get(), user_fn_by_name, out);
       break;
     case Stmt::Kind::For:
-      collect_called_user_fns_in_expr(stmt->iterable.get(), user_fn_by_name, out);
+      if (stmt->for_init)
+        collect_called_user_fns_in_stmt(stmt->for_init.get(), user_fn_by_name, out);
+      collect_called_user_fns_in_expr(stmt->cond.get(), user_fn_by_name, out);
+      if (stmt->for_update)
+        collect_called_user_fns_in_stmt(stmt->for_update.get(), user_fn_by_name, out);
       for (auto& s : stmt->body)
         collect_called_user_fns_in_stmt(s.get(), user_fn_by_name, out);
       break;
