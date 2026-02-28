@@ -33,7 +33,7 @@ extern lib "./libnvrtc.so.12" {
 };
 
 fn gpu_available() -> i64 {
-    let count_slot = alloc(i32);
+    let count_slot = heap(i32);
     let status = cudaGetDeviceCount(count_slot);
     if (status == 0) {
         if (load_i32(count_slot) > 0) {
@@ -56,9 +56,9 @@ if (avail_gpu > 0) {
 
 # Driver init and context (needed for cuModuleLoadData / cuLaunchKernel)
 cuInit(0);
-let device_slot = alloc(i32);
+let device_slot = heap(i32);
 cuDeviceGet(device_slot, 0);
-let ctx_slot = alloc(i64);
+let ctx_slot = heap(i64);
 
 # Get device context
 cuDevicePrimaryCtxRetain(ctx_slot, load_i32(device_slot));
@@ -68,38 +68,38 @@ cuCtxSetCurrent(load_ptr(ctx_slot));
 let cuda_src = "extern \"C\" __global__ void set_value(int* out) { *out = 255; }\n";
 
 # Allocate device buffer
-let dev_buf_slot = alloc(i64);
+let dev_buf_slot = heap(i64);
 cudaMalloc(dev_buf_slot, 4);
 
 # Create program
-let prog_slot = alloc(i64);
+let prog_slot = heap(i64);
 nvrtcCreateProgram(prog_slot, cuda_src, "kern.cu", 0, 0, 0);
 nvrtcCompileProgram(load_ptr(prog_slot), 0, 0);
 
 # Get PTX size
-let ptx_size_slot = alloc(i64);
+let ptx_size_slot = heap(i64);
 nvrtcGetPTXSize(load_ptr(prog_slot), ptx_size_slot);
 let ptx_size = load(ptx_size_slot);
 
 # Allocate PTX buffer
-let ptx_buf = alloc_bytes(ptx_size);
+let ptx_buf = heap_array(i32, ptx_size);
 nvrtcGetPTX(load_ptr(prog_slot), ptx_buf);
 
 # Load module
-let mod_slot = alloc(i64);
+let mod_slot = heap(i64);
 cuModuleLoadData(mod_slot, ptx_buf);
 
 # Get function
-let func_slot = alloc(i64);
+let func_slot = heap(i64);
 cuModuleGetFunction(func_slot, load_ptr(mod_slot), "set_value");
 
 # Set kernel params (kernelParams[i] = address of i-th argument)
 # Allocate parameter slot
-let param0_slot = alloc(i64);
+let param0_slot = heap(i64);
 store(param0_slot, load_ptr(dev_buf_slot));
 
 # Allocate parameters
-let params = alloc(KernelParam);
+let params = heap(KernelParam);
 store_field(params, KernelParam, p0, param0_slot);
 cuLaunchKernel(load_ptr(func_slot), 1, 1, 1, 1, 1, 1, 0, 0, params, 0);
 
@@ -110,7 +110,7 @@ cudaDeviceSynchronize();
 nvrtcDestroyProgram(prog_slot);
 
 # Allocate host integer slot
-let host_int_slot = alloc(i32);
+let host_int_slot = heap(i32);
 
 # Copy result back to host
 cudaMemcpy(host_int_slot, load_ptr(dev_buf_slot), 4, 2);

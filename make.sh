@@ -6,11 +6,15 @@
 
 set -e
 
-if [[ $# -gt 0 ]]; then
+if [[ " $@ " =~ " -r " ]]; then
   rm -rf build
 fi
 
-cmake -B build -S .
+if [[ " $@ " =~ " -d " ]]; then
+  cmake -B build -S . -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=address -g -fno-omit-frame-pointer"
+else
+  cmake -B build -S .
+fi
 
 cmake --build build
 

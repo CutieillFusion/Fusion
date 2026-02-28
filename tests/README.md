@@ -6,15 +6,21 @@ Tests use **CTest** as the orchestrator with **multiple discrete tests**. Compil
 
 | File / target | Role |
 |----------------|------|
-| `fusion_test_compiler` | GoogleTest binary: lexer, parser, sema, codegen, JIT (discovered as many CTest tests, label `compiler`). |
+| `fusion_test_compiler_lexer` | GoogleTest: lexer (labels `compiler`, `lexer`). |
+| `fusion_test_compiler_parser` | GoogleTest: parser (labels `compiler`, `parser`). |
+| `fusion_test_compiler_layout` | GoogleTest: layout (labels `compiler`, `layout`). |
+| `fusion_test_compiler_sema` | GoogleTest: sema (labels `compiler`, `sema`). |
+| `fusion_test_compiler_multifile` | GoogleTest: multifile (labels `compiler`, `multifile`). |
+| `fusion_test_compiler_codegen` | GoogleTest: codegen (labels `compiler`, `codegen`). |
+| `fusion_test_compiler_jit` | GoogleTest: JIT (labels `compiler`, `jit`). |
 | `fusion_test_runtime` | GoogleTest binary: runtime basic, dlopen/dlsym, FFI with `GTEST_SKIP()` when FFI unavailable (label `runtime`). |
-| `compiler/test_compiler.cpp` | GoogleTest compiler tests. |
+| `compiler/test_lexer.cpp` etc. | GoogleTest compiler tests (one file per suite). |
 | `runtime/test_runtime_*.cpp` | GoogleTest runtime tests (basic, dl, ffi). |
 | `common/`, `data/` | Helpers and test data (e.g. `data/test.fusion`). |
 
 ## CTest tests and labels
 
-- **Discovered GoogleTest tests** from `fusion_test_compiler` (label: `compiler`) and `fusion_test_runtime` (label: `runtime`)
+- **Discovered GoogleTest tests** from `fusion_test_compiler_*` (labels: `compiler` plus suite: `lexer`, `parser`, `layout`, `sema`, `multifile`, `codegen`, `jit`) and `fusion_test_runtime` (label: `runtime`)
 - **cli.help** — `fusion --help` (labels: `cli`, `smoke`)
 - **cli.run.test_fusion** — `fusion run` on repo-root `test.fusion` with `LC_ALL=C` (labels: `cli`, `smoke`)
 
@@ -33,8 +39,13 @@ Tests use **CTest** as the orchestrator with **multiple discrete tests**. Compil
 - **List tests:**  
   `ctest -N` (from build dir)
 
+- **By compiler suite:**  
+  `ctest -L lexer --output-on-failure`  
+  `ctest -L jit --output-on-failure`
+
 - **Single GoogleTest binary (e.g. for debugging):**  
-  `./build/tests/fusion_test_compiler --gtest_filter=ParserTests.* --gtest_color=yes`  
+  `./build/tests/fusion_test_compiler_parser --gtest_filter=ParserTests.* --gtest_color=yes`  
+  `./build/tests/fusion_test_compiler_jit --gtest_filter=JitTests.* --gtest_color=yes`  
   `./build/tests/fusion_test_runtime --gtest_filter=RuntimeDlTests.* --gtest_color=yes`
 
 ## Optional libffi

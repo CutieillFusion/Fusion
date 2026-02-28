@@ -46,9 +46,14 @@ struct Expr {
     BinaryOp,
     Call,
     VarRef,
-    Alloc,
-    AllocArray,
-    AllocBytes,
+    StackAlloc,
+    HeapAlloc,
+    StackArray,
+    HeapArray,
+    Free,
+    FreeArray,
+    AsHeap,
+    AsArray,
     AddrOf,
     Load,
     LoadF64,
@@ -87,9 +92,14 @@ struct Expr {
   static ExprPtr make_binop(BinOp op, ExprPtr left, ExprPtr right);
   static ExprPtr make_call(std::string callee, std::vector<ExprPtr> args, std::string call_type_arg = "");
   static ExprPtr make_var_ref(std::string name);
-  static ExprPtr make_alloc(std::string type_name);
-  static ExprPtr make_alloc_array(std::string element_type, ExprPtr count_expr);
-  static ExprPtr make_alloc_bytes(ExprPtr size_expr);
+  static ExprPtr make_stack_alloc(std::string type_name);
+  static ExprPtr make_heap_alloc(std::string type_name);
+  static ExprPtr make_stack_array(std::string element_type, ExprPtr count_expr);
+  static ExprPtr make_heap_array(std::string element_type, ExprPtr count_expr);
+  static ExprPtr make_free(ExprPtr ptr);
+  static ExprPtr make_free_array(ExprPtr ptr);
+  static ExprPtr make_as_heap(ExprPtr ptr);
+  static ExprPtr make_as_array(ExprPtr ptr, std::string element_type);
   static ExprPtr make_index(ExprPtr base, ExprPtr index_expr);
   static ExprPtr make_addr_of(ExprPtr expr);
   static ExprPtr make_load(ExprPtr ptr);
@@ -176,6 +186,7 @@ struct FnDef {
   std::string name;
   std::vector<std::pair<std::string, FfiType>> params;
   std::vector<std::string> param_type_names;  // same size as params; "" = keyword type
+  std::vector<bool> param_noescape;  // same size as params; true = noescape
   FfiType return_type = FfiType::Void;
   std::string return_type_name;  // non-empty = named type -> PTR
   std::vector<StmtPtr> body;

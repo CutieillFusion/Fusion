@@ -28,11 +28,11 @@ add_subdirectory(compiler)
 add_subdirectory(tests)
 # Ensure runtime_static is built before targets that link it via --whole-archive path.
 add_dependencies(fusion runtime_static)
-add_dependencies(fusion_test_compiler runtime_static)
+add_dependencies(fusion_test_compiler_lexer fusion_test_compiler_parser fusion_test_compiler_layout fusion_test_compiler_sema fusion_test_compiler_multifile fusion_test_compiler_codegen fusion_test_compiler_jit runtime_static)
 # Build all test executables and run CTest (so "make check" works without a prior "make")
 add_custom_target(check
   COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure
-  DEPENDS fusion_test_compiler fusion_test_runtime
+  DEPENDS fusion_test_compiler_lexer fusion_test_compiler_parser fusion_test_compiler_layout fusion_test_compiler_sema fusion_test_compiler_multifile fusion_test_compiler_codegen fusion_test_compiler_jit fusion_test_runtime
   WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
   COMMENT "Running tests..."
 )
@@ -44,7 +44,7 @@ add_custom_target(check-runtime
 )
 add_custom_target(check-compiler
   COMMAND "${CMAKE_CTEST_COMMAND}" -L compiler --output-on-failure
-  DEPENDS fusion_test_compiler
+  DEPENDS fusion_test_compiler_lexer fusion_test_compiler_parser fusion_test_compiler_layout fusion_test_compiler_sema fusion_test_compiler_multifile fusion_test_compiler_codegen fusion_test_compiler_jit
   WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
   COMMENT "Running compiler tests..."
 )

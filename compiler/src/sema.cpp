@@ -8,6 +8,22 @@
 
 namespace fusion {
 
+enum class AllocFlavor {
+  HeapSingle,
+  HeapArrayElementsPtr,
+  StackSingle,
+  StackArrayElementsPtr,
+  Unknown,
+};
+
+enum class PtrBase {
+  StackLocal,
+  Heap,
+  Param,
+  Global,
+  Unknown,
+};
+
 static FnPtrSig fn_def_to_sig(const FnDef& def) {
   FnPtrSig sig;
   for (const auto& p : def.params) sig.params.push_back(p.second);
@@ -29,6 +45,8 @@ struct SemaContext {
   std::vector<std::unordered_map<std::string, FfiType>> var_scope_stack;
   std::vector<std::unordered_map<std::string, FfiType>> array_element_scope_stack;
   std::vector<std::unordered_map<std::string, FnPtrSig>> fnptr_scope_stack;
+  std::vector<std::unordered_map<std::string, AllocFlavor>> var_flavor_scope_stack;
+  std::vector<std::unordered_map<std::string, PtrBase>> var_base_scope_stack;
   LayoutMap* layout_map = nullptr;  // from Program::struct_defs
   Program* program = nullptr;
   SemaError* err = nullptr;
@@ -59,6 +77,79 @@ static FfiType array_elem_lookup(SemaContext* ctx, const std::string& name) {
   return FfiType::Void;
 }
 
+static AllocFlavor var_flavor_lookup(SemaContext* ctx, const std::string& name) {
+  if (!ctx || ctx->var_flavor_scope_stack.empty()) return AllocFlavor::Unknown;
+  for (auto it = ctx->var_flavor_scope_stack.rbegin(); it != ctx->var_flavor_scope_stack.rend(); ++it) {
+    auto fit = it->find(name);
+    if (fit != it->end()) return fit->second;
+  }
+  return AllocFlavor::Unknown;
+}
+
+static PtrBase var_base_lookup(SemaContext* ctx, const std::string& name) {
+  if (!ctx || ctx->var_base_scope_stack.empty()) return PtrBase::Unknown;
+  for (auto it = ctx->var_base_scope_stack.rbegin(); it != ctx->var_base_scope_stack.rend(); ++it) {
+    auto fit = it->find(name);
+    if (fit != it->end()) return fit->second;
+  }
+  return PtrBase::Unknown;
+}
+
+static bool may_outlive_function(PtrBase b) {
+  return b != PtrBase::StackLocal;
+}
+
+static bool is_stack_ptr(AllocFlavor f) {
+  return f == AllocFlavor::StackSingle || f == AllocFlavor::StackArrayElementsPtr;
+}
+
+/* Update var's flavor and base in innermost scope that contains it. */
+static void update_var_flavor_base(SemaContext* ctx, const std::string& name, AllocFlavor f, PtrBase b) {
+  if (!ctx) return;
+  for (auto it = ctx->var_flavor_scope_stack.rbegin(); it != ctx->var_flavor_scope_stack.rend(); ++it) {
+    if (it->count(name)) {
+      (*it)[name] = f;
+      break;
+    }
+  }
+  for (auto it = ctx->var_base_scope_stack.rbegin(); it != ctx->var_base_scope_stack.rend(); ++it) {
+    if (it->count(name)) {
+      (*it)[name] = b;
+      break;
+    }
+  }
+}
+
+static FfiType expr_type(Expr* expr, SemaContext* ctx);  // forward
+
+static AllocFlavor expr_flavor(Expr* expr, SemaContext* ctx) {
+  if (!expr || !ctx) return AllocFlavor::Unknown;
+  switch (expr->kind) {
+    case Expr::Kind::StackAlloc: return AllocFlavor::StackSingle;
+    case Expr::Kind::HeapAlloc: return AllocFlavor::HeapSingle;
+    case Expr::Kind::StackArray: return AllocFlavor::StackArrayElementsPtr;
+    case Expr::Kind::HeapArray: return AllocFlavor::HeapArrayElementsPtr;
+    case Expr::Kind::AsHeap: return AllocFlavor::HeapSingle;  /* trust-me cast */
+    case Expr::Kind::AsArray: return AllocFlavor::HeapArrayElementsPtr;  /* trust-me cast */
+    case Expr::Kind::VarRef: return var_flavor_lookup(ctx, expr->var_name);
+    default: return AllocFlavor::Unknown;
+  }
+}
+
+static PtrBase expr_base(Expr* expr, SemaContext* ctx) {
+  if (!expr || !ctx) return PtrBase::Unknown;
+  switch (expr->kind) {
+    case Expr::Kind::StackAlloc:
+    case Expr::Kind::StackArray: return PtrBase::StackLocal;
+    case Expr::Kind::HeapAlloc:
+    case Expr::Kind::HeapArray: return PtrBase::Heap;
+    case Expr::Kind::VarRef: return var_base_lookup(ctx, expr->var_name);
+    case Expr::Kind::AsHeap:
+    case Expr::Kind::AsArray: return expr_base(expr->left.get(), ctx);  /* base unchanged */
+    default: return PtrBase::Unknown;
+  }
+}
+
 static bool is_alloc_type(const std::string& name, Program* program) {
   if (name == "i32" || name == "i64" || name == "f32" || name == "f64" || name == "ptr")
     return true;
@@ -68,15 +159,13 @@ static bool is_alloc_type(const std::string& name, Program* program) {
   return false;
 }
 
-static FfiType expr_type(Expr* expr, SemaContext* ctx);  // returns type of expression for type-checking
-
-/* Returns element type if expr is an array (ptr from alloc_array or VarRef to such); otherwise FfiType::Void. */
+/* Returns element type if expr is an array (ptr from stack_array/heap_array or VarRef to such); otherwise FfiType::Void. */
 static FfiType get_array_element_type(Expr* expr, SemaContext* ctx) {
   if (!expr || !ctx) return FfiType::Void;
   if (expr->kind == Expr::Kind::VarRef) {
     return array_elem_lookup(ctx, expr->var_name);
   }
-  if (expr->kind == Expr::Kind::AllocArray) {
+  if (expr->kind == Expr::Kind::StackArray || expr->kind == Expr::Kind::HeapArray) {
     const std::string& t = expr->var_name;
     if (t == "i32") return FfiType::I32;
     if (t == "i64") return FfiType::I64;
@@ -190,6 +279,10 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
         for (size_t j = 0; j < sig.params.size(); ++j) {
           if (!check_expr(expr->args[j + 1].get(), ctx)) return false;
           FfiType arg_ty = expr_type(expr->args[j + 1].get(), &ctx);
+          if (arg_ty == FfiType::Ptr && is_stack_ptr(expr_flavor(expr->args[j + 1].get(), &ctx))) {
+            ctx.err->message = "cannot pass stack pointer to indirect call (unknown callee)";
+            return false;
+          }
           FfiType want = sig.params[j];
           bool compat = (arg_ty == want) ||
             (arg_ty == FfiType::I64 && (want == FfiType::F64 || want == FfiType::F32)) ||
@@ -362,6 +455,10 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
             ctx.err->message = "argument type mismatch in call to '" + expr->callee + "'";
             return false;
           }
+          if (arg_ty == FfiType::Ptr && is_stack_ptr(expr_flavor(expr->args[j].get(), &ctx))) {
+            ctx.err->message = "cannot pass stack pointer to extern function '" + expr->callee + "'";
+            return false;
+          }
         }
         return true;
       }
@@ -379,6 +476,11 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
             ctx.err->message = "argument type mismatch in call to '" + expr->callee + "'";
             return false;
           }
+          bool noescape = (j < def.param_noescape.size() && def.param_noescape[j]);
+          if (arg_ty == FfiType::Ptr && is_stack_ptr(expr_flavor(expr->args[j].get(), &ctx)) && !noescape) {
+            ctx.err->message = "cannot pass stack pointer to '" + expr->callee + "' (param not noescape)";
+            return false;
+          }
         }
         return true;
       }
@@ -393,21 +495,23 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
       }
       return true;
     }
-    case Expr::Kind::Alloc:
+    case Expr::Kind::StackAlloc:
+    case Expr::Kind::HeapAlloc:
       if (!is_alloc_type(expr->var_name, ctx.program)) {
-        ctx.err->message = "alloc: unknown type '" + expr->var_name + "'";
+        ctx.err->message = "stack/heap: unknown type '" + expr->var_name + "'";
         return false;
       }
       return true;
-    case Expr::Kind::AllocArray:
+    case Expr::Kind::StackArray:
+    case Expr::Kind::HeapArray:
       if (!expr->left) return false;
       if (!is_alloc_type(expr->var_name, ctx.program)) {
-        ctx.err->message = "alloc_array: unknown element type '" + expr->var_name + "'";
+        ctx.err->message = "stack_array/heap_array: unknown element type '" + expr->var_name + "'";
         return false;
       }
       if (!check_expr(expr->left.get(), ctx)) return false;
       if (expr_type(expr->left.get(), &ctx) != FfiType::I64) {
-        ctx.err->message = "alloc_array: count must be i64";
+        ctx.err->message = "stack_array/heap_array: count must be i64";
         return false;
       }
       return true;
@@ -423,11 +527,50 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
         return false;
       }
       return true;
-    case Expr::Kind::AllocBytes:
+    case Expr::Kind::Free: {
       if (!expr->left) return false;
       if (!check_expr(expr->left.get(), ctx)) return false;
-      if (expr_type(expr->left.get(), &ctx) != FfiType::I64) {
-        ctx.err->message = "alloc_bytes: size must be i64";
+      if (expr_type(expr->left.get(), &ctx) != FfiType::Ptr) {
+        ctx.err->message = "free: argument must be a pointer";
+        return false;
+      }
+      AllocFlavor f = expr_flavor(expr->left.get(), &ctx);
+      if (f == AllocFlavor::HeapSingle) return true;
+      if (f == AllocFlavor::StackSingle || f == AllocFlavor::StackArrayElementsPtr ||
+          f == AllocFlavor::HeapArrayElementsPtr) {
+        ctx.err->message = "free: use free_array for array allocations; cannot free stack allocation";
+        return false;
+      }
+      ctx.err->message = "free: unknown pointer origin; use as_heap(ptr) to assert heap allocation";
+      return false;
+    }
+    case Expr::Kind::FreeArray: {
+      if (!expr->left) return false;
+      if (!check_expr(expr->left.get(), ctx)) return false;
+      if (expr_type(expr->left.get(), &ctx) != FfiType::Ptr) {
+        ctx.err->message = "free_array: argument must be a pointer";
+        return false;
+      }
+      AllocFlavor fa = expr_flavor(expr->left.get(), &ctx);
+      if (fa == AllocFlavor::HeapArrayElementsPtr) return true;
+      if (fa == AllocFlavor::HeapSingle || fa == AllocFlavor::StackSingle ||
+          fa == AllocFlavor::StackArrayElementsPtr) {
+        ctx.err->message = "free_array: use free for single allocations; cannot free stack allocation";
+        return false;
+      }
+      ctx.err->message = "free_array: unknown pointer origin; use as_array(ptr, T) to assert array allocation";
+      return false;
+    }
+    case Expr::Kind::AsHeap:
+    case Expr::Kind::AsArray:
+      if (!expr->left) return false;
+      if (!check_expr(expr->left.get(), ctx)) return false;
+      if (expr_type(expr->left.get(), &ctx) != FfiType::Ptr) {
+        ctx.err->message = "as_heap/as_array: argument must be a pointer";
+        return false;
+      }
+      if (expr->kind == Expr::Kind::AsArray && !is_alloc_type(expr->var_name, ctx.program)) {
+        ctx.err->message = "as_array: unknown element type '" + expr->var_name + "'";
         return false;
       }
       return true;
@@ -453,6 +596,12 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
       if (!check_expr(expr->left.get(), ctx) || !check_expr(expr->right.get(), ctx)) return false;
       if (expr_type(expr->left.get(), &ctx) != FfiType::Ptr) {
         ctx.err->message = "store: first argument must be a pointer";
+        return false;
+      }
+      if (expr_type(expr->right.get(), &ctx) == FfiType::Ptr &&
+          is_stack_ptr(expr_flavor(expr->right.get(), &ctx)) &&
+          may_outlive_function(expr_base(expr->left.get(), &ctx))) {
+        ctx.err->message = "store: cannot store stack pointer into memory that may outlive function";
         return false;
       }
       return true;
@@ -500,6 +649,12 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
         (val_ty == FfiType::I64 && field_ty == FfiType::Ptr);
       if (!compat) {
         ctx.err->message = "store_field: value type does not match field type";
+        return false;
+      }
+      if (field_ty == FfiType::Ptr &&
+          is_stack_ptr(expr_flavor(expr->right.get(), &ctx)) &&
+          may_outlive_function(expr_base(expr->left.get(), &ctx))) {
+        ctx.err->message = "store_field: cannot store stack pointer into memory that may outlive function";
         return false;
       }
       return true;
@@ -602,9 +757,16 @@ static FfiType expr_type(Expr* expr, SemaContext* ctx) {
         if (var_type_lookup(ctx, expr->var_name, &ty)) return ty;
       }
       return FfiType::Void;
-    case Expr::Kind::Alloc:
-    case Expr::Kind::AllocArray:
-    case Expr::Kind::AllocBytes:
+    case Expr::Kind::StackAlloc:
+    case Expr::Kind::HeapAlloc:
+    case Expr::Kind::StackArray:
+    case Expr::Kind::HeapArray:
+      return FfiType::Ptr;
+    case Expr::Kind::Free:
+    case Expr::Kind::FreeArray:
+      return FfiType::Void;
+    case Expr::Kind::AsHeap:
+    case Expr::Kind::AsArray:
       return FfiType::Ptr;
     case Expr::Kind::AddrOf:
       return FfiType::Ptr;
@@ -672,6 +834,10 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
         ctx.err->message = "return type does not match function return type in '" + def->name + "'";
         return false;
       }
+      if (def->return_type == FfiType::Ptr && is_stack_ptr(expr_flavor(stmt->expr.get(), &ctx))) {
+        ctx.err->message = "cannot return stack pointer (stack allocation escapes)";
+        return false;
+      }
       return true;
     case Stmt::Kind::Let: {
       if (!check_expr(stmt->init.get(), ctx)) return false;
@@ -683,6 +849,12 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
       }
       FfiType let_ty = expr_type(stmt->init.get(), &ctx);
       ctx.var_scope_stack.back()[stmt->name] = let_ty;
+      AllocFlavor let_flavor = expr_flavor(stmt->init.get(), &ctx);
+      PtrBase let_base = (let_ty == FfiType::Ptr) ? expr_base(stmt->init.get(), &ctx) : PtrBase::Unknown;
+      if (!ctx.var_flavor_scope_stack.empty())
+        ctx.var_flavor_scope_stack.back()[stmt->name] = let_flavor;
+      if (!ctx.var_base_scope_stack.empty())
+        ctx.var_base_scope_stack.back()[stmt->name] = let_base;
       if (let_ty == FfiType::Ptr && !ctx.fnptr_scope_stack.empty()) {
         FnPtrSig sig;
         if (lookup_fnptr_sig(&ctx, stmt->init.get(), &sig))
@@ -712,42 +884,58 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
       ctx.var_scope_stack.push_back({});
       ctx.array_element_scope_stack.push_back({});
       ctx.fnptr_scope_stack.push_back({});
+      ctx.var_flavor_scope_stack.push_back({});
+      ctx.var_base_scope_stack.push_back({});
       for (StmtPtr& s : stmt->then_body)
         if (!check_stmt(ctx, def, s.get())) {
           ctx.var_scope_stack.pop_back();
           ctx.array_element_scope_stack.pop_back();
           ctx.fnptr_scope_stack.pop_back();
+          ctx.var_flavor_scope_stack.pop_back();
+          ctx.var_base_scope_stack.pop_back();
           return false;
         }
       ctx.var_scope_stack.pop_back();
       ctx.array_element_scope_stack.pop_back();
       ctx.fnptr_scope_stack.pop_back();
+      ctx.var_flavor_scope_stack.pop_back();
+      ctx.var_base_scope_stack.pop_back();
       if (stmt->else_body.empty()) return true;
       ctx.var_scope_stack.push_back({});
       ctx.array_element_scope_stack.push_back({});
       ctx.fnptr_scope_stack.push_back({});
+      ctx.var_flavor_scope_stack.push_back({});
+      ctx.var_base_scope_stack.push_back({});
       for (StmtPtr& s : stmt->else_body)
         if (!check_stmt(ctx, def, s.get())) {
           ctx.var_scope_stack.pop_back();
           ctx.array_element_scope_stack.pop_back();
           ctx.fnptr_scope_stack.pop_back();
+          ctx.var_flavor_scope_stack.pop_back();
+          ctx.var_base_scope_stack.pop_back();
           return false;
         }
       ctx.var_scope_stack.pop_back();
       ctx.array_element_scope_stack.pop_back();
       ctx.fnptr_scope_stack.pop_back();
+      ctx.var_flavor_scope_stack.pop_back();
+      ctx.var_base_scope_stack.pop_back();
       return true;
     case Stmt::Kind::For: {
       if (!stmt->cond) return false;
       ctx.var_scope_stack.push_back({});
       ctx.array_element_scope_stack.push_back({});
       ctx.fnptr_scope_stack.push_back({});
+      ctx.var_flavor_scope_stack.push_back({});
+      ctx.var_base_scope_stack.push_back({});
       if (stmt->for_init) {
         if (stmt->for_init->kind == Stmt::Kind::Let) {
           if (!check_expr(stmt->for_init->init.get(), ctx)) {
             ctx.var_scope_stack.pop_back();
             ctx.array_element_scope_stack.pop_back();
             ctx.fnptr_scope_stack.pop_back();
+            ctx.var_flavor_scope_stack.pop_back();
+            ctx.var_base_scope_stack.pop_back();
             return false;
           }
           if (ctx.var_scope_stack.back().count(stmt->for_init->name)) {
@@ -757,14 +945,23 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
             ctx.var_scope_stack.pop_back();
             ctx.array_element_scope_stack.pop_back();
             ctx.fnptr_scope_stack.pop_back();
+            ctx.var_flavor_scope_stack.pop_back();
+            ctx.var_base_scope_stack.pop_back();
             return false;
           }
           ctx.var_scope_stack.back()[stmt->for_init->name] = expr_type(stmt->for_init->init.get(), &ctx);
+          AllocFlavor init_flavor = expr_flavor(stmt->for_init->init.get(), &ctx);
+          PtrBase init_base = (expr_type(stmt->for_init->init.get(), &ctx) == FfiType::Ptr)
+            ? expr_base(stmt->for_init->init.get(), &ctx) : PtrBase::Unknown;
+          ctx.var_flavor_scope_stack.back()[stmt->for_init->name] = init_flavor;
+          ctx.var_base_scope_stack.back()[stmt->for_init->name] = init_base;
         } else if (stmt->for_init->kind == Stmt::Kind::Assign) {
           if (!check_stmt(ctx, def, stmt->for_init.get())) {
             ctx.var_scope_stack.pop_back();
             ctx.array_element_scope_stack.pop_back();
             ctx.fnptr_scope_stack.pop_back();
+            ctx.var_flavor_scope_stack.pop_back();
+            ctx.var_base_scope_stack.pop_back();
             return false;
           }
         }
@@ -773,6 +970,8 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
         ctx.var_scope_stack.pop_back();
         ctx.array_element_scope_stack.pop_back();
         ctx.fnptr_scope_stack.pop_back();
+        ctx.var_flavor_scope_stack.pop_back();
+        ctx.var_base_scope_stack.pop_back();
         return false;
       }
       if (stmt->for_update) {
@@ -780,6 +979,8 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
           ctx.var_scope_stack.pop_back();
           ctx.array_element_scope_stack.pop_back();
           ctx.fnptr_scope_stack.pop_back();
+          ctx.var_flavor_scope_stack.pop_back();
+          ctx.var_base_scope_stack.pop_back();
           return false;
         }
       }
@@ -788,11 +989,15 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
           ctx.var_scope_stack.pop_back();
           ctx.array_element_scope_stack.pop_back();
           ctx.fnptr_scope_stack.pop_back();
+          ctx.var_flavor_scope_stack.pop_back();
+          ctx.var_base_scope_stack.pop_back();
           return false;
         }
       ctx.var_scope_stack.pop_back();
       ctx.array_element_scope_stack.pop_back();
       ctx.fnptr_scope_stack.pop_back();
+      ctx.var_flavor_scope_stack.pop_back();
+      ctx.var_base_scope_stack.pop_back();
       return true;
     }
     case Stmt::Kind::Assign: {
@@ -808,10 +1013,15 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
           ctx.err->message = "assignment type mismatch";
           return false;
         }
-        if (var_ty == FfiType::Ptr && val_ty == FfiType::Ptr && !ctx.fnptr_scope_stack.empty()) {
-          FnPtrSig sig;
-          if (lookup_fnptr_sig(&ctx, stmt->init.get(), &sig))
-            ctx.fnptr_scope_stack.back()[stmt->expr->var_name] = sig;
+        if (var_ty == FfiType::Ptr && val_ty == FfiType::Ptr) {
+          AllocFlavor val_flavor = expr_flavor(stmt->init.get(), &ctx);
+          PtrBase val_base = expr_base(stmt->init.get(), &ctx);
+          update_var_flavor_base(&ctx, stmt->expr->var_name, val_flavor, val_base);
+          if (!ctx.fnptr_scope_stack.empty()) {
+            FnPtrSig sig;
+            if (lookup_fnptr_sig(&ctx, stmt->init.get(), &sig))
+              ctx.fnptr_scope_stack.back()[stmt->expr->var_name] = sig;
+          }
         }
         return true;
       }
@@ -826,6 +1036,12 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
           ctx.err->message = "assignment type mismatch for array element";
           return false;
         }
+        if (elem_ty == FfiType::Ptr && val_ty == FfiType::Ptr &&
+            is_stack_ptr(expr_flavor(stmt->init.get(), &ctx)) &&
+            may_outlive_function(expr_base(stmt->expr->left.get(), &ctx))) {
+          ctx.err->message = "cannot store stack pointer into array that may outlive function";
+          return false;
+        }
         return true;
       }
       ctx.err->message = "assignment target must be a variable or index";
@@ -838,8 +1054,13 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
 static bool check_fn_def(SemaContext& ctx, FnDef& def) {
   std::unordered_map<std::string, FfiType> local;
   std::unordered_map<std::string, FfiType> array_local;
-  for (size_t j = 0; j < def.params.size(); ++j)
+  std::unordered_map<std::string, AllocFlavor> param_flavor;
+  std::unordered_map<std::string, PtrBase> param_base;
+  for (size_t j = 0; j < def.params.size(); ++j) {
     local[def.params[j].first] = def.params[j].second;
+    param_flavor[def.params[j].first] = AllocFlavor::Unknown;
+    param_base[def.params[j].first] = PtrBase::Param;
+  }
   for (const auto& p : def.params)
     if (p.second == FfiType::Ptr)
       array_local[p.first] = FfiType::Ptr;
@@ -852,6 +1073,8 @@ static bool check_fn_def(SemaContext& ctx, FnDef& def) {
   fn_ctx.var_scope_stack.push_back(std::move(local));
   fn_ctx.array_element_scope_stack.push_back(std::move(array_local));
   fn_ctx.fnptr_scope_stack.push_back({});
+  fn_ctx.var_flavor_scope_stack.push_back(std::move(param_flavor));
+  fn_ctx.var_base_scope_stack.push_back(std::move(param_base));
   for (StmtPtr& stmt : def.body) {
     if (!check_stmt(fn_ctx, &def, stmt.get())) return false;
   }
@@ -915,6 +1138,8 @@ SemaResult check(Program* program) {
   ctx.var_scope_stack.push_back({});
   ctx.array_element_scope_stack.push_back({});
   ctx.fnptr_scope_stack.push_back({});
+  ctx.var_flavor_scope_stack.push_back({});
+  ctx.var_base_scope_stack.push_back({});
   for (const TopLevelItem& item : program->top_level) {
     if (const LetBinding* binding = std::get_if<LetBinding>(&item)) {
       if (!check_expr(binding->init.get(), ctx)) return r;
@@ -924,6 +1149,10 @@ SemaResult check(Program* program) {
         return r;
       }
       ctx.var_scope_stack.back()[binding->name] = ty;
+      AllocFlavor bind_flavor = expr_flavor(binding->init.get(), &ctx);
+      PtrBase bind_base = (ty == FfiType::Ptr) ? expr_base(binding->init.get(), &ctx) : PtrBase::Unknown;
+      ctx.var_flavor_scope_stack.back()[binding->name] = bind_flavor;
+      ctx.var_base_scope_stack.back()[binding->name] = bind_base;
       if (ty == FfiType::Ptr) {
         FnPtrSig sig;
         if (lookup_fnptr_sig(&ctx, binding->init.get(), &sig))

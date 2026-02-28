@@ -22,12 +22,12 @@ fn perform_operation(op: Operation) -> f64 {
     return call(func, x, y);
 }
 
-let op_add = alloc(Operation);
+let op_add = heap(Operation);
 store_field(op_add, Operation, func, get_func_ptr(add));
 store_field(op_add, Operation, x, 3.0);
 store_field(op_add, Operation, y, 4.0);
 
-let op_mul = alloc(Operation);
+let op_mul = heap(Operation);
 store_field(op_mul, Operation, func, get_func_ptr(mul));
 store_field(op_mul, Operation, x, 3.0);
 store_field(op_mul, Operation, y, 4.0);

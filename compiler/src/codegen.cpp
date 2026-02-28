@@ -123,9 +123,12 @@ static FfiType expr_type(Expr* expr, Program* program,
           if (def.name == expr->callee) return def.return_type;
       }
       return FfiType::Void;
-    case Expr::Kind::Alloc:
-    case Expr::Kind::AllocArray:
-    case Expr::Kind::AllocBytes:
+    case Expr::Kind::StackAlloc:
+    case Expr::Kind::HeapAlloc:
+    case Expr::Kind::StackArray:
+    case Expr::Kind::HeapArray:
+    case Expr::Kind::AsHeap:
+    case Expr::Kind::AsArray:
     case Expr::Kind::AddrOf:
     case Expr::Kind::LoadPtr:
       return FfiType::Ptr;
@@ -252,7 +255,7 @@ static FfiType array_element_type_from_expr(Expr* expr, CodegenEnv& env) {
   if (expr->kind == Expr::Kind::VarRef) {
     return array_elem_lookup(env, expr->var_name);
   }
-  if (expr->kind == Expr::Kind::AllocArray) {
+  if (expr->kind == Expr::Kind::StackArray || expr->kind == Expr::Kind::HeapArray) {
     const std::string& t = expr->var_name;
     if (t == "i32") return FfiType::I32;
     if (t == "i64") return FfiType::I64;
@@ -262,6 +265,45 @@ static FfiType array_element_type_from_expr(Expr* expr, CodegenEnv& env) {
     return FfiType::Void;
   }
   return FfiType::Void;
+}
+
+/* Header size H = align_up(8, alignof(T)). Returns 8 for primitives; for structs uses layout. */
+static size_t array_header_size(const std::string& elem_type_name, LayoutMap* layout_map) {
+  size_t align = 8;
+  if (elem_type_name == "i32" || elem_type_name == "f32") align = 4;
+  else if (elem_type_name == "i64" || elem_type_name == "f64" || elem_type_name == "ptr") align = 8;
+  else if (layout_map) {
+    auto it = layout_map->find(elem_type_name);
+    if (it != layout_map->end()) align = it->second.alignment;
+  }
+  return (8 + align - 1) / align * align;
+}
+
+/* Elem size in bytes. */
+static size_t elem_size_from_type(const std::string& elem_type_name, LayoutMap* layout_map) {
+  if (elem_type_name == "i32" || elem_type_name == "f32") return 4;
+  if (elem_type_name == "i64" || elem_type_name == "f64" || elem_type_name == "ptr") return 8;
+  if (layout_map) {
+    auto it = layout_map->find(elem_type_name);
+    if (it != layout_map->end()) return it->second.size;
+  }
+  return 8;
+}
+
+/* Get elem type name from array expr (for StackArray/HeapArray) or from VarRef via env. */
+static std::string array_elem_type_name(Expr* expr, CodegenEnv& env) {
+  if (expr->kind == Expr::Kind::StackArray || expr->kind == Expr::Kind::HeapArray)
+    return expr->var_name;
+  if (expr->kind == Expr::Kind::VarRef) {
+    /* VarRef: we don't store type name in env; use FfiType to infer. For structs we can't. */
+    FfiType t = array_elem_lookup(env, expr->var_name);
+    if (t == FfiType::I32) return "i32";
+    if (t == FfiType::I64) return "i64";
+    if (t == FfiType::F32) return "f32";
+    if (t == FfiType::F64) return "f64";
+    if (t == FfiType::Ptr) return "ptr";
+  }
+  return "i64";  /* fallback */
 }
 
 static Value* coerce_value_to_type(CodegenEnv& env, Value* v, FfiType from_ffi, Type* want) {
@@ -541,10 +583,13 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         return B.CreateCall(fn, h, "line_count_file");
       }
       if (expr->callee == "len") {
-        Value* base = emit_expr(env, expr->args[0].get());
-        if (!base) return nullptr;
+        Value* elem_ptr = emit_expr(env, expr->args[0].get());
+        if (!elem_ptr) return nullptr;
         Type* i8ptr_ty = PointerType::get(Type::getInt8Ty(ctx), 0);
-        if (base->getType() != i8ptr_ty) base = B.CreatePointerCast(base, i8ptr_ty);
+        if (elem_ptr->getType() != i8ptr_ty) elem_ptr = B.CreatePointerCast(elem_ptr, i8ptr_ty);
+        std::string elem_name = array_elem_type_name(expr->args[0].get(), env);
+        size_t H = array_header_size(elem_name, env.layout_map);
+        Value* base = B.CreateGEP(B.getInt8Ty(), elem_ptr, B.getInt64(-static_cast<int64_t>(H)));
         Value* len_ptr = B.CreatePointerCast(base, B.getInt64Ty()->getPointerTo());
         return B.CreateLoad(B.getInt64Ty(), len_ptr, "len");
       }
@@ -719,81 +764,129 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       }
       return ret_val;
     }
-    case Expr::Kind::Alloc: {
+    case Expr::Kind::StackAlloc: {
       Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
       const std::string& tn = expr->var_name;
       if (tn == "i32") {
-        Value* slot = B.CreateAlloca(B.getInt32Ty(), nullptr, "alloc.i32");
+        Value* slot = B.CreateAlloca(B.getInt32Ty(), nullptr, "stack.i32");
         return B.CreatePointerCast(slot, i8ptr);
       }
       if (tn == "i64") {
-        Value* slot = B.CreateAlloca(B.getInt64Ty(), nullptr, "alloc.i64");
+        Value* slot = B.CreateAlloca(B.getInt64Ty(), nullptr, "stack.i64");
         return B.CreatePointerCast(slot, i8ptr);
       }
       if (tn == "f32") {
-        Value* slot = B.CreateAlloca(B.getFloatTy(), nullptr, "alloc.f32");
+        Value* slot = B.CreateAlloca(B.getFloatTy(), nullptr, "stack.f32");
         return B.CreatePointerCast(slot, i8ptr);
       }
       if (tn == "f64") {
-        Value* slot = B.CreateAlloca(B.getDoubleTy(), nullptr, "alloc.f64");
+        Value* slot = B.CreateAlloca(B.getDoubleTy(), nullptr, "stack.f64");
         return B.CreatePointerCast(slot, i8ptr);
       }
       if (tn == "ptr") {
-        Value* slot = B.CreateAlloca(i8ptr, nullptr, "alloc.ptr");
+        Value* slot = B.CreateAlloca(i8ptr, nullptr, "stack.ptr");
         return B.CreatePointerCast(slot, i8ptr);
       }
-      if (prog && env.layout_map) {
+      if (env.layout_map) {
         auto it = env.layout_map->find(tn);
         if (it != env.layout_map->end() && it->second.size > 0) {
-          /* Heap-allocate structs so pointers remain valid across calls (stack reuse would invalidate them). */
-          Function* malloc_fn = M->getFunction("malloc");
-          if (!malloc_fn) {
-            FunctionType* malloc_ty = FunctionType::get(i8ptr, {B.getInt64Ty()}, false);
-            malloc_fn = Function::Create(malloc_ty, GlobalValue::ExternalLinkage, "malloc", M);
-          }
-          Value* size_val = B.getInt64(static_cast<uint64_t>(it->second.size));
-          Value* raw_ptr = B.CreateCall(malloc_fn, size_val, "alloc.struct");
-          return B.CreatePointerCast(raw_ptr, i8ptr);
+          Value* slot = B.CreateAlloca(ArrayType::get(B.getInt8Ty(), it->second.size), nullptr, "stack.struct");
+          return B.CreatePointerCast(slot, i8ptr);
         }
       }
       return nullptr;
     }
-    case Expr::Kind::AllocArray: {
-      Value* count_val = emit_expr(env, expr->left.get());
-      if (!count_val) return nullptr;
-      if (count_val->getType() != B.getInt64Ty())
-        count_val = B.CreateIntCast(count_val, B.getInt64Ty(), true);
-      const std::string& elem_name = expr->var_name;
-      size_t elem_size = 8;
-      if (elem_name == "i32" || elem_name == "f32") elem_size = 4;
-      else if (elem_name == "i64" || elem_name == "f64" || elem_name == "ptr") elem_size = 8;
-      else if (prog && env.layout_map) {
-        auto it = env.layout_map->find(elem_name);
-        if (it != env.layout_map->end()) elem_size = it->second.size;
-      }
-      Value* total_bytes = B.CreateAdd(B.getInt64(8), B.CreateMul(count_val, B.getInt64(elem_size)), "array.total");
+    case Expr::Kind::HeapAlloc: {
       Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
-      /* Heap-allocate arrays so pointers stored in structs (or otherwise escaping) remain valid across calls. */
+      const std::string& tn = expr->var_name;
+      size_t sz = 8;
+      if (tn == "i32" || tn == "f32") sz = 4;
+      else if (tn == "i64" || tn == "f64" || tn == "ptr") sz = 8;
+      else if (env.layout_map) {
+        auto it = env.layout_map->find(tn);
+        if (it != env.layout_map->end()) sz = it->second.size;
+      }
       Function* malloc_fn = M->getFunction("malloc");
       if (!malloc_fn) {
         FunctionType* malloc_ty = FunctionType::get(i8ptr, {B.getInt64Ty()}, false);
         malloc_fn = Function::Create(malloc_ty, GlobalValue::ExternalLinkage, "malloc", M);
       }
-      Value* block = B.CreateCall(malloc_fn, total_bytes, "alloc_array");
+      Value* raw = B.CreateCall(malloc_fn, B.getInt64(sz), "heap.alloc");
+      return B.CreatePointerCast(raw, i8ptr);
+    }
+    case Expr::Kind::StackArray: {
+      Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+      Value* count_val = emit_expr(env, expr->left.get());
+      if (!count_val) return nullptr;
+      if (count_val->getType() != B.getInt64Ty())
+        count_val = B.CreateIntCast(count_val, B.getInt64Ty(), true);
+      const std::string& elem_name = expr->var_name;
+      size_t H = array_header_size(elem_name, env.layout_map);
+      size_t elem_size = elem_size_from_type(elem_name, env.layout_map);
+      Value* total_bytes = B.CreateAdd(B.getInt64(H), B.CreateMul(count_val, B.getInt64(elem_size)), "stack_arr.total");
+      Value* base = B.CreateAlloca(B.getInt8Ty(), total_bytes, "stack_arr");
+      base = B.CreatePointerCast(base, i8ptr);
+      Value* len_ptr = B.CreatePointerCast(base, B.getInt64Ty()->getPointerTo());
+      B.CreateStore(count_val, len_ptr);
+      Value* elem_ptr = B.CreateGEP(B.getInt8Ty(), base, B.getInt64(H));
+      return B.CreatePointerCast(elem_ptr, i8ptr);
+    }
+    case Expr::Kind::HeapArray: {
+      Value* count_val = emit_expr(env, expr->left.get());
+      if (!count_val) return nullptr;
+      if (count_val->getType() != B.getInt64Ty())
+        count_val = B.CreateIntCast(count_val, B.getInt64Ty(), true);
+      const std::string& elem_name = expr->var_name;
+      size_t H = array_header_size(elem_name, env.layout_map);
+      size_t elem_size = elem_size_from_type(elem_name, env.layout_map);
+      Value* total_bytes = B.CreateAdd(B.getInt64(H), B.CreateMul(count_val, B.getInt64(elem_size)), "heap_arr.total");
+      Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+      Function* malloc_fn = M->getFunction("malloc");
+      if (!malloc_fn) {
+        FunctionType* malloc_ty = FunctionType::get(i8ptr, {B.getInt64Ty()}, false);
+        malloc_fn = Function::Create(malloc_ty, GlobalValue::ExternalLinkage, "malloc", M);
+      }
+      Value* block = B.CreateCall(malloc_fn, total_bytes, "heap_array");
       Value* base = B.CreatePointerCast(block, i8ptr);
       Value* len_ptr = B.CreatePointerCast(base, B.getInt64Ty()->getPointerTo());
       B.CreateStore(count_val, len_ptr);
-      return base;
+      Value* elem_ptr = B.CreateGEP(B.getInt8Ty(), base, B.getInt64(H));
+      return B.CreatePointerCast(elem_ptr, i8ptr);
     }
-    case Expr::Kind::AllocBytes: {
-      Value* size_val = emit_expr(env, expr->left.get());
-      if (!size_val) return nullptr;
+    case Expr::Kind::Free: {
+      Value* ptr = emit_expr(env, expr->left.get());
+      if (!ptr) return nullptr;
       Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
-      if (size_val->getType() != B.getInt64Ty())
-        size_val = B.CreateIntCast(size_val, B.getInt64Ty(), true);
-      Value* slot = B.CreateAlloca(B.getInt8Ty(), size_val, "alloc_bytes");
-      return B.CreatePointerCast(slot, i8ptr);
+      if (ptr->getType() != i8ptr) ptr = B.CreatePointerCast(ptr, i8ptr);
+      Function* free_fn = M->getFunction("free");
+      if (!free_fn) {
+        FunctionType* free_ty = FunctionType::get(B.getVoidTy(), {i8ptr}, false);
+        free_fn = Function::Create(free_ty, GlobalValue::ExternalLinkage, "free", M);
+      }
+      B.CreateCall(free_fn, ptr);
+      return nullptr;
     }
+    case Expr::Kind::FreeArray: {
+      Value* elem_ptr = emit_expr(env, expr->left.get());
+      if (!elem_ptr) return nullptr;
+      Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+      if (elem_ptr->getType() != i8ptr) elem_ptr = B.CreatePointerCast(elem_ptr, i8ptr);
+      std::string elem_name = (expr->left->kind == Expr::Kind::AsArray && !expr->left->var_name.empty())
+        ? expr->left->var_name : array_elem_type_name(expr->left.get(), env);
+      size_t H = array_header_size(elem_name, env.layout_map);
+      Value* base = B.CreateGEP(B.getInt8Ty(), elem_ptr, B.getInt64(-static_cast<int64_t>(H)));
+      Function* free_fn = M->getFunction("free");
+      if (!free_fn) {
+        FunctionType* free_ty = FunctionType::get(B.getVoidTy(), {i8ptr}, false);
+        free_fn = Function::Create(free_ty, GlobalValue::ExternalLinkage, "free", M);
+      }
+      B.CreateCall(free_fn, base);
+      return nullptr;
+    }
+    case Expr::Kind::AsHeap:
+      return emit_expr(env, expr->left.get());
+    case Expr::Kind::AsArray:
+      return emit_expr(env, expr->left.get());
     case Expr::Kind::AddrOf: {
       if (!expr->left || expr->left->kind != Expr::Kind::VarRef) return nullptr;
       Value* alloca = vars_lookup(env, expr->left->var_name);
@@ -932,18 +1025,21 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       return B.getInt64(0);
     }
     case Expr::Kind::Index: {
-      Value* base = emit_expr(env, expr->left.get());
+      Value* elem_base = emit_expr(env, expr->left.get());
       Value* index_val = emit_expr(env, expr->right.get());
-      if (!base || !index_val) return nullptr;
+      if (!elem_base || !index_val) return nullptr;
       Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
-      if (base->getType() != i8ptr) base = B.CreatePointerCast(base, i8ptr);
+      if (elem_base->getType() != i8ptr) elem_base = B.CreatePointerCast(elem_base, i8ptr);
       if (index_val->getType() != B.getInt64Ty())
         index_val = B.CreateIntCast(index_val, B.getInt64Ty(), true);
+      std::string elem_name = array_elem_type_name(expr->left.get(), env);
+      size_t H = array_header_size(elem_name, env.layout_map);
+      size_t elem_size = elem_size_from_type(elem_name, env.layout_map);
+      Value* base = B.CreateGEP(B.getInt8Ty(), elem_base, B.getInt64(-static_cast<int64_t>(H)));
       Value* len_ptr = B.CreatePointerCast(base, B.getInt64Ty()->getPointerTo());
       Value* len = B.CreateLoad(B.getInt64Ty(), len_ptr, "arr.len");
       FfiType elem_ty = array_element_type_from_expr(expr->left.get(), env);
       if (elem_ty == FfiType::Void) elem_ty = FfiType::I64;
-      size_t elem_size = (elem_ty == FfiType::I32 || elem_ty == FfiType::F32) ? 4 : 8;
       Function* rt_panic_fn = M->getFunction("rt_panic");
       if (!rt_panic_fn) return nullptr;
       Value* oob = B.CreateOr(
@@ -960,8 +1056,8 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       B.CreateCall(rt_panic_fn, B.CreatePointerCast(msg_buf, i8ptr));
       B.CreateUnreachable();
       B.SetInsertPoint(cont_bb);
-      Value* offset = B.CreateAdd(B.getInt64(8), B.CreateMul(index_val, B.getInt64(elem_size)), "elem.offset");
-      Value* elem_ptr = B.CreateGEP(B.getInt8Ty(), base, offset);
+      Value* offset = B.CreateMul(index_val, B.getInt64(elem_size), "elem.offset");
+      Value* elem_ptr = B.CreateGEP(B.getInt8Ty(), elem_base, offset);
       if (elem_ty == FfiType::F64) {
         elem_ptr = B.CreatePointerCast(elem_ptr, B.getDoubleTy()->getPointerTo());
         return B.CreateLoad(B.getDoubleTy(), elem_ptr, "index.load");
@@ -1243,21 +1339,24 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
       }
       if (stmt->expr->kind == Expr::Kind::Index) {
         Expr* base_expr = stmt->expr->left.get();
-        Value* base = emit_expr(env, base_expr);
+        Value* elem_base = emit_expr(env, base_expr);
         Value* index_val = emit_expr(env, stmt->expr->right.get());
-        if (!base || !index_val) {
+        if (!elem_base || !index_val) {
           if (s_codegen_error.empty())
             s_codegen_error = "assign to array element: base or index expression failed";
           return false;
         }
-        if (base->getType() != i8ptr) base = B.CreatePointerCast(base, i8ptr);
+        if (elem_base->getType() != i8ptr) elem_base = B.CreatePointerCast(elem_base, i8ptr);
         if (index_val->getType() != B.getInt64Ty())
           index_val = B.CreateIntCast(index_val, B.getInt64Ty(), true);
+        std::string elem_name = array_elem_type_name(base_expr, env);
+        size_t H = array_header_size(elem_name, env.layout_map);
+        size_t elem_size = elem_size_from_type(elem_name, env.layout_map);
+        Value* base = B.CreateGEP(B.getInt8Ty(), elem_base, B.getInt64(-static_cast<int64_t>(H)));
         Value* len_ptr = B.CreatePointerCast(base, B.getInt64Ty()->getPointerTo());
         Value* len = B.CreateLoad(B.getInt64Ty(), len_ptr, "arr.len");
         FfiType elem_ty = array_element_type_from_expr(base_expr, env);
         if (elem_ty == FfiType::Void) elem_ty = FfiType::I64;
-        size_t elem_size = (elem_ty == FfiType::I32 || elem_ty == FfiType::F32) ? 4 : 8;
         Function* rt_panic_fn = env.module->getFunction("rt_panic");
         if (!rt_panic_fn) return false;
         Value* oob = B.CreateOr(
@@ -1274,8 +1373,8 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
         B.CreateCall(rt_panic_fn, B.CreatePointerCast(msg_buf, i8ptr));
         B.CreateUnreachable();
         B.SetInsertPoint(cont_bb);
-        Value* offset = B.CreateAdd(B.getInt64(8), B.CreateMul(index_val, B.getInt64(elem_size)), "elem.offset");
-        Value* elem_ptr = B.CreateGEP(B.getInt8Ty(), base, offset);
+        Value* offset = B.CreateMul(index_val, B.getInt64(elem_size), "elem.offset");
+        Value* elem_ptr = B.CreateGEP(B.getInt8Ty(), elem_base, offset);
         if (elem_ty == FfiType::F64) {
           elem_ptr = B.CreatePointerCast(elem_ptr, B.getDoubleTy()->getPointerTo());
           if (val->getType() != B.getDoubleTy()) val = B.CreateSIToFP(val, B.getDoubleTy());

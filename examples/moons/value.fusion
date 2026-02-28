@@ -6,18 +6,14 @@ export struct Value {
   backward: ptr;
 };
 
-extern lib "libc.so.6" {
-    fn free(pointer: ptr) -> void;
-};
-
 export fn free_value(v: ptr) -> void {
     let prev = load_field(v, Value, prev);
-    free(prev);
-    free(v);
+    free_array(as_array(prev, ptr));
+    free(as_heap(v));
 }
 
 export fn alloc_value(data: f64, prev: ptr, children_count: i64, backward: ptr) -> ptr {
-  let value = alloc(Value);
+  let value = heap(Value);
   store_field(value, Value, data, data);
   store_field(value, Value, grad, 0.0);
   store_field(value, Value, prev, prev);
@@ -29,7 +25,7 @@ export fn alloc_value(data: f64, prev: ptr, children_count: i64, backward: ptr) 
 export fn add_forward(a: ptr, b: ptr) -> ptr {
     let data = load_field(a, Value, data) + load_field(b, Value, data);
 
-    let prev = alloc_array(ptr, 2);
+    let prev = heap_array(ptr, 2);
     prev[0] = a;
     prev[1] = b;
     
@@ -52,7 +48,7 @@ fn add_backward(out: ptr) -> void {
 
 export fn mul_forward(a: ptr, b: ptr) -> ptr {
     let data = load_field(a, Value, data) * load_field(b, Value, data);
-    let prev = alloc_array(ptr, 2);
+    let prev = heap_array(ptr, 2);
     prev[0] = a;
     prev[1] = b;
     let value = alloc_value(data, prev, 2, get_func_ptr(mul_backward));
@@ -79,7 +75,7 @@ export fn relu_forward(x: ptr) -> ptr {
     if (data <= 0.0) {
         data = 0.0;
     }
-    let prev = alloc_array(ptr, 1);
+    let prev = heap_array(ptr, 1);
     prev[0] = x;
     let value = alloc_value(data, prev, 1, get_func_ptr(relu_backward));
     return value;
@@ -105,7 +101,7 @@ fn leaf_backward(v: ptr) -> void {
 }
 
 export fn make_leaf(data: f64) -> ptr {
-	let prev = alloc_array(ptr, 0);
+	let prev = heap_array(ptr, 0);
 	return alloc_value(data, prev, 0, get_func_ptr(leaf_backward));
 }
 

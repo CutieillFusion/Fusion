@@ -48,18 +48,62 @@ ExprPtr Expr::make_var_ref(std::string name) {
   return e;
 }
 
-ExprPtr Expr::make_alloc(std::string type_name) {
+ExprPtr Expr::make_stack_alloc(std::string type_name) {
   auto e = std::make_unique<Expr>();
-  e->kind = Kind::Alloc;
+  e->kind = Kind::StackAlloc;
   e->var_name = std::move(type_name);
   return e;
 }
 
-ExprPtr Expr::make_alloc_array(std::string element_type, ExprPtr count_expr) {
+ExprPtr Expr::make_heap_alloc(std::string type_name) {
   auto e = std::make_unique<Expr>();
-  e->kind = Kind::AllocArray;
+  e->kind = Kind::HeapAlloc;
+  e->var_name = std::move(type_name);
+  return e;
+}
+
+ExprPtr Expr::make_stack_array(std::string element_type, ExprPtr count_expr) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::StackArray;
   e->var_name = std::move(element_type);
   e->left = std::move(count_expr);
+  return e;
+}
+
+ExprPtr Expr::make_heap_array(std::string element_type, ExprPtr count_expr) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::HeapArray;
+  e->var_name = std::move(element_type);
+  e->left = std::move(count_expr);
+  return e;
+}
+
+ExprPtr Expr::make_free(ExprPtr ptr) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::Free;
+  e->left = std::move(ptr);
+  return e;
+}
+
+ExprPtr Expr::make_free_array(ExprPtr ptr) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::FreeArray;
+  e->left = std::move(ptr);
+  return e;
+}
+
+ExprPtr Expr::make_as_heap(ExprPtr ptr) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::AsHeap;
+  e->left = std::move(ptr);
+  return e;
+}
+
+ExprPtr Expr::make_as_array(ExprPtr ptr, std::string element_type) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::AsArray;
+  e->left = std::move(ptr);
+  e->var_name = std::move(element_type);
   return e;
 }
 
@@ -68,13 +112,6 @@ ExprPtr Expr::make_index(ExprPtr base, ExprPtr index_expr) {
   e->kind = Kind::Index;
   e->left = std::move(base);
   e->right = std::move(index_expr);
-  return e;
-}
-
-ExprPtr Expr::make_alloc_bytes(ExprPtr size_expr) {
-  auto e = std::make_unique<Expr>();
-  e->kind = Kind::AllocBytes;
-  e->left = std::move(size_expr);
   return e;
 }
 
@@ -247,6 +284,7 @@ FnDef FnDef::clone() const {
   c.name = name;
   c.params = params;
   c.param_type_names = param_type_names;
+  c.param_noescape = param_noescape;
   c.return_type = return_type;
   c.return_type_name = return_type_name;
   c.exported = exported;

@@ -127,7 +127,7 @@ static ExprPtr parse_primary(const std::vector<Token>& tokens, size_t& i) {
       return Expr::make_var_ref(std::move(name));
     }
     i++;
-    if (name == "alloc") {
+    if (name == "stack" || name == "heap") {
       if (at_eof(tokens, i)) return nullptr;
       std::string type_name;
       if (tokens[i].kind == TokenKind::Ident) {
@@ -147,9 +147,9 @@ static ExprPtr parse_primary(const std::vector<Token>& tokens, size_t& i) {
       i++;
       if (at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return nullptr;
       i++;
-      return Expr::make_alloc(std::move(type_name));
+      return (name == "stack") ? Expr::make_stack_alloc(std::move(type_name)) : Expr::make_heap_alloc(std::move(type_name));
     }
-    if (name == "alloc_array") {
+    if (name == "stack_array" || name == "heap_array") {
       if (at_eof(tokens, i)) return nullptr;
       std::string elem_type;
       if (tokens[i].kind == TokenKind::Ident) {
@@ -172,13 +172,50 @@ static ExprPtr parse_primary(const std::vector<Token>& tokens, size_t& i) {
       ExprPtr count_expr = parse_expr(tokens, i);
       if (!count_expr || at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return nullptr;
       i++;
-      return Expr::make_alloc_array(std::move(elem_type), std::move(count_expr));
+      return (name == "stack_array") ? Expr::make_stack_array(std::move(elem_type), std::move(count_expr)) : Expr::make_heap_array(std::move(elem_type), std::move(count_expr));
     }
-    if (name == "alloc_bytes") {
-      ExprPtr size_expr = parse_expr(tokens, i);
-      if (!size_expr || at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return nullptr;
+    if (name == "free") {
+      ExprPtr ptr_expr = parse_expr(tokens, i);
+      if (!ptr_expr || at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return nullptr;
       i++;
-      return Expr::make_alloc_bytes(std::move(size_expr));
+      return Expr::make_free(std::move(ptr_expr));
+    }
+    if (name == "free_array") {
+      ExprPtr ptr_expr = parse_expr(tokens, i);
+      if (!ptr_expr || at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return nullptr;
+      i++;
+      return Expr::make_free_array(std::move(ptr_expr));
+    }
+    if (name == "as_heap") {
+      ExprPtr ptr_expr = parse_expr(tokens, i);
+      if (!ptr_expr || at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return nullptr;
+      i++;
+      return Expr::make_as_heap(std::move(ptr_expr));
+    }
+    if (name == "as_array") {
+      ExprPtr ptr_expr = parse_expr(tokens, i);
+      if (!ptr_expr || at_eof(tokens, i) || tokens[i].kind != TokenKind::Comma) return nullptr;
+      i++;
+      if (at_eof(tokens, i)) return nullptr;
+      std::string elem_type;
+      if (tokens[i].kind == TokenKind::Ident) {
+        elem_type = tokens[i].ident;
+      } else if (is_type_keyword(tokens[i].kind)) {
+        switch (tokens[i].kind) {
+          case TokenKind::KwI32: elem_type = "i32"; break;
+          case TokenKind::KwI64: elem_type = "i64"; break;
+          case TokenKind::KwF32: elem_type = "f32"; break;
+          case TokenKind::KwF64: elem_type = "f64"; break;
+          case TokenKind::KwPtr: elem_type = "ptr"; break;
+          default: return nullptr;
+        }
+      } else {
+        return nullptr;
+      }
+      i++;
+      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return nullptr;
+      i++;
+      return Expr::make_as_array(std::move(ptr_expr), std::move(elem_type));
     }
     if (name == "addr_of") {
       ExprPtr inner = parse_expr(tokens, i);
@@ -726,7 +763,9 @@ static bool parse_fn_def(const std::vector<Token>& tokens, size_t& i, Program& p
   if (at_eof(tokens, i) || tokens[i].kind != TokenKind::LParen) return false;
   i++;
   if (!at_eof(tokens, i) && tokens[i].kind != TokenKind::RParen) {
-    if (tokens[i].kind != TokenKind::Ident) return false;
+    bool noescape = (!at_eof(tokens, i) && tokens[i].kind == TokenKind::Ident && tokens[i].ident == "noescape");
+    if (noescape) i++;
+    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return false;
     std::string pname = tokens[i].ident;
     i++;
     if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Colon) return false;
@@ -735,15 +774,19 @@ static bool parse_fn_def(const std::vector<Token>& tokens, size_t& i, Program& p
     if (is_type_keyword(tokens[i].kind)) {
       def.params.push_back({std::move(pname), token_to_ffi_type(tokens[i].kind)});
       def.param_type_names.push_back("");
+      def.param_noescape.push_back(noescape);
     } else if (tokens[i].kind == TokenKind::Ident) {
       def.params.push_back({std::move(pname), FfiType::Ptr});
       def.param_type_names.push_back(tokens[i].ident);
+      def.param_noescape.push_back(noescape);
     } else {
       return false;
     }
     i++;
     while (!at_eof(tokens, i) && tokens[i].kind == TokenKind::Comma) {
       i++;
+      noescape = (!at_eof(tokens, i) && tokens[i].kind == TokenKind::Ident && tokens[i].ident == "noescape");
+      if (noescape) i++;
       if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return false;
       std::string pname2 = tokens[i].ident;
       i++;
@@ -753,9 +796,11 @@ static bool parse_fn_def(const std::vector<Token>& tokens, size_t& i, Program& p
       if (is_type_keyword(tokens[i].kind)) {
         def.params.push_back({std::move(pname2), token_to_ffi_type(tokens[i].kind)});
         def.param_type_names.push_back("");
+        def.param_noescape.push_back(noescape);
       } else if (tokens[i].kind == TokenKind::Ident) {
         def.params.push_back({std::move(pname2), FfiType::Ptr});
         def.param_type_names.push_back(tokens[i].ident);
+        def.param_noescape.push_back(noescape);
       } else {
         return false;
       }

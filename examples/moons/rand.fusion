@@ -1,0 +1,11 @@
+extern lib "libc.so.6" {
+    fn rand() -> i32;
+};
+
+export fn rand_0_1() -> f64 {
+    return rand() / 2147483647.0;
+}
+
+export fn rand_uniform_neg1_1() -> f64 {
+	return 2.0 * (rand() / 2147483647.0) - 1.0;
+}

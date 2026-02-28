@@ -9,21 +9,21 @@ extern lib "libm.so.6" {
 };
 
 export fn make_vec(x: f64, y: f64) -> Vector {
-	let p = alloc(Vector);
+	let p = heap(Vector);
   	store_field(p, Vector, x, x);
   	store_field(p, Vector, y, y);
   	return p;
 }
 
 export fn add_vec(a: Vector, b: Vector) -> Vector {
-	let out = alloc(Vector);
+	let out = heap(Vector);
 	store_field(out, Vector, x, load_field(a, Vector, x) + load_field(b, Vector, x));
 	store_field(out, Vector, y, load_field(a, Vector, y) + load_field(b, Vector, y));
 	return out;
 }
 
 export fn cos_vec(t: f64) -> Vector {
-	let out = alloc(Vector);
+	let out = heap(Vector);
 	store_field(out, Vector, x, cos(t));
 	store_field(out, Vector, y, sin(t));
 	add_2_vec(out);
@@ -37,7 +37,7 @@ fn add_2_vec(v: ptr) -> void {
 
 # Non-exported helper – not visible to importers
 fn scale_vec(v: Vector, s: f64) -> Vector {
-	let out = alloc(Vector);
+	let out = heap(Vector);
 	store_field(out, Vector, x, load_field(v, Vector, x) * s);
 	store_field(out, Vector, y, load_field(v, Vector, y) * s);
 	return out;
