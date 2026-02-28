@@ -8,15 +8,32 @@
 
 namespace fusion {
 
+static FnPtrSig fn_def_to_sig(const FnDef& def) {
+  FnPtrSig sig;
+  for (const auto& p : def.params) sig.params.push_back(p.second);
+  sig.result = def.return_type;
+  return sig;
+}
+
+static FnPtrSig extern_fn_to_sig(const ExternFn& ext) {
+  FnPtrSig sig;
+  for (const auto& p : ext.params) sig.params.push_back(p.second);
+  sig.result = ext.return_type;
+  return sig;
+}
+
 struct SemaContext {
   std::unordered_set<std::string> lib_names;
   std::unordered_map<std::string, ExternFn> extern_fn_by_name;
   std::unordered_map<std::string, FnDef*> user_fn_by_name;
   std::vector<std::unordered_map<std::string, FfiType>> var_scope_stack;
   std::vector<std::unordered_map<std::string, FfiType>> array_element_scope_stack;
+  std::vector<std::unordered_map<std::string, FnPtrSig>> fnptr_scope_stack;
   LayoutMap* layout_map = nullptr;  // from Program::struct_defs
   Program* program = nullptr;
   SemaError* err = nullptr;
+  bool has_expected_return_type = false;
+  FfiType expected_return_type = FfiType::Void;
 };
 
 /* Lookup variable type from innermost to outermost scope. */
@@ -80,6 +97,47 @@ static FfiType get_array_element_type(Expr* expr, SemaContext* ctx) {
   return FfiType::Void;
 }
 
+/* Lookup function pointer signature for an expression. Returns true if known. */
+static bool lookup_fnptr_sig(SemaContext* ctx, Expr* expr, FnPtrSig* out) {
+  if (!ctx || !expr || !out) return false;
+  if (expr->kind == Expr::Kind::VarRef) {
+    for (auto it = ctx->fnptr_scope_stack.rbegin(); it != ctx->fnptr_scope_stack.rend(); ++it) {
+      auto fit = it->find(expr->var_name);
+      if (fit != it->end()) {
+        *out = fit->second;
+        return true;
+      }
+    }
+    auto user_it = ctx->user_fn_by_name.find(expr->var_name);
+    if (user_it != ctx->user_fn_by_name.end()) {
+      *out = fn_def_to_sig(*user_it->second);
+      return true;
+    }
+    auto ext_it = ctx->extern_fn_by_name.find(expr->var_name);
+    if (ext_it != ctx->extern_fn_by_name.end()) {
+      *out = extern_fn_to_sig(ext_it->second);
+      return true;
+    }
+    return false;
+  }
+  if (expr->kind == Expr::Kind::Call && expr->callee == "get_func_ptr" &&
+      expr->args.size() == 1 && expr->args[0]->kind == Expr::Kind::VarRef) {
+    const std::string& fn_name = expr->args[0]->var_name;
+    auto user_it = ctx->user_fn_by_name.find(fn_name);
+    if (user_it != ctx->user_fn_by_name.end()) {
+      *out = fn_def_to_sig(*user_it->second);
+      return true;
+    }
+    auto ext_it = ctx->extern_fn_by_name.find(fn_name);
+    if (ext_it != ctx->extern_fn_by_name.end()) {
+      *out = extern_fn_to_sig(ext_it->second);
+      return true;
+    }
+    return false;
+  }
+  return false;
+}
+
 static bool check_expr(Expr* expr, SemaContext& ctx) {
   if (!expr) return false;
   switch (expr->kind) {
@@ -93,6 +151,67 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
       if (!check_expr(expr->right.get(), ctx)) return false;
       return true;
     case Expr::Kind::Call: {
+      if (expr->callee == "get_func_ptr") {
+        if (expr->args.size() != 1) {
+          ctx.err->message = "get_func_ptr expects exactly one argument";
+          return false;
+        }
+        if (expr->args[0]->kind != Expr::Kind::VarRef) {
+          ctx.err->message = "get_func_ptr argument must be a function name";
+          return false;
+        }
+        const std::string& fn_name = expr->args[0]->var_name;
+        auto user_it = ctx.user_fn_by_name.find(fn_name);
+        auto ext_it = ctx.extern_fn_by_name.find(fn_name);
+        if (user_it == ctx.user_fn_by_name.end() && ext_it == ctx.extern_fn_by_name.end()) {
+          ctx.err->message = "get_func_ptr: unknown function '" + fn_name + "'";
+          return false;
+        }
+        return true;
+      }
+      if (expr->callee == "call") {
+        if (expr->args.size() < 1) {
+          ctx.err->message = "call expects at least a function pointer argument";
+          return false;
+        }
+        if (!check_expr(expr->args[0].get(), ctx)) return false;
+        if (expr_type(expr->args[0].get(), &ctx) != FfiType::Ptr) {
+          ctx.err->message = "call first argument must be a function pointer";
+          return false;
+        }
+        FnPtrSig sig;
+        if (!lookup_fnptr_sig(&ctx, expr->args[0].get(), &sig)) {
+          /* First arg is Ptr but target unknown (e.g. load_field): infer signature from call site. */
+          for (size_t k = 1; k < expr->args.size(); ++k) {
+            if (!check_expr(expr->args[k].get(), ctx)) return false;
+          }
+          sig.params.clear();
+          for (size_t k = 1; k < expr->args.size(); ++k)
+            sig.params.push_back(expr_type(expr->args[k].get(), &ctx));
+          sig.result = ctx.has_expected_return_type ? ctx.expected_return_type : FfiType::Void;
+          expr->inferred_call_param_types = sig.params;
+          expr->inferred_call_result_type = sig.result;
+        }
+        if (expr->args.size() - 1 != sig.params.size()) {
+          ctx.err->message = "call: wrong number of arguments for function pointer";
+          return false;
+        }
+        for (size_t j = 0; j < sig.params.size(); ++j) {
+          if (!check_expr(expr->args[j + 1].get(), ctx)) return false;
+          FfiType arg_ty = expr_type(expr->args[j + 1].get(), &ctx);
+          FfiType want = sig.params[j];
+          bool compat = (arg_ty == want) ||
+            (arg_ty == FfiType::I64 && (want == FfiType::F64 || want == FfiType::F32)) ||
+            (arg_ty == FfiType::F64 && want == FfiType::I64) ||
+            (arg_ty == FfiType::Ptr && want == FfiType::I64) ||
+            (arg_ty == FfiType::I64 && want == FfiType::Ptr);
+          if (!compat) {
+            ctx.err->message = "call: argument type mismatch for function pointer";
+            return false;
+          }
+        }
+        return true;
+      }
       if (expr->callee == "print") {
         if (expr->args.size() != 1 && expr->args.size() != 2) {
           ctx.err->message = "print expects 1 or 2 arguments";
@@ -456,6 +575,17 @@ static FfiType expr_type(Expr* expr, SemaContext* ctx) {
       return (l == FfiType::F64 || r == FfiType::F64) ? FfiType::F64 : FfiType::I64;
     }
     case Expr::Kind::Call: {
+      if (expr->callee == "get_func_ptr") return FfiType::Ptr;
+      if (expr->callee == "call") {
+        if (ctx) {
+          FnPtrSig sig;
+          if (expr->args.size() >= 1 && lookup_fnptr_sig(ctx, expr->args[0].get(), &sig))
+            return sig.result;
+          if (!expr->inferred_call_param_types.empty())
+            return expr->inferred_call_result_type;
+        }
+        return FfiType::Void;
+      }
       if (expr->callee == "print") return FfiType::Void;
       if (expr->callee == "range") return FfiType::Ptr;
       if (expr->callee == "read_line" || expr->callee == "read_line_file") return FfiType::Ptr;
@@ -542,7 +672,13 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
         ctx.err->message = "return only allowed inside a function";
         return false;
       }
-      if (!check_expr(stmt->expr.get(), ctx)) return false;
+      ctx.has_expected_return_type = true;
+      ctx.expected_return_type = def->return_type;
+      if (!check_expr(stmt->expr.get(), ctx)) {
+        ctx.has_expected_return_type = false;
+        return false;
+      }
+      ctx.has_expected_return_type = false;
       if (expr_type(stmt->expr.get(), &ctx) != def->return_type) {
         ctx.err->message = "return type does not match function return type in '" + def->name + "'";
         return false;
@@ -558,6 +694,11 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
       }
       FfiType let_ty = expr_type(stmt->init.get(), &ctx);
       ctx.var_scope_stack.back()[stmt->name] = let_ty;
+      if (let_ty == FfiType::Ptr && !ctx.fnptr_scope_stack.empty()) {
+        FnPtrSig sig;
+        if (lookup_fnptr_sig(&ctx, stmt->init.get(), &sig))
+          ctx.fnptr_scope_stack.back()[stmt->name] = sig;
+      }
       FfiType elem_ty = get_array_element_type(stmt->init.get(), &ctx);
       if (elem_ty != FfiType::Void) {
         ctx.array_element_scope_stack.back()[stmt->name] = elem_ty;
@@ -571,7 +712,8 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
               break;
             }
         }
-      }
+      } else if (let_ty == FfiType::Ptr && stmt->init->kind == Expr::Kind::Call)
+        ctx.array_element_scope_stack.back()[stmt->name] = FfiType::Ptr;
       return true;
     }
     case Stmt::Kind::Expr:
@@ -580,25 +722,31 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
       if (!check_expr(stmt->cond.get(), ctx)) return false;
       ctx.var_scope_stack.push_back({});
       ctx.array_element_scope_stack.push_back({});
+      ctx.fnptr_scope_stack.push_back({});
       for (StmtPtr& s : stmt->then_body)
         if (!check_stmt(ctx, def, s.get())) {
           ctx.var_scope_stack.pop_back();
           ctx.array_element_scope_stack.pop_back();
+          ctx.fnptr_scope_stack.pop_back();
           return false;
         }
       ctx.var_scope_stack.pop_back();
       ctx.array_element_scope_stack.pop_back();
+      ctx.fnptr_scope_stack.pop_back();
       if (stmt->else_body.empty()) return true;
       ctx.var_scope_stack.push_back({});
       ctx.array_element_scope_stack.push_back({});
+      ctx.fnptr_scope_stack.push_back({});
       for (StmtPtr& s : stmt->else_body)
         if (!check_stmt(ctx, def, s.get())) {
           ctx.var_scope_stack.pop_back();
           ctx.array_element_scope_stack.pop_back();
+          ctx.fnptr_scope_stack.pop_back();
           return false;
         }
       ctx.var_scope_stack.pop_back();
       ctx.array_element_scope_stack.pop_back();
+      ctx.fnptr_scope_stack.pop_back();
       return true;
     case Stmt::Kind::For: {
       if (!stmt->iterable || !check_expr(stmt->iterable.get(), ctx)) return false;
@@ -609,12 +757,14 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
       }
       ctx.var_scope_stack.push_back({});
       ctx.array_element_scope_stack.push_back({});
+      ctx.fnptr_scope_stack.push_back({});
       if (ctx.var_scope_stack.back().count(stmt->name)) {
         ctx.err->message = def
           ? "duplicate variable '" + stmt->name + "' in function '" + def->name + "'"
           : "duplicate variable '" + stmt->name + "'";
         ctx.var_scope_stack.pop_back();
         ctx.array_element_scope_stack.pop_back();
+        ctx.fnptr_scope_stack.pop_back();
         return false;
       }
       ctx.var_scope_stack.back()[stmt->name] = elem_ty;
@@ -623,10 +773,12 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
         if (!check_stmt(ctx, def, s.get())) {
           ctx.var_scope_stack.pop_back();
           ctx.array_element_scope_stack.pop_back();
+          ctx.fnptr_scope_stack.pop_back();
           return false;
         }
       ctx.var_scope_stack.pop_back();
       ctx.array_element_scope_stack.pop_back();
+      ctx.fnptr_scope_stack.pop_back();
       return true;
     }
     case Stmt::Kind::Assign: {
@@ -641,6 +793,11 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
         if (!compat) {
           ctx.err->message = "assignment type mismatch";
           return false;
+        }
+        if (var_ty == FfiType::Ptr && val_ty == FfiType::Ptr && !ctx.fnptr_scope_stack.empty()) {
+          FnPtrSig sig;
+          if (lookup_fnptr_sig(&ctx, stmt->init.get(), &sig))
+            ctx.fnptr_scope_stack.back()[stmt->expr->var_name] = sig;
         }
         return true;
       }
@@ -680,6 +837,7 @@ static bool check_fn_def(SemaContext& ctx, FnDef& def) {
   fn_ctx.user_fn_by_name = ctx.user_fn_by_name;
   fn_ctx.var_scope_stack.push_back(std::move(local));
   fn_ctx.array_element_scope_stack.push_back(std::move(array_local));
+  fn_ctx.fnptr_scope_stack.push_back({});
   for (StmtPtr& stmt : def.body) {
     if (!check_stmt(fn_ctx, &def, stmt.get())) return false;
   }
@@ -742,6 +900,7 @@ SemaResult check(Program* program) {
   }
   ctx.var_scope_stack.push_back({});
   ctx.array_element_scope_stack.push_back({});
+  ctx.fnptr_scope_stack.push_back({});
   for (const TopLevelItem& item : program->top_level) {
     if (const LetBinding* binding = std::get_if<LetBinding>(&item)) {
       if (!check_expr(binding->init.get(), ctx)) return r;
@@ -751,9 +910,16 @@ SemaResult check(Program* program) {
         return r;
       }
       ctx.var_scope_stack.back()[binding->name] = ty;
+      if (ty == FfiType::Ptr) {
+        FnPtrSig sig;
+        if (lookup_fnptr_sig(&ctx, binding->init.get(), &sig))
+          ctx.fnptr_scope_stack.back()[binding->name] = sig;
+      }
       FfiType elem_ty = get_array_element_type(binding->init.get(), &ctx);
       if (elem_ty != FfiType::Void)
         ctx.array_element_scope_stack.back()[binding->name] = elem_ty;
+      else if (ty == FfiType::Ptr && binding->init->kind == Expr::Kind::Call)
+        ctx.array_element_scope_stack.back()[binding->name] = FfiType::Ptr;
     } else if (const ExprPtr* expr = std::get_if<ExprPtr>(&item)) {
       if (!check_expr(expr->get(), ctx)) return r;
     } else {

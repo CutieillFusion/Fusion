@@ -1,6 +1,7 @@
 #include "codegen.hpp"
 #include "ast.hpp"
 #include "layout.hpp"
+#include "sema.hpp"
 #include <variant>
 
 #ifdef FUSION_HAVE_LLVM
@@ -92,6 +93,18 @@ static FfiType expr_type(Expr* expr, Program* program,
       return FfiType::Void;
     }
     case Expr::Kind::Call:
+      if (expr->callee == "get_func_ptr") return FfiType::Ptr;
+      if (expr->callee == "call" && program && expr->args.size() >= 1) {
+        if (expr->args[0]->kind == Expr::Kind::Call && expr->args[0]->callee == "get_func_ptr" &&
+            expr->args[0]->args.size() == 1 && expr->args[0]->args[0]->kind == Expr::Kind::VarRef) {
+          const std::string& fn_name = expr->args[0]->args[0]->var_name;
+          for (const FnDef& def : program->user_fns)
+            if (def.name == fn_name) return def.return_type;
+          for (const ExternFn& ext : program->extern_fns)
+            if (ext.name == fn_name) return ext.return_type;
+        }
+      }
+      if (expr->callee == "call") return FfiType::Void;
       if (expr->callee == "print") return FfiType::Void;
       if (expr->callee == "range") return FfiType::Ptr;
       if (expr->callee == "read_line" || expr->callee == "read_line_file" || expr->callee == "to_str") return FfiType::Ptr;
@@ -152,10 +165,69 @@ struct CodegenEnv {
   std::unordered_map<std::string, Value*> lib_handles;
   std::vector<std::unordered_map<std::string, Value*>> vars_scope_stack;
   std::vector<std::unordered_map<std::string, FfiType>> array_element_scope_stack;
+  std::vector<std::unordered_map<std::string, FnPtrSig>> fnptr_scope_stack;
   std::unordered_map<std::string, Function*> user_fns;
   const std::unordered_map<std::string, FfiType>* var_types = nullptr;
   std::unordered_map<std::string, FfiType>* fn_var_types = nullptr;
 };
+
+static FnPtrSig fn_def_to_sig(const FnDef& def) {
+  FnPtrSig sig;
+  for (const auto& p : def.params) sig.params.push_back(p.second);
+  sig.result = def.return_type;
+  return sig;
+}
+
+static FnPtrSig extern_fn_to_sig(const ExternFn& ext) {
+  FnPtrSig sig;
+  for (const auto& p : ext.params) sig.params.push_back(p.second);
+  sig.result = ext.return_type;
+  return sig;
+}
+
+static bool codegen_lookup_fnptr_sig(CodegenEnv& env, Expr* expr, FnPtrSig* out) {
+  if (!expr || !out) return false;
+  if (expr->kind == Expr::Kind::VarRef) {
+    for (auto it = env.fnptr_scope_stack.rbegin(); it != env.fnptr_scope_stack.rend(); ++it) {
+      auto fit = it->find(expr->var_name);
+      if (fit != it->end()) {
+        *out = fit->second;
+        return true;
+      }
+    }
+    if (env.program) {
+      for (const FnDef& def : env.program->user_fns)
+        if (def.name == expr->var_name) {
+          *out = fn_def_to_sig(def);
+          return true;
+        }
+      for (const ExternFn& ext : env.program->extern_fns)
+        if (ext.name == expr->var_name) {
+          *out = extern_fn_to_sig(ext);
+          return true;
+        }
+    }
+    return false;
+  }
+  if (expr->kind == Expr::Kind::Call && expr->callee == "get_func_ptr" &&
+      expr->args.size() == 1 && expr->args[0]->kind == Expr::Kind::VarRef) {
+    const std::string& fn_name = expr->args[0]->var_name;
+    if (env.program) {
+      for (const FnDef& def : env.program->user_fns)
+        if (def.name == fn_name) {
+          *out = fn_def_to_sig(def);
+          return true;
+        }
+      for (const ExternFn& ext : env.program->extern_fns)
+        if (ext.name == fn_name) {
+          *out = extern_fn_to_sig(ext);
+          return true;
+        }
+    }
+    return false;
+  }
+  return false;
+}
 
 /* Lookup variable from innermost to outermost scope. */
 static Value* vars_lookup(CodegenEnv& env, const std::string& name) {
@@ -199,6 +271,46 @@ static FfiType array_element_type_from_expr(Expr* expr, CodegenEnv& env) {
     return FfiType::Void;
   }
   return FfiType::Void;
+}
+
+static Value* coerce_value_to_type(CodegenEnv& env, Value* v, FfiType from_ffi, Type* want) {
+  if (!v || !want) return nullptr;
+  IRBuilder<>& B = *env.builder;
+  Type* have = v->getType();
+  if (have == want) return v;
+  if (want == B.getDoubleTy()) {
+    if (have == B.getInt64Ty() || have == B.getInt32Ty())
+      return B.CreateSIToFP(v, B.getDoubleTy());
+    if (have == B.getFloatTy())
+      return B.CreateFPExt(v, B.getDoubleTy());
+  }
+  if (want == B.getFloatTy()) {
+    if (have == B.getDoubleTy())
+      return B.CreateFPTrunc(v, B.getFloatTy());
+    if (have == B.getInt64Ty() || have == B.getInt32Ty())
+      return B.CreateSIToFP(v, B.getFloatTy());
+  }
+  if (want == B.getInt64Ty()) {
+    if (have == B.getDoubleTy() || have == B.getFloatTy())
+      return B.CreateFPToSI(v, B.getInt64Ty());
+    if (have == B.getInt32Ty())
+      return B.CreateSExt(v, B.getInt64Ty());
+    if (have->isPointerTy())
+      return B.CreatePtrToInt(v, B.getInt64Ty());
+  }
+  if (want == B.getInt32Ty()) {
+    if (have == B.getInt64Ty())
+      return B.CreateTrunc(v, B.getInt32Ty());
+    if (have == B.getDoubleTy() || have == B.getFloatTy())
+      return B.CreateFPToSI(v, B.getInt32Ty());
+  }
+  if (want->isPointerTy()) {
+    if (have->isPointerTy())
+      return B.CreatePointerCast(v, want);
+    if (have == B.getInt64Ty())
+      return B.CreateIntToPtr(v, want);
+  }
+  return nullptr;
 }
 
 static Value* emit_expr(CodegenEnv& env, Expr* expr) {
@@ -255,6 +367,64 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       return nullptr;
     }
     case Expr::Kind::Call: {
+      if (expr->callee == "get_func_ptr") {
+        if (expr->args.size() != 1 || expr->args[0]->kind != Expr::Kind::VarRef) return nullptr;
+        const std::string& fn_name = expr->args[0]->var_name;
+        auto uf_it = env.user_fns.find(fn_name);
+        if (uf_it == env.user_fns.end()) return nullptr;
+        Function* fn = uf_it->second;
+        Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+        return B.CreatePointerCast(fn, i8ptr);
+      }
+      if (expr->callee == "call") {
+        if (expr->args.size() < 1) return nullptr;
+        FnPtrSig sig;
+        if (!codegen_lookup_fnptr_sig(env, expr->args[0].get(), &sig)) {
+          if (expr->inferred_call_param_types.size() == expr->args.size() - 1) {
+            sig.params = expr->inferred_call_param_types;
+            sig.result = expr->inferred_call_result_type;
+          } else {
+            s_codegen_error = "cannot determine function signature for call";
+            return nullptr;
+          }
+        }
+        std::vector<Type*> param_types;
+        for (FfiType p : sig.params)
+          param_types.push_back(ffi_type_to_llvm(p, ctx, B));
+        Type* ret_ty = ffi_type_to_llvm(sig.result, ctx, B);
+        FunctionType* ft = FunctionType::get(ret_ty, param_types, false);
+        Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+        Value* callee_i8 = emit_expr(env, expr->args[0].get());
+        if (!callee_i8) return nullptr;
+        if (callee_i8->getType() != i8ptr) callee_i8 = B.CreatePointerCast(callee_i8, i8ptr);
+        Function* rt_panic_fn = M->getFunction("rt_panic");
+        if (!rt_panic_fn) return nullptr;
+        Value* is_null = B.CreateIsNull(callee_i8);
+        BasicBlock* cont_bb = BasicBlock::Create(ctx, "call.cont", B.GetInsertBlock()->getParent());
+        BasicBlock* panic_bb = BasicBlock::Create(ctx, "call.panic", B.GetInsertBlock()->getParent());
+        B.CreateCondBr(is_null, panic_bb, cont_bb);
+        B.SetInsertPoint(panic_bb);
+        const char* msg = "call on null function pointer";
+        Type* msg_ty = ArrayType::get(Type::getInt8Ty(ctx), strlen(msg) + 1);
+        Value* msg_buf = B.CreateAlloca(msg_ty, nullptr, "panic_msg");
+        B.CreateStore(ConstantDataArray::getString(ctx, msg, true), msg_buf);
+        B.CreateCall(rt_panic_fn, B.CreatePointerCast(msg_buf, i8ptr));
+        B.CreateUnreachable();
+        B.SetInsertPoint(cont_bb);
+        Value* callee_typed = B.CreatePointerCast(callee_i8, PointerType::get(ft, 0));
+        std::vector<Value*> call_args;
+        for (size_t k = 0; k < sig.params.size(); ++k) {
+          Value* v = emit_expr(env, expr->args[k + 1].get());
+          if (!v) return nullptr;
+          Type* want = ft->getParamType(k);
+          v = coerce_value_to_type(env, v, sig.params[k], want);
+          if (!v) return nullptr;
+          call_args.push_back(v);
+        }
+        CallInst* ci = B.CreateCall(ft, callee_typed, call_args);
+        if (sig.result == FfiType::Void) return B.getInt64(0);
+        return ci;
+      }
       if (expr->callee == "print") {
         if (expr->args.size() != 1 && expr->args.size() != 2) return nullptr;
         Value* arg_val = emit_expr(env, expr->args[0].get());
@@ -650,8 +820,15 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         if (it != env.layout_map->end()) elem_size = it->second.size;
       }
       Value* total_bytes = B.CreateAdd(B.getInt64(8), B.CreateMul(count_val, B.getInt64(elem_size)), "array.total");
-      Value* block = B.CreateAlloca(B.getInt8Ty(), total_bytes, "alloc_array");
-      Value* base = B.CreatePointerCast(block, PointerType::get(Type::getInt8Ty(ctx), 0));
+      Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+      /* Heap-allocate arrays so pointers stored in structs (or otherwise escaping) remain valid across calls. */
+      Function* malloc_fn = M->getFunction("malloc");
+      if (!malloc_fn) {
+        FunctionType* malloc_ty = FunctionType::get(i8ptr, {B.getInt64Ty()}, false);
+        malloc_fn = Function::Create(malloc_ty, GlobalValue::ExternalLinkage, "malloc", M);
+      }
+      Value* block = B.CreateCall(malloc_fn, total_bytes, "alloc_array");
+      Value* base = B.CreatePointerCast(block, i8ptr);
       Value* len_ptr = B.CreatePointerCast(base, B.getInt64Ty()->getPointerTo());
       B.CreateStore(count_val, len_ptr);
       return base;
@@ -742,7 +919,12 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       Value* base = emit_expr(env, expr->left.get());
       if (!base) return nullptr;
       Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
-      if (base->getType() != i8ptr) base = B.CreatePointerCast(base, i8ptr);
+      if (base->getType() != i8ptr) {
+        if (base->getType() == B.getInt64Ty())
+          base = B.CreateIntToPtr(base, i8ptr);
+        else
+          base = B.CreatePointerCast(base, i8ptr);
+      }
       Value* field_ptr = B.CreateGEP(B.getInt8Ty(), base, B.getInt64(offset));
       if (field_ty == FfiType::F64) {
         field_ptr = B.CreatePointerCast(field_ptr, B.getDoubleTy()->getPointerTo());
@@ -774,7 +956,12 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       Value* val = emit_expr(env, expr->right.get());
       if (!base || !val) return nullptr;
       Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
-      if (base->getType() != i8ptr) base = B.CreatePointerCast(base, i8ptr);
+      if (base->getType() != i8ptr) {
+        if (base->getType() == B.getInt64Ty())
+          base = B.CreateIntToPtr(base, i8ptr);
+        else
+          base = B.CreatePointerCast(base, i8ptr);
+      }
       Value* field_ptr = B.CreateGEP(B.getInt8Ty(), base, B.getInt64(offset));
       if (field_ty == FfiType::F64) {
         field_ptr = B.CreatePointerCast(field_ptr, B.getDoubleTy()->getPointerTo());
@@ -980,12 +1167,18 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
                 break;
               }
           }
-        }
+        } else if (stmt->init->kind == Expr::Kind::Call && init_val->getType()->isPointerTy())
+          env.array_element_scope_stack.back()[stmt->name] = FfiType::Ptr;
         return true;
       }
       Value* init_val = emit_expr(env, stmt->init.get());
       if (!init_val) return false;
       B.CreateStore(init_val, slot);
+      if (let_ty == FfiType::Ptr) {
+        FnPtrSig sig;
+        if (codegen_lookup_fnptr_sig(env, stmt->init.get(), &sig))
+          env.fnptr_scope_stack.back()[stmt->name] = sig;
+      }
       FfiType elem_ty = array_element_type_from_expr(stmt->init.get(), env);
       if (elem_ty != FfiType::Void) {
         env.array_element_scope_stack.back()[stmt->name] = elem_ty;
@@ -999,7 +1192,8 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
               break;
             }
         }
-      }
+      } else if (let_ty == FfiType::Ptr && stmt->init->kind == Expr::Kind::Call)
+        env.array_element_scope_stack.back()[stmt->name] = FfiType::Ptr;
       return true;
     }
     case Stmt::Kind::Expr: {
@@ -1026,11 +1220,13 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
       B.SetInsertPoint(then_bb);
       env.vars_scope_stack.push_back({});
       env.array_element_scope_stack.push_back({});
+      env.fnptr_scope_stack.push_back({});
       for (StmtPtr& s : stmt->then_body) {
         if (!emit_stmt(env, def, fn, s.get())) return false;
       }
       env.vars_scope_stack.pop_back();
       env.array_element_scope_stack.pop_back();
+      env.fnptr_scope_stack.pop_back();
       if (!B.GetInsertBlock()->getTerminator())
         B.CreateBr(merge_bb);
 
@@ -1040,11 +1236,13 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
       } else {
         env.vars_scope_stack.push_back({});
         env.array_element_scope_stack.push_back({});
+        env.fnptr_scope_stack.push_back({});
         for (StmtPtr& s : stmt->else_body) {
           if (!emit_stmt(env, def, fn, s.get())) return false;
         }
         env.vars_scope_stack.pop_back();
         env.array_element_scope_stack.pop_back();
+        env.fnptr_scope_stack.pop_back();
         if (!B.GetInsertBlock()->getTerminator())
           B.CreateBr(merge_bb);
       }
@@ -1073,6 +1271,11 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
             return false;
         }
         B.CreateStore(val, alloca);
+        if (alloca->getAllocatedType() == i8ptr && !env.fnptr_scope_stack.empty()) {
+          FnPtrSig sig;
+          if (codegen_lookup_fnptr_sig(env, stmt->init.get(), &sig))
+            env.fnptr_scope_stack.back()[stmt->expr->var_name] = sig;
+        }
         return true;
       }
       if (stmt->expr->kind == Expr::Kind::Index) {
@@ -1169,6 +1372,7 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
       }
       env.vars_scope_stack.push_back({});
       env.array_element_scope_stack.push_back({});
+      env.fnptr_scope_stack.push_back({});
       env.vars_scope_stack.back()[stmt->name] = loop_var_alloca;
       env.array_element_scope_stack.back()[stmt->name] = elem_ty;
       for (StmtPtr& s : stmt->body) {
@@ -1176,6 +1380,7 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
       }
       env.vars_scope_stack.pop_back();
       env.array_element_scope_stack.pop_back();
+      env.fnptr_scope_stack.pop_back();
       B.CreateStore(B.CreateAdd(idx, B.getInt64(1)), index_alloca);
       B.CreateBr(cond_bb);
       B.SetInsertPoint(exit_bb);
@@ -1193,8 +1398,10 @@ static bool emit_user_fn_body(CodegenEnv& env, FnDef& def, Function* fn) {
   B.SetInsertPoint(entry);
   std::vector<std::unordered_map<std::string, Value*>> saved_vars_stack = std::move(env.vars_scope_stack);
   std::vector<std::unordered_map<std::string, FfiType>> saved_array_stack = std::move(env.array_element_scope_stack);
+  std::vector<std::unordered_map<std::string, FnPtrSig>> saved_fnptr_stack = std::move(env.fnptr_scope_stack);
   env.vars_scope_stack.push_back({});
   env.array_element_scope_stack.push_back({});
+  env.fnptr_scope_stack.push_back({});
   std::unordered_map<std::string, FfiType> fn_var_types;
   for (const auto& p : def.params)
     fn_var_types[p.first] = p.second;
@@ -1224,6 +1431,7 @@ static bool emit_user_fn_body(CodegenEnv& env, FnDef& def, Function* fn) {
   env.fn_var_types = saved_fn_var_types;
   env.vars_scope_stack = std::move(saved_vars_stack);
   env.array_element_scope_stack = std::move(saved_array_stack);
+  env.fnptr_scope_stack = std::move(saved_fnptr_stack);
   return true;
 }
 
@@ -1356,23 +1564,26 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
     env.fn_var_types = &top_var_types;
     env.vars_scope_stack.push_back({});
     env.array_element_scope_stack.push_back({});
+    env.fnptr_scope_stack.push_back({});
     FnDef dummy_main;
     dummy_main.return_type = FfiType::Void;
     for (const TopLevelItem& item : program->top_level) {
       if (const LetBinding* binding = std::get_if<LetBinding>(&item)) {
         FfiType ty = binding_type(*binding, program);
-        top_var_types[binding->name] = ty;
-        Type* llvm_ty;
-        if (ty == FfiType::F64) llvm_ty = builder.getDoubleTy();
-        else if (ty == FfiType::Ptr) llvm_ty = i8ptr;
-        else llvm_ty = builder.getInt64Ty();
-        Value* slot = builder.CreateAlloca(llvm_ty, nullptr, binding->name);
         Value* init_val = emit_expr(env, binding->init.get());
         if (!init_val) {
           if (s_codegen_error.empty())
             s_codegen_error = "top-level let init expression failed for '" + binding->name + "'";
           return nullptr;
         }
+        Type* llvm_ty;
+        if (ty == FfiType::F64) llvm_ty = builder.getDoubleTy();
+        else if (ty == FfiType::Ptr) llvm_ty = i8ptr;
+        else if (ty != FfiType::Void) llvm_ty = builder.getInt64Ty();
+        else llvm_ty = init_val->getType();
+        if (ty == FfiType::Void) ty = (llvm_ty == builder.getDoubleTy()) ? FfiType::F64 : (llvm_ty == i8ptr) ? FfiType::Ptr : FfiType::I64;
+        top_var_types[binding->name] = ty;
+        Value* slot = builder.CreateAlloca(llvm_ty, nullptr, binding->name);
         if (ty == FfiType::F64 && init_val->getType() != builder.getDoubleTy())
           init_val = builder.CreateSIToFP(init_val, builder.getDoubleTy());
         else if (ty == FfiType::Ptr && init_val->getType() != i8ptr && init_val->getType()->isPointerTy())
@@ -1381,9 +1592,16 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
           init_val = builder.CreateFPToSI(init_val, builder.getInt64Ty());
         builder.CreateStore(init_val, slot);
         env.vars_scope_stack.back()[binding->name] = slot;
+        if (ty == FfiType::Ptr) {
+          FnPtrSig sig;
+          if (codegen_lookup_fnptr_sig(env, binding->init.get(), &sig))
+            env.fnptr_scope_stack.back()[binding->name] = sig;
+        }
         FfiType elem_ty = array_element_type_from_expr(binding->init.get(), env);
         if (elem_ty != FfiType::Void)
           env.array_element_scope_stack.back()[binding->name] = elem_ty;
+        else if (ty == FfiType::Ptr && binding->init->kind == Expr::Kind::Call)
+          env.array_element_scope_stack.back()[binding->name] = FfiType::Ptr;
       } else if (const StmtPtr* stmt = std::get_if<StmtPtr>(&item)) {
         if (!emit_stmt(env, dummy_main, main_fn, stmt->get())) {
           if (s_codegen_error.empty())

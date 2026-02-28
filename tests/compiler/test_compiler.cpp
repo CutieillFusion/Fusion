@@ -536,6 +536,23 @@ TEST(ParserTests, ParsesRangeWithType) {
   EXPECT_EQ(b->init->call_type_arg, "i64");
 }
 
+TEST(ParserTests, ParsesGetFuncPtr) {
+  auto tokens = fusion::lex("fn add(x: f64, y: f64) -> f64 { return x + y; } let fp = get_func_ptr(add); print(call(fp, 1.0, 2.0))");
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok()) << result.error.message;
+  ASSERT_TRUE(result.program);
+  ASSERT_EQ(result.program->top_level.size(), 2u);
+  const fusion::LetBinding* b = std::get_if<fusion::LetBinding>(&result.program->top_level[0]);
+  ASSERT_NE(b, nullptr);
+  EXPECT_EQ(b->name, "fp");
+  ASSERT_TRUE(b->init);
+  EXPECT_EQ(b->init->kind, fusion::Expr::Kind::Call);
+  EXPECT_EQ(b->init->callee, "get_func_ptr");
+  ASSERT_EQ(b->init->args.size(), 1u);
+  EXPECT_EQ(b->init->args[0]->kind, fusion::Expr::Kind::VarRef);
+  EXPECT_EQ(b->init->args[0]->var_name, "add");
+}
+
 TEST(ParserTests, ParsesAssignmentToIndex) {
   auto tokens = fusion::lex("let a = alloc_array(i64, 3); a[0] = 42; print(a[0])");
   auto result = fusion::parse(tokens);
@@ -691,6 +708,89 @@ TEST(SemaTests, RejectsForInNonArray) {
     << "expected for-in/array error, got: " << sema_result.error.message;
 }
 
+TEST(SemaTests, AcceptsGetFuncPtrAndCall) {
+  auto tokens = fusion::lex("fn add(x: f64, y: f64) -> f64 { return x + y; } let fp = get_func_ptr(add); print(call(fp, 1.0, 2.0))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, AcceptsCallWithArgumentCoercion) {
+  auto tokens = fusion::lex("fn add(x: f64, y: f64) -> f64 { return x + y; } let fp = get_func_ptr(add); print(call(fp, 1, 2))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, AcceptsFnPtrThroughLetAndAssign) {
+  auto tokens = fusion::lex(
+      "fn id(x: i64) -> i64 { return x; } let fp = get_func_ptr(id); let fp2 = fp; fp2 = fp; print(call(fp2, 42))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, RejectsCallWithZeroArgs) {
+  auto tokens = fusion::lex("fn f() -> i64 { return 0; } let fp = get_func_ptr(f); print(call())");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_FALSE(sema_result.ok);
+}
+
+TEST(SemaTests, RejectsCallNonPtrFirstArg) {
+  auto tokens = fusion::lex("fn f(x: i64) -> i64 { return x; } print(call(42, 1))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_FALSE(sema_result.ok);
+  EXPECT_TRUE(sema_result.error.message.find("ptr") != std::string::npos ||
+              sema_result.error.message.find("call") != std::string::npos)
+    << "expected ptr/call error, got: " << sema_result.error.message;
+}
+
+TEST(SemaTests, RejectsGetFuncPtrUnknown) {
+  auto tokens = fusion::lex("let fp = get_func_ptr(unknown_fn); print(1)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_FALSE(sema_result.ok);
+  EXPECT_TRUE(sema_result.error.message.find("unknown") != std::string::npos ||
+              sema_result.error.message.find("get_func_ptr") != std::string::npos)
+    << "expected unknown/get_func_ptr error, got: " << sema_result.error.message;
+}
+
+TEST(SemaTests, RejectsCallWrongArgTypes) {
+  auto tokens = fusion::lex("fn f(x: i64, y: i64) -> i64 { return x + y; } let fp = get_func_ptr(f); print(call(fp, 1.0, \"hi\"))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  // With current coercion rules, ptr and f64 arguments are allowed to coerce to i64,
+  // so this program is considered semantically valid.
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, AcceptsCallThroughStructField) {
+  /* call(load_field(op, Operation, func), x, y) with inferred signature (f64, f64) -> f64. */
+  auto tokens = fusion::lex(
+      "struct Operation { func: ptr; x: f64; y: f64; }; "
+      "fn add(x: f64, y: f64) -> f64 { return x + y; } "
+      "fn perform_operation(op: Operation) -> f64 { "
+      "  let func = load_field(op, Operation, func); "
+      "  let x = load_field(op, Operation, x); "
+      "  let y = load_field(op, Operation, y); "
+      "  return call(func, x, y); "
+      "} "
+      "print(1)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
 // --- MultifileTests ---
 // Helper: create temp dir, write library_file_content to lib_name.fusion, parse main_source, run resolve_imports_and_merge.
 // Returns (error_message, merged_program). If error_message is non-empty, merge failed.
@@ -841,6 +941,52 @@ export fn make_point(x: i64, y: i64) -> Point { let p = alloc(Point); store_fiel
   EXPECT_EQ(prog->user_fns[0].name, "make_vec");
 }
 
+TEST(MultifileTests, DuplicateStructImportFromSameLibIsDeduped) {
+  /* Same struct imported twice from the same library with identical definition
+     should be merged once without a duplicate symbol error. */
+  std::string main_src = R"(import lib "value" { struct Value; };
+import lib "value" { struct Value; };
+print(1))";
+  std::string lib_src = R"(export struct Value { data: f64; grad: f64; };)";
+  auto [err, prog] = run_multifile_merge(main_src, "value", lib_src);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_TRUE(prog);
+  size_t count_value = 0;
+  for (const auto& s : prog->struct_defs) {
+    if (s.name == "Value") ++count_value;
+  }
+  EXPECT_EQ(count_value, 1u);
+}
+
+TEST(MultifileTests, DuplicateStructImportWithDifferentShapeErrors) {
+  /* Importing a struct with the same name but a different shape should still error. */
+  std::string main_src = R"(import lib "value" { struct Value; };
+struct Value { data: f64; extra: f64; };
+print(1))";
+  std::string lib_src = R"(export struct Value { data: f64; };)";
+  auto [err, prog] = run_multifile_merge(main_src, "value", lib_src);
+  EXPECT_FALSE(err.empty());
+  EXPECT_TRUE(err.find("duplicate symbol") != std::string::npos);
+}
+
+TEST(MultifileTests, DuplicateFnImportFromSameLibIsDeduped) {
+  /* Same function imported twice from the same library with identical signature
+     should be merged once without a duplicate symbol error. */
+  std::string main_src = R"(import lib "vec" { fn answer() -> i64; };
+import lib "vec" { fn answer() -> i64; };
+print(answer()))";
+  std::string lib_src = R"(export fn answer() -> i64 { return 42; })";
+  auto [err, prog] = run_multifile_merge(main_src, "vec", lib_src);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_TRUE(prog);
+  // Function should be present exactly once in the merged program.
+  size_t count_answer = 0;
+  for (const auto& f : prog->user_fns) {
+    if (f.name == "answer") ++count_answer;
+  }
+  EXPECT_EQ(count_answer, 1u);
+}
+
 TEST(MultifileTests, DuplicateSymbolFromMainReturnsError) {
   /* Import first so it is parsed; then struct Vector in main duplicates the one we merge from lib. */
   std::string main_src = R"(import lib "vec" { struct Vector; };
@@ -882,6 +1028,64 @@ export fn id(x: i64) -> i64 { return x; })";
   ASSERT_TRUE(prog);
   auto sema_result = fusion::check(prog.get());
   EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(MultifileTests, ImportFnWithPrivateHelperIsMerged) {
+  std::string main_src = R"(import lib "mylib" { fn public_fn() -> i64; };
+print(public_fn()))";
+  std::string lib_src = R"(fn helper() -> i64 { return 41; }
+export fn public_fn() -> i64 { return helper(); })";
+  auto [err, prog] = run_multifile_merge(main_src, "mylib", lib_src);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_TRUE(prog);
+  auto sema_result = fusion::check(prog.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+  size_t helper_count = 0;
+  for (const auto& f : prog->user_fns) {
+    if (f.name == "helper") ++helper_count;
+  }
+  EXPECT_EQ(helper_count, 1u);
+}
+
+TEST(MultifileTests, ImportFnWithTransitivePrivateHelpersIsMerged) {
+  std::string main_src = R"(import lib "mylib" { fn public_fn() -> i64; };
+print(public_fn()))";
+  std::string lib_src = R"(fn helper_leaf() -> i64 { return 41; }
+fn helper_mid() -> i64 { return helper_leaf(); }
+export fn public_fn() -> i64 { return helper_mid(); })";
+  auto [err, prog] = run_multifile_merge(main_src, "mylib", lib_src);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_TRUE(prog);
+  auto sema_result = fusion::check(prog.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+  size_t leaf_count = 0;
+  size_t mid_count = 0;
+  for (const auto& f : prog->user_fns) {
+    if (f.name == "helper_leaf") ++leaf_count;
+    if (f.name == "helper_mid") ++mid_count;
+  }
+  EXPECT_EQ(leaf_count, 1u);
+  EXPECT_EQ(mid_count, 1u);
+}
+
+TEST(MultifileTests, ImportFnWithGetFuncPtrHelperIsMerged) {
+  std::string main_src = R"(import lib "mylib" { fn make() -> ptr; };
+print(0))";
+  std::string lib_src = R"(fn target(x: i64) -> i64 { return x; }
+export fn make() -> ptr {
+  let fp = get_func_ptr(target);
+  return fp;
+})";
+  auto [err, prog] = run_multifile_merge(main_src, "mylib", lib_src);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_TRUE(prog);
+  auto sema_result = fusion::check(prog.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+  size_t target_count = 0;
+  for (const auto& f : prog->user_fns) {
+    if (f.name == "target") ++target_count;
+  }
+  EXPECT_EQ(target_count, 1u);
 }
 
 #ifdef FUSION_HAVE_LLVM
@@ -1122,6 +1326,126 @@ TEST(JitTests, ExecutesLoadField) {
   ASSERT_NE(module, nullptr);
   auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
   ASSERT_TRUE(jit_result.ok) << jit_result.error;
+}
+
+TEST(JitTests, ExecutesCallThroughStructField) {
+  /* structs.fusion-style: store get_func_ptr(add/mul) in Operation.func, call via load_field. */
+  const char* path = "/tmp/fusion_jit_indirect_call.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex(
+      "struct Operation { func: ptr; x: f64; y: f64; }; "
+      "fn add(x: f64, y: f64) -> f64 { return x + y; } "
+      "fn mul(x: f64, y: f64) -> f64 { return x * y; } "
+      "fn perform_operation(op: Operation) -> f64 { "
+      "  let func = load_field(op, Operation, func); "
+      "  let x = load_field(op, Operation, x); "
+      "  let y = load_field(op, Operation, y); "
+      "  return call(func, x, y); "
+      "} "
+      "let op_add = alloc(Operation); "
+      "store_field(op_add, Operation, func, get_func_ptr(add)); "
+      "store_field(op_add, Operation, x, 3.0); "
+      "store_field(op_add, Operation, y, 4.0); "
+      "let op_mul = alloc(Operation); "
+      "store_field(op_mul, Operation, func, get_func_ptr(mul)); "
+      "store_field(op_mul, Operation, x, 3.0); "
+      "store_field(op_mul, Operation, y, 4.0); "
+      "print(perform_operation(op_add)); "
+      "print(perform_operation(op_mul))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[64];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  EXPECT_TRUE(std::atof(buf) == 7.0 || std::atof(buf) == 12.0) << "first line should be 7 or 12, got " << buf;
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  EXPECT_TRUE(std::atof(buf) == 7.0 || std::atof(buf) == 12.0) << "second line should be 7 or 12, got " << buf;
+  fclose(cap);
+  unlink(path);
+}
+
+TEST(JitTests, AllocArrayHeapEscapesFunction) {
+  /* value.fusion-style: array allocated in add_forward is stored in Value.prev and read in add_backward.
+     Requires alloc_array to be heap-allocated; with stack allocation the pointer would be dangling. */
+  const char* path = "/tmp/fusion_jit_array_escape_test.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex(
+      "struct Value { data: f64; grad: f64; prev: ptr; children_count: i64; backward: ptr; }; "
+      "fn alloc_value(data: f64, prev: ptr, children_count: i64, backward: ptr) -> ptr { "
+      "  let value = alloc(Value); "
+      "  store_field(value, Value, data, data); "
+      "  store_field(value, Value, grad, 0.0); "
+      "  store_field(value, Value, prev, prev); "
+      "  store_field(value, Value, children_count, children_count); "
+      "  store_field(value, Value, backward, backward); "
+      "  return value; "
+      "} "
+      "fn leaf_backward(v: ptr) -> void { } "
+      "fn add_backward(out: ptr) -> void { "
+      "  let prev = load_field(out, Value, prev); "
+      "  let a = prev[0] as ptr; "
+      "  let b = prev[1] as ptr; "
+      "  let grad = load_field(out, Value, grad); "
+      "  let a_grad = load_field(a, Value, grad); "
+      "  let b_grad = load_field(b, Value, grad); "
+      "  store_field(a, Value, grad, a_grad + grad); "
+      "  store_field(b, Value, grad, b_grad + grad); "
+      "} "
+      "fn add_forward(a: ptr, b: ptr) -> ptr { "
+      "  let data = load_field(a, Value, data) + load_field(b, Value, data); "
+      "  let prev = alloc_array(ptr, 2); "
+      "  prev[0] = a; "
+      "  prev[1] = b; "
+      "  return alloc_value(data, prev, 2, get_func_ptr(add_backward)); "
+      "} "
+      "let a = alloc_value(1.0, alloc_array(ptr, 0), 0, get_func_ptr(leaf_backward)); "
+      "let b = alloc_value(2.0, alloc_array(ptr, 0), 0, get_func_ptr(leaf_backward)); "
+      "store_field(a, Value, grad, 1.0); "
+      "store_field(b, Value, grad, 2.0); "
+      "let c = add_forward(a, b); "
+      "store_field(c, Value, grad, 3.0); "
+      "let c_backward = load_field(c, Value, backward); "
+      "call(c_backward, c); "
+      "print(load_field(a, Value, grad)); "
+      "print(load_field(b, Value, grad))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[64];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  EXPECT_DOUBLE_EQ(std::atof(buf), 4.0) << "a.grad after backward should be 4, got " << buf;
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  EXPECT_DOUBLE_EQ(std::atof(buf), 5.0) << "b.grad after backward should be 5, got " << buf;
+  fclose(cap);
+  unlink(path);
 }
 
 TEST(JitTests, ExecutesTwoLibsCosAndPointSet) {

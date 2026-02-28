@@ -9,9 +9,21 @@
 
 namespace fusion {
 
-enum class BinOp { Add, Sub, Mul, Div };
+enum class BinOp {
+  Add,
+  Sub,
+  Mul,
+  Div
+};
 
-enum class CompareOp { Eq, Ne, Lt, Le, Gt, Ge };
+enum class CompareOp {
+  Eq,
+  Ne,
+  Lt,
+  Le,
+  Gt,
+  Ge
+};
 
 /* FFI type kind, matches rt_ffi_type_kind_t. */
 enum class FfiType {
@@ -28,9 +40,26 @@ using ExprPtr = std::unique_ptr<Expr>;
 
 struct Expr {
   enum class Kind {
-    IntLiteral, FloatLiteral, StringLiteral, BinaryOp, Call, VarRef,
-    Alloc, AllocArray, AllocBytes, AddrOf, Load, LoadF64, LoadI32, LoadPtr, Store, LoadField, StoreField, Cast,
-    Compare, Index
+    IntLiteral,
+    FloatLiteral,
+    StringLiteral,
+    BinaryOp,
+    Call,
+    VarRef,
+    Alloc,
+    AllocArray,
+    AllocBytes,
+    AddrOf,
+    Load,
+    LoadF64,
+    LoadI32,
+    LoadPtr,
+    Store,
+    LoadField,
+    StoreField,
+    Cast,
+    Compare,
+    Index
   };
   Kind kind = Kind::IntLiteral;
 
@@ -47,6 +76,10 @@ struct Expr {
   std::string var_name;  // for VarRef, or alloc type name for Alloc
   std::string load_field_struct;  // for LoadField
   std::string load_field_field;   // for LoadField
+
+  /* When non-empty, sema inferred the call signature for call(ptr, ...); codegen uses this. */
+  std::vector<FfiType> inferred_call_param_types;
+  FfiType inferred_call_result_type = FfiType::Void;
 
   static ExprPtr make_int(int64_t value);
   static ExprPtr make_float(double value);

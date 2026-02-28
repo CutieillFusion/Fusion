@@ -1,0 +1,61 @@
+export struct Point { 
+    x: f64; 
+    y: f64; 
+    class: f64; 
+};
+
+extern lib "libm.so.6" {
+    fn cos(x: f64) -> f64;
+    fn sin(x: f64) -> f64;
+    fn log(x: f64) -> f64;
+    fn sqrt(x: f64) -> f64;
+};
+
+extern lib "libc.so.6" {  
+    fn rand() -> i32;
+};
+
+fn alloc_point(x: f64, y: f64, class: f64) -> ptr {
+    let p = alloc(Point);
+    store_field(p, Point, x, x);
+    store_field(p, Point, y, y);
+    store_field(p, Point, class, class);
+    return p;
+}
+
+fn rand_0_1() -> f64 {
+    return (rand() + 1.0) / 2147483648.0;
+}
+
+export fn create_moons(n: i64, sigma: f64) -> ptr {
+    let moons = alloc_array(ptr, n * 2);
+    let pi = 3.14159265358979;
+
+    for i in range(n, f64) {
+        let t = pi * i / (n - 1.0);
+        let x = 0.0;
+        let y = 0.0;
+        let class = rand_0_1();
+        
+        if (class < 0.5) {
+            class = 0.0 - 1.0;
+            x = cos(t);
+            y = sin(t);
+        } else {
+            class = 1.0;
+            x = 1.0 - cos(t);
+            y = 1.0 - sin(t) - 0.5;
+        }
+
+        let u1 = rand_0_1();
+        let u2 = rand_0_1();
+        let z1 = sqrt((0.0 - 2.0) * log(u1)) * cos(2.0 * pi * u2);
+        let z2 = sqrt((0.0 - 2.0) * log(u1)) * sin(2.0 * pi * u2);
+        let x_n = x + sigma * z1;
+        let y_n = y + sigma * z2;
+
+        moons[i as i64] = alloc_point(x_n, y_n, class);
+    }
+
+    return moons;
+}

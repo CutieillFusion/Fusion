@@ -1,0 +1,199 @@
+export struct Value {
+  data: f64;
+  grad: f64;
+  prev: ptr;
+  children_count: i64;
+  backward: ptr;
+};
+
+export fn alloc_value(data: f64, prev: ptr, children_count: i64, backward: ptr) -> ptr {
+  let value = alloc(Value);
+  store_field(value, Value, data, data);
+  store_field(value, Value, grad, 0.0);
+  store_field(value, Value, prev, prev);
+  store_field(value, Value, children_count, children_count);
+  store_field(value, Value, backward, backward);
+  return value;
+}
+
+export fn add_forward(a: ptr, b: ptr) -> ptr {
+    let data = load_field(a, Value, data) + load_field(b, Value, data);
+
+    let prev = alloc_array(ptr, 2);
+    prev[0] = a;
+    prev[1] = b;
+    
+    let value = alloc_value(data, prev, 2, get_func_ptr(add_backward));
+    return value;
+}
+
+fn add_backward(out: ptr) -> void {
+    let prev = load_field(out, Value, prev);
+    let a = prev[0] as ptr;
+    let b = prev[1] as ptr;
+    let grad = load_field(out, Value, grad);
+    let a_grad = load_field(a, Value, grad);
+    let b_grad = load_field(b, Value, grad);
+    let new_a_grad = a_grad + grad;
+    let new_b_grad = b_grad + grad;
+    store_field(a, Value, grad, new_a_grad);
+    store_field(b, Value, grad, new_b_grad);
+}
+
+export fn mul_forward(a: ptr, b: ptr) -> ptr {
+    let data = load_field(a, Value, data) * load_field(b, Value, data);
+    let prev = alloc_array(ptr, 2);
+    prev[0] = a;
+    prev[1] = b;
+    let value = alloc_value(data, prev, 2, get_func_ptr(mul_backward));
+    return value;
+}
+
+fn mul_backward(out: ptr) -> void {
+    let prev = load_field(out, Value, prev);
+    let a = prev[0] as ptr;
+    let b = prev[1] as ptr;
+    let grad = load_field(out, Value, grad);
+    let a_data = load_field(a, Value, data);
+    let b_data = load_field(b, Value, data);
+    let a_grad = load_field(a, Value, grad);
+    let b_grad = load_field(b, Value, grad);
+    let new_a_grad = a_grad + b_data * grad;
+    let new_b_grad = b_grad + a_data * grad;
+    store_field(a, Value, grad, new_a_grad);
+    store_field(b, Value, grad, new_b_grad);
+}
+
+export fn relu_forward(x: ptr) -> ptr {
+    let data = load_field(x, Value, data);
+    if (data <= 0.0) {
+        data = 0.0;
+    }
+    let prev = alloc_array(ptr, 1);
+    prev[0] = x;
+    let value = alloc_value(data, prev, 1, get_func_ptr(relu_backward));
+    return value;
+}
+
+fn relu_backward(out: ptr) -> void {
+    let prev = load_field(out, Value, prev);
+    let x = prev[0] as ptr;
+    let v = 0.0;
+    let data = load_field(out, Value, data);
+    if (data > 0.0) {
+        v = 1.0;
+    }
+    let grad = load_field(out, Value, grad);
+    let x_grad = load_field(x, Value, grad);
+    let new_grad = x_grad + v * grad;
+    store_field(x, Value, grad, new_grad);
+}
+
+fn leaf_backward(v: ptr) -> void {
+	# Leaf nodes do not propagate gradients further.
+}
+
+export fn make_leaf(data: f64) -> ptr {
+	let prev = alloc_array(ptr, 0);
+	return alloc_value(data, prev, 0, get_func_ptr(leaf_backward));
+}
+
+fn test_forward() -> void {
+    let a = make_leaf(1.0);
+    let b = make_leaf(2.0);
+
+    let c = add_forward(a, b);
+
+    store_field(c, Value, grad, 3.0);
+
+    call(load_field(c, Value, backward), c);
+
+    let a_grad = load_field(a, Value, grad);
+    let b_grad = load_field(b, Value, grad);
+    let c_grad = load_field(c, Value, grad);
+
+    if (c_grad != 3.0) {
+        print("ERROR: c_grad is not 3.0");
+        print(c_grad);
+    }
+    if (a_grad != 3.0) {
+        print("ERROR: a_grad is not 3.0");
+        print(a_grad);
+    }
+    if (b_grad != 3.0) {
+        print("ERROR: b_grad is not 3.0");
+        print(b_grad);
+    }
+}
+
+fn test_multiply() -> void {
+    let a = make_leaf(1.0);
+    let b = make_leaf(2.0);
+
+    let c = mul_forward(a, b);
+
+    store_field(c, Value, grad, 3.0);
+
+    call(load_field(c, Value, backward), c);
+
+    let a_grad = load_field(a, Value, grad);
+    let b_grad = load_field(b, Value, grad);
+    let c_grad = load_field(c, Value, grad);
+
+    if (c_grad != 3.0) {
+        print("ERROR: c_grad is not 3.0");
+        print(c_grad);
+    }
+    if (a_grad != 6.0) {
+        print("ERROR: a_grad is not 6.0");
+        print(a_grad);
+    }
+    if (b_grad != 3.0) {
+        print("ERROR: b_grad is not 3.0");
+        print(b_grad);
+    }
+}
+
+fn test_relu() -> void {
+    let a = make_leaf(1.0);
+
+    let b = relu_forward(a);
+
+    store_field(b, Value, grad, 3.0);
+
+    call(load_field(b, Value, backward), b);
+
+    let a_grad = load_field(a, Value, grad);
+    let b_grad = load_field(b, Value, grad);
+    if (b_grad != 3.0) {
+        print("ERROR: b_grad is not 3.0");
+        print(b_grad);
+    }
+    if (a_grad != 3.0) {
+        print("ERROR: a_grad is not 3.0");
+        print(a_grad);
+    }
+
+    let c = make_leaf(0.0 - 1.0);
+
+    let d = relu_forward(c);
+
+    store_field(d, Value, grad, 3.0);
+
+    call(load_field(d, Value, backward), d);
+
+    let c_grad = load_field(c, Value, grad);
+    let d_grad = load_field(d, Value, grad);
+    if (d_grad != 3.0) {
+        print("ERROR: d_grad is not 3.0");
+        print(d_grad);
+    }
+    if (c_grad != 0.0) {
+        print("ERROR: c_grad is not 0.0");
+        print(c_grad);
+    }
+}
+
+test_forward();
+test_multiply();
+test_relu();

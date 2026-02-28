@@ -1,0 +1,177 @@
+# Make-moons dataset: two interleaving semicircles (class 0 and class 1).
+# Like sklearn.datasets.make_moons: points on two arcs in 2D.
+#
+# Moon 0 (class 0): upper semicircle  x = cos(t), y = sin(t),  t in [0, pi]
+# Moon 1 (class 1): shifted semicircle x = 1 - cos(t), y = 1 - sin(t) - 0.5
+# Angles t evenly spaced. Gaussian noise (sigma) added via Box-Muller from rand().
+
+import lib "moons" {
+	struct Point;
+	fn create_moons(n: i64, sigma: f64) -> ptr;
+}
+
+import lib "value" {
+	struct Value;
+	fn alloc_value(data: f64, prev: ptr, children_count: i64, backward: ptr) -> ptr;
+	fn add_forward(a: ptr, b: ptr) -> ptr;
+	fn mul_forward(a: ptr, b: ptr) -> ptr;
+	fn relu_forward(x: ptr) -> ptr;
+	fn make_leaf(data: f64) -> ptr;
+}
+
+import lib "autograd" {
+	fn backward(root: ptr) -> void;
+}
+
+extern lib "libc.so.6" {
+	fn rand() -> i32;
+	fn free(p: ptr) -> void;
+};
+
+fn rand_uniform_neg1_1() -> f64 {
+	# Returns a random f64 in [-1, 1] using libc rand()
+	let r = rand() as f64;
+	return 2.0 * (r / 2147483647.0) - 1.0;
+}
+
+let n_moons = 200;
+let moons = create_moons(n_moons, 0.1);
+let batch_size = 32;
+
+let input_size = 2;
+let hidden_size = 2;
+let output_size = 1;
+let num_epochs = 2;
+let learning_rate = 0.01;
+
+let W1 = alloc_array(ptr, input_size * hidden_size);
+let W2 = alloc_array(ptr, hidden_size * output_size);
+let b1 = alloc_array(ptr, hidden_size);
+let b2 = alloc_array(ptr, output_size);
+
+for i in range(input_size, i64) {
+	for j in range(hidden_size, i64) {
+		W1[i * hidden_size + j] = make_leaf(rand_uniform_neg1_1());
+	}
+}
+
+for i in range(hidden_size, i64) {
+	for j in range(output_size, i64) {
+		W2[i * output_size + j] = make_leaf(rand_uniform_neg1_1());
+	}
+}
+
+for i in range(hidden_size, i64) {
+	b1[i] = make_leaf(0.0);
+}
+
+for i in range(output_size, i64) {
+	b2[i] = make_leaf(0.0);
+}
+
+let X = alloc_array(ptr, input_size);
+let y = alloc_array(ptr, output_size);
+let X_batch = alloc_array(ptr, batch_size * 2);
+let y_batch = alloc_array(ptr, batch_size);
+
+let h1 = alloc_array(ptr, hidden_size);
+let h2 = alloc_array(ptr, output_size);
+let losses = alloc_array(ptr, output_size);
+for i in range(output_size, i64) {
+	losses[i] = make_leaf(0.0);
+}
+
+for epoch in range(num_epochs, i64) {
+	print("Epoch:");
+	print(epoch);
+
+	let running = make_leaf(0.0);
+
+	for sample_idx in range(batch_size, i64) {
+		X[0] = make_leaf(load_field(moons[sample_idx], Point, x));
+		X[1] = make_leaf(load_field(moons[sample_idx], Point, y));
+		y[0] = make_leaf(load_field(moons[sample_idx], Point, class) as f64);
+		X_batch[sample_idx * 2] = X[0];
+		X_batch[sample_idx * 2 + 1] = X[1];
+		y_batch[sample_idx] = y[0];
+
+		# Forward layer 1: h1[j] = relu( sum_i X[i]*W1[i,j] + b1[j] )
+		for j in range(hidden_size, i64) {
+			let acc = b1[j];
+			for i in range(input_size, i64) {
+				acc = add_forward(acc, mul_forward(X[i], W1[i * hidden_size + j]));
+			}
+			h1[j] = relu_forward(acc);
+		}
+
+		# Forward layer 2: h2[j] = relu( sum_i h1[i]*W2[i,j] + b2[j] )
+		for j in range(output_size, i64) {
+			let acc = b2[j];
+			for i in range(hidden_size, i64) {
+				acc = add_forward(acc, mul_forward(h1[i], W2[i * output_size + j]));
+			}
+			h2[j] = relu_forward(acc);
+		}
+
+		# Loss: hinge loss relu(1.0 - target * pred)
+		for i in range(output_size, i64) {
+			let one = make_leaf(1.0);
+			let neg_one = make_leaf(0.0 - 1.0);
+			let target_pred = mul_forward(y[i], h2[i]);
+			let neg_target_pred = mul_forward(neg_one, target_pred);
+			let loss_value = add_forward(one, neg_target_pred);
+			losses[i] = relu_forward(loss_value);
+		}
+
+		let sample_loss = losses[0];
+		running = add_forward(running, sample_loss);
+	}
+
+	store_field(running, Value, grad, 1.0);
+	backward(running);
+
+	for i in range(input_size, i64) {
+		for j in range(hidden_size, i64) {
+			let w1_grad = load_field(W1[i * hidden_size + j], Value, grad);
+			let w1_data = load_field(W1[i * hidden_size + j], Value, data);
+			let new_data = w1_data - learning_rate * w1_grad;
+			store_field(W1[i * hidden_size + j], Value, data, new_data);
+			store_field(W1[i * hidden_size + j], Value, grad, 0.0);
+		}
+	}
+
+	for i in range(hidden_size, i64) {
+		for j in range(output_size, i64) {
+			let w2_grad = load_field(W2[i * output_size + j], Value, grad);
+			let w2_data = load_field(W2[i * output_size + j], Value, data);
+			let new_data = w2_data - learning_rate * w2_grad;
+			store_field(W2[i * output_size + j], Value, data, new_data);
+			store_field(W2[i * output_size + j], Value, grad, 0.0);
+		}
+	}
+
+	for i in range(hidden_size, i64) {
+		let b1_grad = load_field(b1[i], Value, grad);
+		let b1_data = load_field(b1[i], Value, data);
+		let new_data = b1_data - learning_rate * b1_grad;
+		store_field(b1[i], Value, data, new_data);
+		store_field(b1[i], Value, grad, 0.0);
+	}
+
+	for i in range(output_size, i64) {
+		let b2_grad = load_field(b2[i], Value, grad);
+		let b2_data = load_field(b2[i], Value, data);
+		let new_data = b2_data - learning_rate * b2_grad;
+		store_field(b2[i], Value, data, new_data);
+		store_field(b2[i], Value, grad, 0.0);
+	}
+
+	for k in range(batch_size, i64) {
+		free(X_batch[k * 2]);
+		free(X_batch[k * 2 + 1]);
+		free(y_batch[k]);
+	}
+
+	print("loss data:");
+	print(load_field(running, Value, data));
+}

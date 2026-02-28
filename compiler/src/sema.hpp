@@ -3,8 +3,15 @@
 
 #include "ast.hpp"
 #include <string>
+#include <vector>
 
 namespace fusion {
+
+/* Function pointer signature; used by sema and codegen. */
+struct FnPtrSig {
+  std::vector<FfiType> params;
+  FfiType result;
+};
 
 struct SemaError {
   std::string message;

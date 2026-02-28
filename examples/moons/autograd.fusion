@@ -1,0 +1,164 @@
+import lib "value" {
+    struct Value;
+    fn add_forward(a: ptr, b: ptr) -> ptr;
+    fn mul_forward(a: ptr, b: ptr) -> ptr;
+    fn relu_forward(x: ptr) -> ptr;
+    fn make_leaf(data: f64) -> ptr;
+}
+
+fn already_in_topo(v: ptr, topo: ptr, topo_count: i64) -> i64 {
+    for i in range(topo_count, i64) {
+        if (topo[i] as ptr == v) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+fn build_topo(v: ptr, topo: ptr, topo_count: i64) -> i64 {
+    if (already_in_topo(v, topo, topo_count) != 0) {
+        return topo_count;
+    }
+
+    let mut_count = topo_count;
+
+    let children = load_field(v, Value, prev);
+    let n = load_field(v, Value, children_count);
+
+    for j in range(n, i64) {
+        let child = children[j] as ptr;
+        mut_count = build_topo(child, topo, mut_count);
+    }
+
+    topo[mut_count] = v;
+    let new_count = mut_count + 1;
+    return new_count;
+}
+
+export fn backward(root: ptr) -> void {
+    let max_nodes = 1000;
+    let topo = alloc_array(ptr, max_nodes);
+
+    let total_topo_count = build_topo(root, topo, 0);
+
+    store_field(root, Value, grad, 1.0);
+
+    for i in range(total_topo_count, i64) {
+        let idx = total_topo_count - 1 - i;
+        let v = topo[idx] as ptr;
+        let backward = load_field(v, Value, backward);
+        call(backward, v);
+    }
+}
+
+fn test_backward_gradients() -> void {
+    let x = make_leaf(2.0);
+    let w = make_leaf(3.0);
+    let b = make_leaf(1.0);
+
+    let p = mul_forward(x, w);
+    let s = add_forward(p, b);
+    let out = relu_forward(s);
+
+    store_field(out, Value, grad, 1.0);
+    backward(out);
+
+    let x_grad = load_field(x, Value, grad);
+    let w_grad = load_field(w, Value, grad);
+    let b_grad = load_field(b, Value, grad);
+    let p_grad = load_field(p, Value, grad);
+    let s_grad = load_field(s, Value, grad);
+    let out_grad = load_field(out, Value, grad);
+
+    if (out_grad != 1.0) {
+        print("ERROR: out.grad should be 1.0");
+        print(out_grad);
+    }
+    if (s_grad != 1.0) {
+        print("ERROR: s.grad should be 1.0");
+        print(s_grad);
+    }
+    if (p_grad != 1.0) {
+        print("ERROR: p.grad should be 1.0");
+        print(p_grad);
+    }
+    if (b_grad != 1.0) {
+        print("ERROR: b.grad should be 1.0");
+        print(b_grad);
+    }
+    if (x_grad != 3.0) {
+        print("ERROR: x.grad should be 3.0 (w.data * 1)");
+        print(x_grad);
+    }
+    if (w_grad != 2.0) {
+        print("ERROR: w.grad should be 2.0 (x.data * 1)");
+        print(w_grad);
+    }
+}
+
+fn test_backward_relu_zero() -> void {
+    let x = make_leaf(0.0 - 1.0);
+    let out = relu_forward(x);
+    store_field(out, Value, grad, 1.0);
+    backward(out);
+    let x_grad = load_field(x, Value, grad);
+    if (x_grad != 0.0) {
+        print("ERROR: x.grad should be 0.0 (ReLU zero branch)");
+        print(x_grad);
+    }
+}
+
+fn test_backward_diamond() -> void {
+    # Diamond: x,y,z leaves. a=x*y, b=y*z (y shared), c=a+b, out=relu(c).
+    # Backward from out: gradient accumulates at y from both branches.
+    # x=2, y=3, z=4 => a=6, b=12, c=18, out=18.
+    # Chain rule: out.grad=1 => c.grad=1 => a.grad=1, b.grad=1
+    # => x.grad=3, y.grad=2+4=6, z.grad=3.
+    let x = make_leaf(2.0);
+    let y = make_leaf(3.0);
+    let z = make_leaf(4.0);
+
+    let a = mul_forward(x, y);
+    let b = mul_forward(y, z);
+    let c = add_forward(a, b);
+    let out = relu_forward(c);
+
+    store_field(out, Value, grad, 1.0);
+    backward(out);
+
+    let x_grad = load_field(x, Value, grad);
+    let y_grad = load_field(y, Value, grad);
+    let z_grad = load_field(z, Value, grad);
+    let a_grad = load_field(a, Value, grad);
+    let b_grad = load_field(b, Value, grad);
+    let c_grad = load_field(c, Value, grad);
+
+    if (a_grad != 1.0) {
+        print("ERROR: a.grad should be 1.0");
+        print(a_grad);
+    }
+    if (b_grad != 1.0) {
+        print("ERROR: b.grad should be 1.0");
+        print(b_grad);
+    }
+    if (c_grad != 1.0) {
+        print("ERROR: c.grad should be 1.0");
+        print(c_grad);
+    }
+    if (x_grad != 3.0) {
+        print("ERROR: x.grad should be 3.0 (y from a branch)");
+        print(x_grad);
+    }
+    if (y_grad != 6.0) {
+        print("ERROR: y.grad should be 6.0 (x from a + z from b)");
+        print(y_grad);
+    }
+    if (z_grad != 3.0) {
+        print("ERROR: z.grad should be 3.0 (y from b branch)");
+        print(z_grad);
+    }
+}
+
+test_backward_gradients();
+test_backward_relu_zero();
+test_backward_diamond();

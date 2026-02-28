@@ -1,0 +1,40 @@
+# Function pointers: get_func_ptr and call
+# get_func_ptr(fn) returns a ptr to a user-defined function; call(fp, ...) invokes it.
+
+struct Operation {
+    func: ptr;
+    x: f64;
+    y: f64;
+};
+
+fn add(x: f64, y: f64) -> f64 {
+  return x + y;
+}
+
+fn mul(x: f64, y: f64) -> f64 {
+  return x * y;
+}
+
+fn perform_operation(op: Operation) -> f64 {
+    let func = load_field(op, Operation, func);
+    let x = load_field(op, Operation, x);
+    let y = load_field(op, Operation, y);
+    return call(func, x, y);
+}
+
+let op_add = alloc(Operation);
+store_field(op_add, Operation, func, get_func_ptr(add));
+store_field(op_add, Operation, x, 3.0);
+store_field(op_add, Operation, y, 4.0);
+
+let op_mul = alloc(Operation);
+store_field(op_mul, Operation, func, get_func_ptr(mul));
+store_field(op_mul, Operation, x, 3.0);
+store_field(op_mul, Operation, y, 4.0);
+
+print(perform_operation(op_add));
+print(perform_operation(op_mul));
+
+# Get pointers to the functions
+let fp_add = get_func_ptr(add);
+let fp_mul = get_func_ptr(mul);

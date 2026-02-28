@@ -26,7 +26,13 @@ export fn cos_vec(t: f64) -> Vector {
 	let out = alloc(Vector);
 	store_field(out, Vector, x, cos(t));
 	store_field(out, Vector, y, sin(t));
+	add_2_vec(out);
 	return out;
+}
+
+fn add_2_vec(v: ptr) -> void {
+	store_field(v, Vector, x, load_field(v, Vector, x) + 2.0);
+	store_field(v, Vector, y, load_field(v, Vector, y) + 2.0);
 }
 
 # Non-exported helper – not visible to importers

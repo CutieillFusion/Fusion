@@ -186,6 +186,14 @@ static ExprPtr parse_primary(const std::vector<Token>& tokens, size_t& i) {
       i++;
       return Expr::make_addr_of(std::move(inner));
     }
+    if (name == "get_func_ptr") {
+      ExprPtr inner = parse_expr(tokens, i);
+      if (!inner || at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return nullptr;
+      i++;
+      std::vector<ExprPtr> args;
+      args.push_back(std::move(inner));
+      return Expr::make_call("get_func_ptr", std::move(args), "");
+    }
     if (name == "load") {
       ExprPtr inner = parse_expr(tokens, i);
       if (!inner || at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return nullptr;

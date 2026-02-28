@@ -218,6 +218,8 @@ ExprPtr Expr::clone() const {
   e->var_name = var_name;
   e->load_field_struct = load_field_struct;
   e->load_field_field = load_field_field;
+  e->inferred_call_param_types = inferred_call_param_types;
+  e->inferred_call_result_type = inferred_call_result_type;
   if (left) e->left = left->clone();
   if (right) e->right = right->clone();
   for (const auto& a : args) e->args.push_back(a ? a->clone() : nullptr);
