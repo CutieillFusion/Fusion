@@ -11,6 +11,7 @@ namespace fusion {
 /* C-layout: size and alignment for a single FfiType (primitive). */
 inline size_t ffi_type_size(FfiType t) {
   switch (t) {
+    case FfiType::I8: return 1;
     case FfiType::I32: return 4;
     case FfiType::I64: return 8;
     case FfiType::F32: return 4;

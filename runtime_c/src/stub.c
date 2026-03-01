@@ -93,6 +93,22 @@ void rt_write_file_ptr(void *handle, const char *s) {
     fputs(s, (FILE *)handle);
 }
 
+int64_t rt_write_bytes(void *handle, const void *buf, int64_t count) {
+  if (!handle || !buf || count < 0) return -1;
+  size_t n = (size_t)count;
+  if (n != (uint64_t)count) return -1; /* overflow */
+  size_t w = fwrite(buf, 1, n, (FILE *)handle);
+  return (int64_t)w;
+}
+
+int64_t rt_read_bytes(void *handle, void *buf, int64_t count) {
+  if (!handle || !buf || count < 0) return -1;
+  size_t n = (size_t)count;
+  if (n != (uint64_t)count) return -1;
+  size_t r = fread(buf, 1, n, (FILE *)handle);
+  return (int64_t)r;
+}
+
 int64_t rt_eof_file(void *handle) {
   if (!handle) return 1;
   return feof((FILE *)handle) ? 1 : 0;

@@ -151,7 +151,7 @@ static PtrBase expr_base(Expr* expr, SemaContext* ctx) {
 }
 
 static bool is_alloc_type(const std::string& name, Program* program) {
-  if (name == "i32" || name == "i64" || name == "f32" || name == "f64" || name == "ptr")
+  if (name == "i8" || name == "i32" || name == "i64" || name == "f32" || name == "f64" || name == "ptr")
     return true;
   if (program)
     for (const auto& s : program->struct_defs)
@@ -167,6 +167,7 @@ static FfiType get_array_element_type(Expr* expr, SemaContext* ctx) {
   }
   if (expr->kind == Expr::Kind::StackArray || expr->kind == Expr::Kind::HeapArray) {
     const std::string& t = expr->var_name;
+    if (t == "i8") return FfiType::I8;
     if (t == "i32") return FfiType::I32;
     if (t == "i64") return FfiType::I64;
     if (t == "f32") return FfiType::F32;
@@ -401,6 +402,26 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
         FfiType val_ty = expr_type(expr->args[1].get(), &ctx);
         if (val_ty != FfiType::I64 && val_ty != FfiType::F64 && val_ty != FfiType::Ptr) {
           ctx.err->message = "write_file second argument must be i64, f64, or ptr";
+          return false;
+        }
+        return true;
+      }
+      if (expr->callee == "write_bytes" || expr->callee == "read_bytes") {
+        if (expr->args.size() != 3) {
+          ctx.err->message = expr->callee + " expects (handle, buffer, count)";
+          return false;
+        }
+        if (!check_expr(expr->args[0].get(), ctx) || !check_expr(expr->args[1].get(), ctx) || !check_expr(expr->args[2].get(), ctx)) return false;
+        if (expr_type(expr->args[0].get(), &ctx) != FfiType::Ptr) {
+          ctx.err->message = std::string(expr->callee) + " first argument must be pointer (file handle)";
+          return false;
+        }
+        if (expr_type(expr->args[1].get(), &ctx) != FfiType::Ptr) {
+          ctx.err->message = std::string(expr->callee) + " second argument must be pointer (buffer)";
+          return false;
+        }
+        if (expr_type(expr->args[2].get(), &ctx) != FfiType::I64) {
+          ctx.err->message = std::string(expr->callee) + " third argument must be i64 (byte count)";
           return false;
         }
         return true;
@@ -742,6 +763,7 @@ static FfiType expr_type(Expr* expr, SemaContext* ctx) {
       if (expr->callee == "open") return FfiType::Ptr;
       if (expr->callee == "close") return FfiType::Void;
       if (expr->callee == "write_file") return FfiType::Void;
+      if (expr->callee == "write_bytes" || expr->callee == "read_bytes") return FfiType::I64;
       if (expr->callee == "eof_file" || expr->callee == "line_count_file") return FfiType::I64;
       if (ctx) {
         auto ext_it = ctx->extern_fn_by_name.find(expr->callee);
@@ -1031,7 +1053,8 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
         FfiType val_ty = expr_type(stmt->init.get(), &ctx);
         bool compat = (elem_ty == val_ty) ||
           (elem_ty == FfiType::Ptr && val_ty == FfiType::I64) ||
-          (elem_ty == FfiType::I64 && val_ty == FfiType::Ptr);
+          (elem_ty == FfiType::I64 && val_ty == FfiType::Ptr) ||
+          (elem_ty == FfiType::I8 && val_ty == FfiType::I64);
         if (!compat) {
           ctx.err->message = "assignment type mismatch for array element";
           return false;

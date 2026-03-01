@@ -43,6 +43,7 @@ const std::string& codegen_last_error() { return s_codegen_error; }
 static int ffi_type_to_kind(FfiType t) {
   switch (t) {
     case FfiType::Void: return 0;
+    case FfiType::I8: return 2;
     case FfiType::I32: return 1;
     case FfiType::I64: return 2;
     case FfiType::F32: return 3;
@@ -55,6 +56,7 @@ static int ffi_type_to_kind(FfiType t) {
 static Type* ffi_type_to_llvm(FfiType t, LLVMContext& ctx, IRBuilder<>& B) {
   switch (t) {
     case FfiType::Void: return B.getVoidTy();
+    case FfiType::I8: return B.getInt8Ty();
     case FfiType::I32: return B.getInt32Ty();
     case FfiType::I64: return B.getInt64Ty();
     case FfiType::F32: return B.getFloatTy();
@@ -117,7 +119,7 @@ static FfiType expr_type(Expr* expr, Program* program,
       }
       if (expr->callee == "open") return FfiType::Ptr;
       if (expr->callee == "close" || expr->callee == "write_file") return FfiType::Void;
-      if (expr->callee == "eof_file" || expr->callee == "line_count_file") return FfiType::I64;
+      if (expr->callee == "eof_file" || expr->callee == "line_count_file" || expr->callee == "write_bytes" || expr->callee == "read_bytes") return FfiType::I64;
       if (program) {
         for (const ExternFn& ext : program->extern_fns)
           if (ext.name == expr->callee) return ext.return_type;
@@ -259,6 +261,7 @@ static FfiType array_element_type_from_expr(Expr* expr, CodegenEnv& env) {
   }
   if (expr->kind == Expr::Kind::StackArray || expr->kind == Expr::Kind::HeapArray) {
     const std::string& t = expr->var_name;
+    if (t == "i8") return FfiType::I8;
     if (t == "i32") return FfiType::I32;
     if (t == "i64") return FfiType::I64;
     if (t == "f32") return FfiType::F32;
@@ -272,7 +275,8 @@ static FfiType array_element_type_from_expr(Expr* expr, CodegenEnv& env) {
 /* Header size H = align_up(8, alignof(T)). Returns 8 for primitives; for structs uses layout. */
 static size_t array_header_size(const std::string& elem_type_name, LayoutMap* layout_map) {
   size_t align = 8;
-  if (elem_type_name == "i32" || elem_type_name == "f32") align = 4;
+  if (elem_type_name == "i8") align = 1;
+  else if (elem_type_name == "i32" || elem_type_name == "f32") align = 4;
   else if (elem_type_name == "i64" || elem_type_name == "f64" || elem_type_name == "ptr") align = 8;
   else if (layout_map) {
     auto it = layout_map->find(elem_type_name);
@@ -283,6 +287,7 @@ static size_t array_header_size(const std::string& elem_type_name, LayoutMap* la
 
 /* Elem size in bytes. */
 static size_t elem_size_from_type(const std::string& elem_type_name, LayoutMap* layout_map) {
+  if (elem_type_name == "i8") return 1;
   if (elem_type_name == "i32" || elem_type_name == "f32") return 4;
   if (elem_type_name == "i64" || elem_type_name == "f64" || elem_type_name == "ptr") return 8;
   if (layout_map) {
@@ -299,6 +304,7 @@ static std::string array_elem_type_name(Expr* expr, CodegenEnv& env) {
   if (expr->kind == Expr::Kind::VarRef) {
     /* VarRef: we don't store type name in env; use FfiType to infer. For structs we can't. */
     FfiType t = array_elem_lookup(env, expr->var_name);
+    if (t == FfiType::I8) return "i8";
     if (t == FfiType::I32) return "i32";
     if (t == FfiType::I64) return "i64";
     if (t == FfiType::F32) return "f32";
@@ -575,6 +581,30 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         }
         if (!fn) return nullptr;
         return B.CreateCall(fn, {h, x});
+      }
+      if (expr->callee == "write_bytes") {
+        Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+        Value* h = emit_expr(env, expr->args[0].get());
+        Value* buf = emit_expr(env, expr->args[1].get());
+        Value* n = emit_expr(env, expr->args[2].get());
+        if (!h || !buf || !n) return nullptr;
+        if (buf->getType() != i8ptr) buf = B.CreatePointerCast(buf, i8ptr);
+        if (n->getType() != B.getInt64Ty()) n = B.CreateIntCast(n, B.getInt64Ty(), true);
+        Function* fn = M->getFunction("rt_write_bytes");
+        if (!fn) return nullptr;
+        return B.CreateCall(fn, {h, buf, n}, "write_bytes");
+      }
+      if (expr->callee == "read_bytes") {
+        Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+        Value* h = emit_expr(env, expr->args[0].get());
+        Value* buf = emit_expr(env, expr->args[1].get());
+        Value* n = emit_expr(env, expr->args[2].get());
+        if (!h || !buf || !n) return nullptr;
+        if (buf->getType() != i8ptr) buf = B.CreatePointerCast(buf, i8ptr);
+        if (n->getType() != B.getInt64Ty()) n = B.CreateIntCast(n, B.getInt64Ty(), true);
+        Function* fn = M->getFunction("rt_read_bytes");
+        if (!fn) return nullptr;
+        return B.CreateCall(fn, {h, buf, n}, "read_bytes");
       }
       if (expr->callee == "eof_file") {
         Value* h = emit_expr(env, expr->args[0].get());
@@ -1100,6 +1130,10 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         Value* v = B.CreateLoad(B.getInt32Ty(), elem_ptr);
         return B.CreateZExt(v, B.getInt64Ty());
       }
+      if (elem_name == "i8") {
+        Value* v = B.CreateLoad(B.getInt8Ty(), elem_ptr, "index.load.i8");
+        return B.CreateZExt(v, B.getInt64Ty());
+      }
       elem_ptr = B.CreatePointerCast(elem_ptr, B.getInt64Ty()->getPointerTo());
       return B.CreateLoad(B.getInt64Ty(), elem_ptr, "index.load");
     }
@@ -1479,7 +1513,10 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
         B.SetInsertPoint(cont_bb);
         Value* offset = B.CreateMul(index_val, B.getInt64(elem_size), "elem.offset");
         Value* elem_ptr = B.CreateGEP(B.getInt8Ty(), elem_base, offset);
-        if (elem_ty == FfiType::F64) {
+        if (elem_name == "i8") {
+          if (val->getType() != B.getInt8Ty()) val = B.CreateTrunc(B.CreateIntCast(val, B.getInt64Ty(), true), B.getInt8Ty());
+          B.CreateStore(val, elem_ptr);
+        } else if (elem_ty == FfiType::F64) {
           elem_ptr = B.CreatePointerCast(elem_ptr, B.getDoubleTy()->getPointerTo());
           if (val->getType() != B.getDoubleTy()) val = B.CreateSIToFP(val, B.getDoubleTy());
           B.CreateStore(val, elem_ptr);
@@ -1688,6 +1725,8 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
   Function::Create(FunctionType::get(builder.getVoidTy(), {i8ptr, builder.getInt64Ty()}, false), GlobalValue::ExternalLinkage, "rt_write_file_i64", module.get());
   Function::Create(FunctionType::get(builder.getVoidTy(), {i8ptr, builder.getDoubleTy()}, false), GlobalValue::ExternalLinkage, "rt_write_file_f64", module.get());
   Function::Create(FunctionType::get(builder.getVoidTy(), {i8ptr, i8ptr}, false), GlobalValue::ExternalLinkage, "rt_write_file_ptr", module.get());
+  Function::Create(FunctionType::get(builder.getInt64Ty(), {i8ptr, i8ptr, builder.getInt64Ty()}, false), GlobalValue::ExternalLinkage, "rt_write_bytes", module.get());
+  Function::Create(FunctionType::get(builder.getInt64Ty(), {i8ptr, i8ptr, builder.getInt64Ty()}, false), GlobalValue::ExternalLinkage, "rt_read_bytes", module.get());
   Function::Create(FunctionType::get(builder.getInt64Ty(), i8ptr, false), GlobalValue::ExternalLinkage, "rt_eof_file", module.get());
   Function::Create(FunctionType::get(builder.getInt64Ty(), i8ptr, false), GlobalValue::ExternalLinkage, "rt_line_count_file", module.get());
   Function::Create(panic_ty, GlobalValue::ExternalLinkage, "rt_panic", module.get());
@@ -1939,6 +1978,7 @@ CodegenResult run_jit(std::unique_ptr<llvm::Module> module,
       !add_sym("rt_from_str_i64") || !add_sym("rt_from_str_f64") ||
       !add_sym("rt_open") || !add_sym("rt_close") || !add_sym("rt_read_line_file") ||
       !add_sym("rt_write_file_i64") || !add_sym("rt_write_file_f64") || !add_sym("rt_write_file_ptr") ||
+      !add_sym("rt_write_bytes") || !add_sym("rt_read_bytes") ||
       !add_sym("rt_eof_file") || !add_sym("rt_line_count_file") ||
       !add_sym("rt_value_alloc_inc") || !add_sym("rt_value_free_inc") ||
       !add_sym("rt_value_alloc_count") || !add_sym("rt_value_free_count") ||

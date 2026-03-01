@@ -28,6 +28,7 @@ enum class CompareOp {
 /* FFI type kind, matches rt_ffi_type_kind_t. */
 enum class FfiType {
   Void,
+  I8,
   I32,
   I64,
   F32,

@@ -31,6 +31,9 @@ const char *rt_read_line_file(void *handle);
 void rt_write_file_i64(void *handle, int64_t value);
 void rt_write_file_f64(void *handle, double value);
 void rt_write_file_ptr(void *handle, const char *s);
+/* Raw byte I/O. buf = buffer, count = number of bytes. Return bytes written/read, or -1 on error. */
+int64_t rt_write_bytes(void *handle, const void *buf, int64_t count);
+int64_t rt_read_bytes(void *handle, void *buf, int64_t count);
 int64_t rt_eof_file(void *handle);
 int64_t rt_line_count_file(void *handle);
 
