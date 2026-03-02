@@ -1090,4 +1090,616 @@ TEST(JitTests, FreeMultipleF64ArraysTrainedWeightPattern) {
   auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
   ASSERT_TRUE(jit_result.ok) << jit_result.error;
 }
+
+TEST(JitTests, ExecutesEqNeq) {
+  const char* path = "/tmp/fusion_jit_eqneq.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex(
+      "if (2 == 2) { print(1); } else { print(0); } "
+      "if (3 != 3) { print(1); } else { print(0); }");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[32];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  EXPECT_STREQ(buf, "1\n") << "2 == 2 should be true";
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  EXPECT_STREQ(buf, "0\n") << "3 != 3 should be false";
+  fclose(cap);
+  unlink(path);
+}
+
+TEST(JitTests, ExecutesLeGe) {
+  const char* path = "/tmp/fusion_jit_lege.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex(
+      "for (let i = 0; i <= 3; i = i + 1) { print(i); }");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[32];
+  for (int expected = 0; expected <= 3; ++expected) {
+    ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr) << "expected line for i=" << expected;
+    EXPECT_EQ(std::atoi(buf), expected) << "loop body should print " << expected;
+  }
+  fclose(cap);
+  unlink(path);
+}
+
+TEST(JitTests, ExecutesGeDecrement) {
+  const char* path = "/tmp/fusion_jit_ge_decr.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex(
+      "for (let i = 3; i >= 0; i = i - 1) { print(i); }");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[32];
+  for (int expected = 3; expected >= 0; --expected) {
+    ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr) << "expected line for i=" << expected;
+    EXPECT_EQ(std::atoi(buf), expected) << "decrement loop should print " << expected;
+  }
+  fclose(cap);
+  unlink(path);
+}
+
+TEST(JitTests, ExecutesPrintString) {
+  const char* path = "/tmp/fusion_jit_print_str.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex("print(\"hello\")");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[64];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(path);
+  EXPECT_STREQ(buf, "hello\n") << "print(\"hello\") should output hello";
+}
+
+TEST(JitTests, ExecutesToStrI64) {
+  const char* path = "/tmp/fusion_jit_to_str_i64.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex("print(to_str(42))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[64];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(path);
+  EXPECT_STREQ(buf, "42\n") << "to_str(42) should produce \"42\"";
+}
+
+TEST(JitTests, ExecutesToStrF64) {
+  const char* path = "/tmp/fusion_jit_to_str_f64.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex("print(to_str(3.14))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[64];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(path);
+  EXPECT_NEAR(std::atof(buf), 3.14, 0.001) << "to_str(3.14) should convert to string near 3.14";
+}
+
+TEST(JitTests, ExecutesFromStrI64) {
+  const char* path = "/tmp/fusion_jit_from_str_i64.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex("let s = to_str(123); let n = from_str(s, i64); print(n)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[32];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(path);
+  EXPECT_EQ(std::atoi(buf), 123) << "from_str(to_str(123), i64) should return 123";
+}
+
+TEST(JitTests, ExecutesRecursiveFib) {
+  const char* path = "/tmp/fusion_jit_fib.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex(
+      "fn fib(n: i64) -> i64 { "
+      "  if (n <= 1) { return n; } "
+      "  return fib(n - 1) + fib(n - 2); "
+      "} "
+      "print(fib(10))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[32];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(path);
+  EXPECT_EQ(std::atoi(buf), 55) << "fib(10) should be 55";
+}
+
+TEST(JitTests, ExecutesLoadPtr) {
+  const char* path = "/tmp/fusion_jit_load_ptr.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex(
+      "let p = heap(ptr); "
+      "let q = heap(i64); "
+      "store(p, q); "
+      "let r = load_ptr(p); "
+      "store(r, 77); "
+      "print(load(q)); "
+      "free(as_heap(p)); free(as_heap(q))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[32];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(path);
+  EXPECT_EQ(std::atoi(buf), 77) << "load_ptr + store roundtrip should yield 77";
+}
+
+TEST(JitTests, ExecutesLoadI32) {
+  /* heap(i64) gives 8 bytes; store(p, 300) writes 300 as i64; load_i32(p) reads low 4 bytes as i32 */
+  const char* path = "/tmp/fusion_jit_load_i32.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex("let p = heap(i64); store(p, 300); print(load_i32(p)); free(as_heap(p))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[32];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(path);
+  EXPECT_EQ(std::atoi(buf), 300) << "load_i32 on slot storing 300 should yield 300";
+}
+
+TEST(JitTests, ExecutesAddrOf) {
+  const char* path = "/tmp/fusion_jit_addr_of.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex(
+      "let x = 5; "
+      "let p = addr_of(x); "
+      "store(p, 77); "
+      "print(load(p))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[32];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(path);
+  EXPECT_EQ(std::atoi(buf), 77) << "store through addr_of should update local variable";
+}
+
+TEST(JitTests, ExecutesCastF64ToI64) {
+  const char* path = "/tmp/fusion_jit_cast_f64_i64.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex("let x = 3.9; let y = x as i64; print(y)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[32];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(path);
+  EXPECT_EQ(std::atoi(buf), 3) << "3.9 as i64 should truncate to 3";
+}
+
+TEST(JitTests, ExecutesCastI64ToI32) {
+  /* i64 -> i32 truncation: 300 fits in i32, then extend back to i64 for print */
+  const char* path = "/tmp/fusion_jit_cast_i64_i32.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex("let x = 300; let y = x as i32; print(y as i64)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[32];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(path);
+  EXPECT_EQ(std::atoi(buf), 300) << "300 as i32 as i64 should round-trip to 300";
+}
+
+TEST(JitTests, ExecutesStructI64Field) {
+  const char* path = "/tmp/fusion_jit_struct_i64.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex(
+      "struct N { n: i64; }; "
+      "let obj = heap(N); "
+      "store_field(obj, N, n, 42); "
+      "print(load_field(obj, N, n)); "
+      "free(as_heap(obj))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[32];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(path);
+  EXPECT_EQ(std::atoi(buf), 42) << "store_field/load_field for i64 field should yield 42";
+}
+
+TEST(JitTests, ExecutesPrintTwoArgs) {
+  /* print(val, stream=2) writes to stderr; just verify jit_result.ok (no crash) */
+  auto tokens = fusion::lex("print(42, 2)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  EXPECT_TRUE(jit_result.ok) << "print(42, 2) to stderr should not crash: " << jit_result.error;
+}
+
+TEST(JitTests, ExecutesWriteFile) {
+  const char* tmp = "/tmp/fusion_jit_write_file_test.txt";
+  unlink(tmp);
+  auto tokens = fusion::lex(
+      std::string("let fh = open(\"") + tmp + "\", \"w\"); "
+      "write_file(fh, 99); "
+      "close(fh)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* f = fopen(tmp, "r");
+  ASSERT_NE(f, nullptr) << "temp file should exist after write_file";
+  char buf[32];
+  ASSERT_NE(fgets(buf, sizeof(buf), f), nullptr);
+  fclose(f);
+  unlink(tmp);
+  EXPECT_EQ(std::atoi(buf), 99) << "write_file(fh, 99) should write 99 to file";
+}
+
+TEST(JitTests, ExecutesFromStrF64) {
+  /* from_str(to_str(3.14), f64) should recover 3.14; cast to i64 = 3 for deterministic print */
+  const char* path = "/tmp/fusion_jit_from_str_f64.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex(
+      "let s = to_str(3.14); let n = from_str(s, f64); let i = n as i64; print(i)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[32];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(path);
+  EXPECT_EQ(std::atoi(buf), 3) << "from_str(to_str(3.14), f64) truncated to i64 should be 3";
+}
+
+TEST(JitTests, ExecutesReadLineFile) {
+  const char* tmp = "/tmp/fusion_jit_read_line_in.txt";
+  /* Write a known line from C */
+  { FILE* f = fopen(tmp, "w"); ASSERT_NE(f, nullptr); fprintf(f, "hello_line\n"); fclose(f); }
+  const char* out_path = "/tmp/fusion_jit_read_line_out.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(out_path, "w", stdout));
+  auto tokens = fusion::lex(
+      std::string("let f = open(\"") + tmp + "\", \"r\"); "
+      "let line = read_line_file(f); "
+      "print(line); "
+      "close(f)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  unlink(tmp);
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(out_path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[64];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(out_path);
+  /* read_line_file strips trailing newline; print re-adds it */
+  EXPECT_STREQ(buf, "hello_line\n") << "read_line_file + print should output the line";
+}
+
+TEST(JitTests, ExecutesLineCountFile) {
+  const char* tmp = "/tmp/fusion_jit_line_count_in.txt";
+  /* Write 3 lines from C */
+  { FILE* f = fopen(tmp, "w"); ASSERT_NE(f, nullptr); fprintf(f, "a\nb\nc\n"); fclose(f); }
+  const char* out_path = "/tmp/fusion_jit_line_count_out.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(out_path, "w", stdout));
+  auto tokens = fusion::lex(
+      std::string("let f = open(\"") + tmp + "\", \"r\"); "
+      "let n = line_count_file(f); "
+      "close(f); "
+      "print(n)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  unlink(tmp);
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(out_path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[32];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(out_path);
+  EXPECT_EQ(std::atoi(buf), 3) << "line_count_file should count 3 newlines in 3-line file";
+}
+
+TEST(JitTests, ExecutesWriteBytesReadBytes) {
+  /* Write 8 bytes (i64 = 54321) to a binary file, read back, and verify via print */
+  const char* tmp = "/tmp/fusion_jit_wb_rb.bin";
+  unlink(tmp);
+  const char* out_path = "/tmp/fusion_jit_wb_rb_out.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(out_path, "w", stdout));
+  auto tokens = fusion::lex(
+      std::string(
+      "let buf = heap_array(i64, 1); "
+      "buf[0] = 54321; "
+      "let fh = open(\"") + tmp + "\", \"w\"); "
+      "write_bytes(fh, buf, 8); "
+      "close(fh); "
+      "let buf2 = heap_array(i64, 1); "
+      "let fh2 = open(\"" + tmp + "\", \"r\"); "
+      "read_bytes(fh2, buf2, 8); "
+      "close(fh2); "
+      "print(buf2[0]); "
+      "free_array(as_array(buf, i64)); "
+      "free_array(as_array(buf2, i64))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  unlink(tmp);
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(out_path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[32];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(out_path);
+  EXPECT_EQ(std::atoi(buf), 54321) << "write_bytes/read_bytes roundtrip should recover 54321";
+}
 #endif

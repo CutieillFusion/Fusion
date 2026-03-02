@@ -426,3 +426,148 @@ TEST(SemaTests, AcceptsCallThroughStructField) {
   auto sema_result = fusion::check(parse_result.program.get());
   ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
 }
+
+TEST(SemaTests, AcceptsEqAndNeq) {
+  auto tokens = fusion::lex("let a = 1; let b = 2; if (a == b) { print(1); } if (a != b) { print(0); }");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, AcceptsLeGe) {
+  auto tokens = fusion::lex("let a = 1; let b = 2; if (a <= b) { print(1); } if (b >= a) { print(1); }");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, RejectsPointerOrderingComparison) {
+  /* ptr < ptr is rejected; only == and != are valid for pointer comparisons */
+  auto tokens = fusion::lex("let p = heap(i64); let q = heap(i64); if (p < q) { print(1); }");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_FALSE(sema_result.ok);
+  EXPECT_TRUE(sema_result.error.message.find("pointer") != std::string::npos)
+    << "expected pointer comparison error, got: " << sema_result.error.message;
+}
+
+TEST(SemaTests, AcceptsCastToI32) {
+  auto tokens = fusion::lex("let x = 5; let y = x as i32; print(1)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, AcceptsCastToPtr) {
+  /* ptr -> ptr cast is accepted (identity) */
+  auto tokens = fusion::lex("let p = heap(i64); let q = p as ptr; print(1)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, AcceptsCastToI64) {
+  auto tokens = fusion::lex("let x = 3.0; let y = x as i64; print(1)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, RejectsCastPtrFromNonPtr) {
+  /* i64 -> ptr cast is rejected; only ptr -> ptr is valid */
+  auto tokens = fusion::lex("let x = 5; let y = x as ptr; print(1)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_FALSE(sema_result.ok);
+  EXPECT_TRUE(sema_result.error.message.find("ptr") != std::string::npos)
+    << "expected cast-to-ptr error, got: " << sema_result.error.message;
+}
+
+TEST(SemaTests, AcceptsAddrOf) {
+  auto tokens = fusion::lex("let x = 5; let p = addr_of(x); print(1)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, RejectsAddrOfNonVar) {
+  auto tokens = fusion::lex("let p = addr_of(42); print(1)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_FALSE(sema_result.ok);
+  EXPECT_TRUE(sema_result.error.message.find("addr_of") != std::string::npos ||
+              sema_result.error.message.find("variable") != std::string::npos)
+    << "expected addr_of/variable error, got: " << sema_result.error.message;
+}
+
+TEST(SemaTests, AcceptsLoadPtr) {
+  /* load_ptr on a ptr argument is accepted */
+  auto tokens = fusion::lex("fn f(p: ptr) -> void { let q = load_ptr(p); } print(1)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, AcceptsPrintTwoArgs) {
+  /* print(val, stream) with stream=2 (stderr) is accepted */
+  auto tokens = fusion::lex("print(1, 2)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, RejectsDuplicateFunctionDef) {
+  auto tokens = fusion::lex("fn f() -> void { } fn f() -> void { } print(1)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_FALSE(sema_result.ok);
+  EXPECT_TRUE(sema_result.error.message.find("duplicate") != std::string::npos ||
+              sema_result.error.message.find("f") != std::string::npos)
+    << "expected duplicate function error, got: " << sema_result.error.message;
+}
+
+TEST(SemaTests, RejectsWriteFileWrongFirstArg) {
+  /* write_file first arg must be a pointer (file handle); i64 should fail */
+  auto tokens = fusion::lex("write_file(42, 99)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_FALSE(sema_result.ok);
+  EXPECT_TRUE(sema_result.error.message.find("write_file") != std::string::npos ||
+              sema_result.error.message.find("pointer") != std::string::npos)
+    << "expected write_file/pointer error, got: " << sema_result.error.message;
+}
+
+TEST(SemaTests, RejectsExternFnUnknownParamType) {
+  auto tokens = fusion::lex("extern lib \"libc.so.6\"; extern fn f(x: Bogus) -> void; print(1)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_FALSE(sema_result.ok);
+  EXPECT_TRUE(sema_result.error.message.find("Bogus") != std::string::npos ||
+              sema_result.error.message.find("unknown") != std::string::npos)
+    << "expected unknown type error, got: " << sema_result.error.message;
+}
+
+TEST(SemaTests, RejectsExternFnUnknownReturnType) {
+  auto tokens = fusion::lex("extern lib \"libc.so.6\"; extern fn f() -> Bogus; print(1)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_FALSE(sema_result.ok);
+  EXPECT_TRUE(sema_result.error.message.find("Bogus") != std::string::npos ||
+              sema_result.error.message.find("unknown") != std::string::npos)
+    << "expected unknown return type error, got: " << sema_result.error.message;
+}
