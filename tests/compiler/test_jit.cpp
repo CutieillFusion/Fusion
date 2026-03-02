@@ -210,7 +210,7 @@ TEST(JitTests, ExecutesLoadField) {
   const char* so_path = "./fusion_phase6.so";
   std::string src = "struct Point { x: f64; y: f64; }; extern lib \"";
   src += so_path;
-  src += "\"; extern fn point_set(p: Point, x: f64, y: f64) -> void; let p = heap(Point); point_set(p, 3.0, 4.0); print(load_field(p, Point, x)); print(load_field(p, Point, y)); free(as_heap(p))";
+  src += "\"; extern fn point_set(p: Point, x: f64, y: f64) -> void; let p = heap(Point); point_set(p, 3.0, 4.0); print(p.x); print(p.y); free(as_heap(p))";
   auto tokens = fusion::lex(src);
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << "parse failed: " << parse_result.error.message << " at " << parse_result.error.line << ":" << parse_result.error.column;
@@ -224,7 +224,7 @@ TEST(JitTests, ExecutesLoadField) {
 }
 
 TEST(JitTests, ExecutesCallThroughStructField) {
-  /* structs.fusion-style: store get_func_ptr(add/mul) in Operation.func, call via load_field. */
+  /* structs.fusion-style: store get_func_ptr(add/mul) in Operation.func, call via op.func. */
   const char* path = "/tmp/fusion_jit_indirect_call.txt";
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
@@ -234,19 +234,19 @@ TEST(JitTests, ExecutesCallThroughStructField) {
       "fn add(x: f64, y: f64) -> f64 { return x + y; } "
       "fn mul(x: f64, y: f64) -> f64 { return x * y; } "
       "fn perform_operation(op: Operation) -> f64 { "
-      "  let func = load_field(op, Operation, func); "
-      "  let x = load_field(op, Operation, x); "
-      "  let y = load_field(op, Operation, y); "
+      "  let func = op.func; "
+      "  let x = op.x; "
+      "  let y = op.y; "
       "  return call(func, x, y); "
       "} "
       "let op_add = heap(Operation); "
-      "store_field(op_add, Operation, func, get_func_ptr(add)); "
-      "store_field(op_add, Operation, x, 3.0); "
-      "store_field(op_add, Operation, y, 4.0); "
+      "op_add.func = get_func_ptr(add); "
+      "op_add.x = 3.0; "
+      "op_add.y = 4.0; "
       "let op_mul = heap(Operation); "
-      "store_field(op_mul, Operation, func, get_func_ptr(mul)); "
-      "store_field(op_mul, Operation, x, 3.0); "
-      "store_field(op_mul, Operation, y, 4.0); "
+      "op_mul.func = get_func_ptr(mul); "
+      "op_mul.x = 3.0; "
+      "op_mul.y = 4.0; "
       "print(perform_operation(op_add)); "
       "print(perform_operation(op_mul)); "
       "free(as_heap(op_add)); free(as_heap(op_mul))");
@@ -285,26 +285,26 @@ TEST(JitTests, AllocArrayHeapEscapesFunction) {
       "struct Value { data: f64; grad: f64; prev: ptr; children_count: i64; backward: ptr; }; "
       "fn alloc_value(data: f64, prev: ptr, children_count: i64, backward: ptr) -> ptr { "
       "  let value = heap(Value); "
-      "  store_field(value, Value, data, data); "
-      "  store_field(value, Value, grad, 0.0); "
-      "  store_field(value, Value, prev, prev); "
-      "  store_field(value, Value, children_count, children_count); "
-      "  store_field(value, Value, backward, backward); "
+      "  value.data = data; "
+      "  value.grad = 0.0; "
+      "  value.prev = prev; "
+      "  value.children_count = children_count; "
+      "  value.backward = backward; "
       "  return value; "
       "} "
       "fn leaf_backward(v: ptr) -> void { } "
       "fn add_backward(out: ptr) -> void { "
-      "  let prev = load_field(out, Value, prev); "
-      "  let a = prev[0] as ptr; "
-      "  let b = prev[1] as ptr; "
-      "  let grad = load_field(out, Value, grad); "
-      "  let a_grad = load_field(a, Value, grad); "
-      "  let b_grad = load_field(b, Value, grad); "
-      "  store_field(a, Value, grad, a_grad + grad); "
-      "  store_field(b, Value, grad, b_grad + grad); "
+      "  let prev = (out as Value).prev; "
+      "  let a = prev[0] as Value; "
+      "  let b = prev[1] as Value; "
+      "  let grad = (out as Value).grad; "
+      "  let a_grad = a.grad; "
+      "  let b_grad = b.grad; "
+      "  a.grad = a_grad + grad; "
+      "  b.grad = b_grad + grad; "
       "} "
       "fn add_forward(a: ptr, b: ptr) -> ptr { "
-      "  let data = load_field(a, Value, data) + load_field(b, Value, data); "
+      "  let data = (a as Value).data + (b as Value).data; "
       "  let prev = heap_array(ptr, 2); "
       "  prev[0] = a; "
       "  prev[1] = b; "
@@ -312,17 +312,17 @@ TEST(JitTests, AllocArrayHeapEscapesFunction) {
       "} "
       "let a = alloc_value(1.0, heap_array(ptr, 0), 0, get_func_ptr(leaf_backward)); "
       "let b = alloc_value(2.0, heap_array(ptr, 0), 0, get_func_ptr(leaf_backward)); "
-      "store_field(a, Value, grad, 1.0); "
-      "store_field(b, Value, grad, 2.0); "
+      "(a as Value).grad = 1.0; "
+      "(b as Value).grad = 2.0; "
       "let c = add_forward(a, b); "
-      "store_field(c, Value, grad, 3.0); "
-      "let c_backward = load_field(c, Value, backward); "
+      "(c as Value).grad = 3.0; "
+      "let c_backward = (c as Value).backward; "
       "call(c_backward, c); "
-      "print(load_field(a, Value, grad)); "
-      "print(load_field(b, Value, grad)); "
-      "free_array(as_array(load_field(c, Value, prev), ptr)); free(as_heap(c)); "
-      "free_array(as_array(load_field(a, Value, prev), ptr)); free(as_heap(a)); "
-      "free_array(as_array(load_field(b, Value, prev), ptr)); free(as_heap(b))");
+      "print((a as Value).grad); "
+      "print((b as Value).grad); "
+      "free_array(as_array((c as Value).prev, ptr)); free(as_heap(c)); "
+      "free_array(as_array((a as Value).prev, ptr)); free(as_heap(a)); "
+      "free_array(as_array((b as Value).prev, ptr)); free(as_heap(b))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -848,23 +848,23 @@ TEST(JitTests, ExecutesFreeValueStyle) {
   auto tokens = fusion::lex(
       "struct Value { data: f64; grad: f64; prev: ptr; children_count: i64; backward: ptr; }; "
       "fn free_value(v: ptr) -> void { "
-      "  let prev = load_field(v, Value, prev); "
+      "  let prev = (v as Value).prev; "
       "  free_array(as_array(prev, ptr)); "
       "  free(as_heap(v)); "
       "} "
       "fn alloc_value(data: f64, prev: ptr, children_count: i64, backward: ptr) -> ptr { "
       "  let value = heap(Value); "
-      "  store_field(value, Value, data, data); "
-      "  store_field(value, Value, grad, 0.0); "
-      "  store_field(value, Value, prev, prev); "
-      "  store_field(value, Value, children_count, children_count); "
-      "  store_field(value, Value, backward, backward); "
+      "  value.data = data; "
+      "  value.grad = 0.0; "
+      "  value.prev = prev; "
+      "  value.children_count = children_count; "
+      "  value.backward = backward; "
       "  return value; "
       "} "
       "fn leaf_backward(v: ptr) -> void { } "
       "let a = alloc_value(1.0, heap_array(ptr, 0), 0, get_func_ptr(leaf_backward)); "
-      "store_field(a, Value, grad, 7.0); "
-      "print(load_field(a, Value, grad)); "
+      "(a as Value).grad = 7.0; "
+      "print((a as Value).grad); "
       "free_value(a)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
@@ -907,12 +907,12 @@ TEST(JitTests, ExecutesAsArrayForLoadField) {
   auto tokens = fusion::lex(
       "struct V { prev: ptr; }; "
       "fn free_v(v: ptr) -> void { "
-      "  free_array(as_array(load_field(v, V, prev), ptr)); "
+      "  free_array(as_array((v as V).prev, ptr)); "
       "  free(as_heap(v)); "
       "} "
       "let p = heap_array(ptr, 0); "
       "let v = heap(V); "
-      "store_field(v, V, prev, p); "
+      "v.prev = p; "
       "free_v(v)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
@@ -932,7 +932,7 @@ TEST(JitTests, ExecutesHeapStruct) {
   ASSERT_TRUE(freopen(path, "w", stdout));
   auto tokens = fusion::lex(
       "struct P { x: f64; y: f64; }; "
-      "let p = heap(P); store_field(p, P, x, 1.0); store_field(p, P, y, 2.0); print(load_field(p, P, x)); free(as_heap(p))");
+      "let p = heap(P); p.x = 1.0; p.y = 2.0; print(p.x); free(as_heap(p))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -962,7 +962,7 @@ TEST(JitTests, ExecutesStackStruct) {
   ASSERT_TRUE(freopen(path, "w", stdout));
   auto tokens = fusion::lex(
       "struct P { x: f64; y: f64; }; "
-      "let p = stack(P); store_field(p, P, x, 1.0); store_field(p, P, y, 2.0); print(load_field(p, P, x)); print(load_field(p, P, y))");
+      "let p = stack(P); p.x = 1.0; p.y = 2.0; print(p.x); print(p.y)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1491,8 +1491,8 @@ TEST(JitTests, ExecutesStructI64Field) {
   auto tokens = fusion::lex(
       "struct N { n: i64; }; "
       "let obj = heap(N); "
-      "store_field(obj, N, n, 42); "
-      "print(load_field(obj, N, n)); "
+      "obj.n = 42; "
+      "print(obj.n); "
       "free(as_heap(obj))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
@@ -1513,7 +1513,7 @@ TEST(JitTests, ExecutesStructI64Field) {
   ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
   fclose(cap);
   unlink(path);
-  EXPECT_EQ(std::atoi(buf), 42) << "store_field/load_field for i64 field should yield 42";
+  EXPECT_EQ(std::atoi(buf), 42) << "obj.n = 42 / print(obj.n) for i64 field should yield 42";
 }
 
 TEST(JitTests, ExecutesPrintTwoArgs) {

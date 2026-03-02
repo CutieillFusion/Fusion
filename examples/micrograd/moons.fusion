@@ -17,9 +17,9 @@ extern lib "libm.so.6" {
 
 fn alloc_point(x: f64, y: f64, class: f64) -> ptr {
     let p = heap(Point);
-    store_field(p, Point, x, x);
-    store_field(p, Point, y, y);
-    store_field(p, Point, class, class);
+    p.x = x;
+    p.y = y;
+    p.class = class;
     return p;
 }
 

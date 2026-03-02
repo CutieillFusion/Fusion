@@ -177,6 +177,14 @@ ExprPtr Expr::make_store_field(ExprPtr ptr, std::string struct_name, std::string
   return e;
 }
 
+ExprPtr Expr::make_field_access(ExprPtr base, std::vector<std::string> chain) {
+  auto e = std::make_unique<Expr>();
+  e->kind = Kind::FieldAccess;
+  e->left = std::move(base);
+  e->field_chain = std::move(chain);
+  return e;
+}
+
 ExprPtr Expr::make_cast(ExprPtr operand, std::string target_type_name) {
   auto e = std::make_unique<Expr>();
   e->kind = Kind::Cast;
@@ -256,6 +264,7 @@ ExprPtr Expr::clone() const {
   e->var_name = var_name;
   e->load_field_struct = load_field_struct;
   e->load_field_field = load_field_field;
+  e->field_chain = field_chain;
   e->inferred_call_param_types = inferred_call_param_types;
   e->inferred_call_result_type = inferred_call_result_type;
   if (left) e->left = left->clone();

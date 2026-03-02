@@ -153,6 +153,28 @@ static FfiType expr_type(Expr* expr, Program* program,
         if (f.first == expr->load_field_field) return f.second.type;
       return FfiType::Void;
     }
+    case Expr::Kind::FieldAccess: {
+      if (!program || expr->field_chain.empty() || expr->load_field_struct.empty()) return FfiType::Void;
+      LayoutMap layout_map = build_layout_map(program->struct_defs);
+      std::string cur = expr->load_field_struct;
+      for (size_t fi = 0; fi < expr->field_chain.size(); ++fi) {
+        auto it = layout_map.find(cur);
+        if (it == layout_map.end()) return FfiType::Void;
+        bool found = false;
+        for (const auto& f : it->second.fields) {
+          if (f.first == expr->field_chain[fi]) {
+            if (fi + 1 < expr->field_chain.size())
+              cur = f.second.struct_name;
+            else
+              return f.second.struct_name.empty() ? f.second.type : FfiType::Ptr;
+            found = true;
+            break;
+          }
+        }
+        if (!found) return FfiType::Void;
+      }
+      return FfiType::Void;
+    }
     case Expr::Kind::Cast:
       if (expr->var_name == "ptr") return FfiType::Ptr;
       return FfiType::Void;
@@ -173,6 +195,10 @@ struct CodegenEnv {
   std::vector<std::unordered_map<std::string, Value*>> vars_scope_stack;
   std::vector<std::unordered_map<std::string, FfiType>> array_element_scope_stack;
   std::vector<std::unordered_map<std::string, FnPtrSig>> fnptr_scope_stack;
+  /* Ptr-to-struct tracking: variable name -> struct name */
+  std::vector<std::unordered_map<std::string, std::string>> var_struct_scope_stack;
+  /* Array element struct tracking: variable name -> struct name of elements */
+  std::vector<std::unordered_map<std::string, std::string>> array_struct_scope_stack;
   std::unordered_map<std::string, Function*> user_fns;
   const std::unordered_map<std::string, FfiType>* var_types = nullptr;
   std::unordered_map<std::string, FfiType>* fn_var_types = nullptr;
@@ -269,7 +295,116 @@ static FfiType array_element_type_from_expr(Expr* expr, CodegenEnv& env) {
     if (t == "ptr") return FfiType::Ptr;
     return FfiType::Void;
   }
+  if (expr->kind == Expr::Kind::FieldAccess && !expr->field_chain.empty() &&
+      !expr->load_field_struct.empty() && env.layout_map) {
+    std::string cur = expr->load_field_struct;
+    for (size_t fi = 0; fi < expr->field_chain.size(); ++fi) {
+      auto it = env.layout_map->find(cur);
+      if (it == env.layout_map->end()) return FfiType::Void;
+      for (const auto& f : it->second.fields) {
+        if (f.first == expr->field_chain[fi]) {
+          if (fi + 1 == expr->field_chain.size())
+            return f.second.type;
+          cur = f.second.struct_name;
+          if (cur.empty()) return FfiType::Void;
+          break;
+        }
+      }
+    }
+  }
   return FfiType::Void;
+}
+
+/* Lookup which struct a pointer variable points to in codegen. */
+static std::string var_struct_lookup_cg(CodegenEnv& env, const std::string& name) {
+  for (auto it = env.var_struct_scope_stack.rbegin(); it != env.var_struct_scope_stack.rend(); ++it) {
+    auto fit = it->find(name);
+    if (fit != it->end()) return fit->second;
+  }
+  return "";
+}
+
+/* Get struct name that an expression points to (for field access codegen). */
+static std::string expr_struct_name_cg(Expr* expr, CodegenEnv& env) {
+  if (!expr) return "";
+  if (expr->kind == Expr::Kind::VarRef)
+    return var_struct_lookup_cg(env, expr->var_name);
+  if (expr->kind == Expr::Kind::HeapAlloc || expr->kind == Expr::Kind::StackAlloc) {
+    if (env.layout_map && env.layout_map->count(expr->var_name))
+      return expr->var_name;
+    return "";
+  }
+  if (expr->kind == Expr::Kind::Index) {
+    if (expr->left && expr->left->kind == Expr::Kind::VarRef) {
+      for (auto it = env.array_struct_scope_stack.rbegin(); it != env.array_struct_scope_stack.rend(); ++it) {
+        auto fit = it->find(expr->left->var_name);
+        if (fit != it->end()) return fit->second;
+      }
+    }
+    if (expr->left && (expr->left->kind == Expr::Kind::HeapArray || expr->left->kind == Expr::Kind::StackArray)) {
+      if (env.layout_map && env.layout_map->count(expr->left->var_name))
+        return expr->left->var_name;
+    }
+  }
+  if (expr->kind == Expr::Kind::FieldAccess) {
+    // Use annotated struct name; find struct name of last field
+    if (!expr->load_field_struct.empty() && env.layout_map) {
+      std::string cur = expr->load_field_struct;
+      for (size_t fi = 0; fi + 1 < expr->field_chain.size(); ++fi) {
+        auto it = env.layout_map->find(cur);
+        if (it == env.layout_map->end()) return "";
+        for (const auto& f : it->second.fields)
+          if (f.first == expr->field_chain[fi]) { cur = f.second.struct_name; break; }
+        if (cur.empty()) return "";
+      }
+      auto it = env.layout_map->find(cur);
+      if (it == env.layout_map->end()) return "";
+      for (const auto& f : it->second.fields)
+        if (f.first == expr->field_chain.back()) return f.second.struct_name;
+    }
+  }
+  return "";
+}
+
+/* Compute field address pointer given base ptr and field chain. Returns nullptr on error.
+ * out_field_type receives the FfiType of the terminal field (Void if embedded struct). */
+static Value* emit_field_address(CodegenEnv& env, Value* base_ptr, const std::string& base_struct,
+                                  const std::vector<std::string>& field_chain,
+                                  FfiType* out_field_type) {
+  LLVMContext& ctx = env.builder->getContext();
+  IRBuilder<>& B = *env.builder;
+  Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+  if (!base_ptr || base_struct.empty() || !env.layout_map || field_chain.empty()) return nullptr;
+  if (base_ptr->getType() != i8ptr) {
+    if (base_ptr->getType() == B.getInt64Ty())
+      base_ptr = B.CreateIntToPtr(base_ptr, i8ptr);
+    else
+      base_ptr = B.CreatePointerCast(base_ptr, i8ptr);
+  }
+  std::string cur = base_struct;
+  size_t total_offset = 0;
+  FfiType field_ty = FfiType::Void;
+  for (size_t fi = 0; fi < field_chain.size(); ++fi) {
+    auto it = env.layout_map->find(cur);
+    if (it == env.layout_map->end()) return nullptr;
+    bool found = false;
+    for (const auto& f : it->second.fields) {
+      if (f.first == field_chain[fi]) {
+        total_offset += f.second.offset;
+        if (fi + 1 < field_chain.size()) {
+          if (f.second.struct_name.empty()) return nullptr;
+          cur = f.second.struct_name;
+        } else {
+          field_ty = f.second.type;
+        }
+        found = true;
+        break;
+      }
+    }
+    if (!found) return nullptr;
+  }
+  *out_field_type = field_ty;
+  return B.CreateGEP(B.getInt8Ty(), base_ptr, B.getInt64(total_offset));
 }
 
 /* Like expr_type but uses array_element_type_from_expr for Index so f64 arrays yield F64. */
@@ -1101,6 +1236,27 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       }
       return B.getInt64(0);
     }
+    case Expr::Kind::FieldAccess: {
+      if (!expr->left || expr->field_chain.empty() || expr->load_field_struct.empty() || !env.layout_map)
+        return nullptr;
+      Value* base_ptr = emit_expr(env, expr->left.get());
+      if (!base_ptr) return nullptr;
+      FfiType field_ty = FfiType::Void;
+      Value* field_ptr = emit_field_address(env, base_ptr, expr->load_field_struct, expr->field_chain, &field_ty);
+      if (!field_ptr || field_ty == FfiType::Void) return nullptr;
+      Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+      if (field_ty == FfiType::F64) {
+        field_ptr = B.CreatePointerCast(field_ptr, B.getDoubleTy()->getPointerTo());
+        return B.CreateLoad(B.getDoubleTy(), field_ptr, "field.load");
+      }
+      if (field_ty == FfiType::Ptr) {
+        field_ptr = B.CreatePointerCast(field_ptr, B.getInt64Ty()->getPointerTo());
+        Value* v = B.CreateLoad(B.getInt64Ty(), field_ptr);
+        return B.CreateIntToPtr(v, i8ptr);
+      }
+      field_ptr = B.CreatePointerCast(field_ptr, B.getInt64Ty()->getPointerTo());
+      return B.CreateLoad(B.getInt64Ty(), field_ptr, "field.load");
+    }
     case Expr::Kind::Index: {
       Value* elem_base = emit_expr(env, expr->left.get());
       Value* index_val = emit_expr(env, expr->right.get());
@@ -1199,6 +1355,10 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         if (v->getType() == B.getDoubleTy() || v->getType() == B.getFloatTy())
           return B.CreateFPToSI(v, B.getInt32Ty());
         return nullptr;
+      }
+      /* Cast to struct: ptr -> struct* is a no-op at runtime */
+      for (const auto& s : prog->struct_defs) {
+        if (s.name == to && v->getType()->isPointerTy()) return v;
       }
       return v;
     }
@@ -1548,6 +1708,31 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
           if (val->getType() == B.getDoubleTy()) val = B.CreateFPToSI(val, B.getInt64Ty());
           else if (val->getType()->isPointerTy()) val = B.CreatePtrToInt(val, B.getInt64Ty());
           B.CreateStore(val, elem_ptr);
+        }
+        return true;
+      }
+      if (stmt->expr->kind == Expr::Kind::FieldAccess) {
+        Expr* fa = stmt->expr.get();
+        if (!fa->left || fa->field_chain.empty() || fa->load_field_struct.empty() || !env.layout_map)
+          return false;
+        Value* base_ptr = emit_expr(env, fa->left.get());
+        if (!base_ptr) return false;
+        FfiType field_ty = FfiType::Void;
+        Value* field_ptr = emit_field_address(env, base_ptr, fa->load_field_struct, fa->field_chain, &field_ty);
+        if (!field_ptr || field_ty == FfiType::Void) return false;
+        if (field_ty == FfiType::F64) {
+          field_ptr = B.CreatePointerCast(field_ptr, B.getDoubleTy()->getPointerTo());
+          if (val->getType() != B.getDoubleTy()) val = B.CreateSIToFP(val, B.getDoubleTy());
+          B.CreateStore(val, field_ptr);
+        } else if (field_ty == FfiType::Ptr) {
+          field_ptr = B.CreatePointerCast(field_ptr, B.getInt64Ty()->getPointerTo());
+          Value* val_i64 = val->getType()->isPointerTy() ? B.CreatePtrToInt(val, B.getInt64Ty()) : val;
+          B.CreateStore(val_i64, field_ptr);
+        } else {
+          field_ptr = B.CreatePointerCast(field_ptr, B.getInt64Ty()->getPointerTo());
+          if (val->getType()->isPointerTy()) val = B.CreatePtrToInt(val, B.getInt64Ty());
+          else if (val->getType() == B.getDoubleTy()) val = B.CreateFPToSI(val, B.getInt64Ty());
+          B.CreateStore(val, field_ptr);
         }
         return true;
       }

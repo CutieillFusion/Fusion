@@ -65,8 +65,17 @@ static bool parse_struct_def(const std::vector<Token>& tokens, size_t& i, Progra
     i++;
     if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Colon) return false;
     i++;
-    if (at_eof(tokens, i) || !is_type_keyword(tokens[i].kind)) return false;
-    def.fields.push_back({std::move(fname), token_to_ffi_type(tokens[i].kind)});
+    if (at_eof(tokens, i)) return false;
+    if (is_type_keyword(tokens[i].kind)) {
+      def.fields.push_back({std::move(fname), token_to_ffi_type(tokens[i].kind)});
+      def.field_type_names.push_back("");
+    } else if (tokens[i].kind == TokenKind::Ident) {
+      // Embedded struct field
+      def.fields.push_back({std::move(fname), FfiType::Void});
+      def.field_type_names.push_back(tokens[i].ident);
+    } else {
+      return false;
+    }
     i++;
     if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Semicolon) return false;
     i++;
@@ -264,41 +273,6 @@ static ExprPtr parse_primary(const std::vector<Token>& tokens, size_t& i) {
       i++;
       return Expr::make_store(std::move(ptr_expr), std::move(val_expr));
     }
-    if (name == "load_field") {
-      ExprPtr ptr_expr = parse_expr(tokens, i);
-      if (!ptr_expr || at_eof(tokens, i) || tokens[i].kind != TokenKind::Comma) return nullptr;
-      i++;
-      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return nullptr;
-      std::string struct_name = tokens[i].ident;
-      i++;
-      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Comma) return nullptr;
-      i++;
-      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return nullptr;
-      std::string field_name = tokens[i].ident;
-      i++;
-      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return nullptr;
-      i++;
-      return Expr::make_load_field(std::move(ptr_expr), std::move(struct_name), std::move(field_name));
-    }
-    if (name == "store_field") {
-      ExprPtr ptr_expr = parse_expr(tokens, i);
-      if (!ptr_expr || at_eof(tokens, i) || tokens[i].kind != TokenKind::Comma) return nullptr;
-      i++;
-      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return nullptr;
-      std::string struct_name = tokens[i].ident;
-      i++;
-      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Comma) return nullptr;
-      i++;
-      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return nullptr;
-      std::string field_name = tokens[i].ident;
-      i++;
-      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Comma) return nullptr;
-      i++;
-      ExprPtr val_expr = parse_expr(tokens, i);
-      if (!val_expr || at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return nullptr;
-      i++;
-      return Expr::make_store_field(std::move(ptr_expr), std::move(struct_name), std::move(field_name), std::move(val_expr));
-    }
     if (name == "len") {
       ExprPtr arg = parse_expr(tokens, i);
       if (!arg || at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return nullptr;
@@ -353,14 +327,30 @@ static ExprPtr parse_primary(const std::vector<Token>& tokens, size_t& i) {
   return nullptr;
 }
 
-/* Postfix: primary followed by [ expr ]* (subscript). */
+/* Postfix: primary followed by [ expr ]* (subscript) and .ident* (field access). */
 static ExprPtr parse_postfix(const std::vector<Token>& tokens, size_t& i, ExprPtr base) {
-  while (!at_eof(tokens, i) && tokens[i].kind == TokenKind::LBracket) {
-    i++;
-    ExprPtr index_expr = parse_expr(tokens, i);
-    if (!index_expr || at_eof(tokens, i) || tokens[i].kind != TokenKind::RBracket) return nullptr;
-    i++;
-    base = Expr::make_index(std::move(base), std::move(index_expr));
+  while (!at_eof(tokens, i) &&
+         (tokens[i].kind == TokenKind::LBracket || tokens[i].kind == TokenKind::Dot)) {
+    if (tokens[i].kind == TokenKind::LBracket) {
+      i++;
+      ExprPtr index_expr = parse_expr(tokens, i);
+      if (!index_expr || at_eof(tokens, i) || tokens[i].kind != TokenKind::RBracket) return nullptr;
+      i++;
+      base = Expr::make_index(std::move(base), std::move(index_expr));
+    } else {
+      // Dot: consume '.' then expect an identifier
+      i++;
+      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return nullptr;
+      std::string field_name = tokens[i].ident;
+      i++;
+      if (base->kind == Expr::Kind::FieldAccess) {
+        base->field_chain.push_back(std::move(field_name));
+      } else {
+        std::vector<std::string> chain;
+        chain.push_back(std::move(field_name));
+        base = Expr::make_field_access(std::move(base), std::move(chain));
+      }
+    }
   }
   return base;
 }
@@ -406,6 +396,7 @@ static ExprPtr parse_additive(const std::vector<Token>& tokens, size_t& i) {
     else if (tokens[i].kind == TokenKind::KwI32) type_name = "i32";
     else if (tokens[i].kind == TokenKind::KwF64) type_name = "f64";
     else if (tokens[i].kind == TokenKind::KwF32) type_name = "f32";
+    else if (tokens[i].kind == TokenKind::Ident) type_name = tokens[i].ident;
     else return nullptr;
     i++;
     left = Expr::make_cast(std::move(left), std::move(type_name));
@@ -688,7 +679,8 @@ static StmtPtr parse_stmt(const std::vector<Token>& tokens, size_t& i) {
       } else {
         ExprPtr lhs = parse_expr(tokens, i);
         if (!lhs || at_eof(tokens, i) || tokens[i].kind != TokenKind::Equals) return nullptr;
-        if (lhs->kind != Expr::Kind::VarRef && lhs->kind != Expr::Kind::Index) return nullptr;
+        if (lhs->kind != Expr::Kind::VarRef && lhs->kind != Expr::Kind::Index &&
+            lhs->kind != Expr::Kind::FieldAccess) return nullptr;
         i++;
         ExprPtr rhs = parse_expr(tokens, i);
         if (!rhs || at_eof(tokens, i) || tokens[i].kind != TokenKind::Semicolon) return nullptr;
@@ -705,7 +697,8 @@ static StmtPtr parse_stmt(const std::vector<Token>& tokens, size_t& i) {
     } else {
       ExprPtr lhs = parse_expr(tokens, i);
       if (!lhs || at_eof(tokens, i) || tokens[i].kind != TokenKind::Equals) return nullptr;
-      if (lhs->kind != Expr::Kind::VarRef && lhs->kind != Expr::Kind::Index) return nullptr;
+      if (lhs->kind != Expr::Kind::VarRef && lhs->kind != Expr::Kind::Index &&
+          lhs->kind != Expr::Kind::FieldAccess) return nullptr;
       i++;
       ExprPtr rhs = parse_expr(tokens, i);
       if (!rhs || at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return nullptr;
@@ -719,7 +712,8 @@ static StmtPtr parse_stmt(const std::vector<Token>& tokens, size_t& i) {
   ExprPtr expr = parse_expr(tokens, i);
   if (!expr) return nullptr;
   if (!at_eof(tokens, i) && tokens[i].kind == TokenKind::Equals) {
-    if (expr->kind == Expr::Kind::VarRef || expr->kind == Expr::Kind::Index) {
+    if (expr->kind == Expr::Kind::VarRef || expr->kind == Expr::Kind::Index ||
+        expr->kind == Expr::Kind::FieldAccess) {
       i++;
       ExprPtr value = parse_expr(tokens, i);
       if (!value || at_eof(tokens, i) || tokens[i].kind != TokenKind::Semicolon) return nullptr;
@@ -916,7 +910,8 @@ ParseResult parse(const std::vector<Token>& tokens) {
       return fail("expected expression or let binding", line, col);
     }
     if (!at_eof(tokens, i) && tokens[i].kind == TokenKind::Equals &&
-        (expr->kind == Expr::Kind::VarRef || expr->kind == Expr::Kind::Index)) {
+        (expr->kind == Expr::Kind::VarRef || expr->kind == Expr::Kind::Index ||
+         expr->kind == Expr::Kind::FieldAccess)) {
       i++;
       ExprPtr value = parse_expr(tokens, i);
       if (!value) {

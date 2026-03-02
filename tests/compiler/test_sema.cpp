@@ -221,7 +221,7 @@ TEST(SemaTests, RejectsReturnStackPointer) {
 
 TEST(SemaTests, RejectsStoreStackIntoHeap) {
   auto tokens = fusion::lex(
-      "struct Node { next: ptr; }; let obj = heap(Node); let x = stack(i64); store_field(obj, Node, next, x); print(1)");
+      "struct Node { next: ptr; }; let obj = heap(Node); let x = stack(i64); obj.next = x; print(1)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -410,14 +410,14 @@ TEST(SemaTests, RejectsCallWrongArgTypes) {
 }
 
 TEST(SemaTests, AcceptsCallThroughStructField) {
-  /* call(load_field(op, Operation, func), x, y) with inferred signature (f64, f64) -> f64. */
+  /* call(op.func, op.x, op.y) with inferred signature (f64, f64) -> f64. */
   auto tokens = fusion::lex(
       "struct Operation { func: ptr; x: f64; y: f64; }; "
       "fn add(x: f64, y: f64) -> f64 { return x + y; } "
       "fn perform_operation(op: Operation) -> f64 { "
-      "  let func = load_field(op, Operation, func); "
-      "  let x = load_field(op, Operation, x); "
-      "  let y = load_field(op, Operation, y); "
+      "  let func = op.func; "
+      "  let x = op.x; "
+      "  let y = op.y; "
       "  return call(func, x, y); "
       "} "
       "print(1)");

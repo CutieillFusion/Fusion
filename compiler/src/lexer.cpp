@@ -213,6 +213,11 @@ std::vector<Token> lex(const std::string& source) {
       advance();
       continue;
     }
+    if (source[i] == '.') {
+      tokens.push_back({TokenKind::Dot, 0, 0.0, {}, {}, start_line, start_col});
+      advance();
+      continue;
+    }
     if (source[i] == '=' && i + 1 < source.size() && source[i + 1] == '=') {
       tokens.push_back({TokenKind::EqEq, 0, 0.0, {}, {}, start_line, start_col});
       advance();

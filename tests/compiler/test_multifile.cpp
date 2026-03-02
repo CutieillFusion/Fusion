@@ -58,13 +58,13 @@ TEST(MultifileTests, NoImportLibsLeavesProgramUnchanged) {
 TEST(MultifileTests, ImportOneLibMergesStructAndFn) {
   std::string main_src = R"(import lib "vec" { struct Vector; fn make_vec(x: f64, y: f64) -> Vector; };
 let v = make_vec(1.0, 2.0);
-print(load_field(v, Vector, x));
-print(load_field(v, Vector, y)))";
+print(v.x);
+print(v.y))";
   std::string lib_src = R"(export struct Vector { x: f64; y: f64; };
 export fn make_vec(x: f64, y: f64) -> Vector {
   let p = heap(Vector);
-  store_field(p, Vector, x, x);
-  store_field(p, Vector, y, y);
+  p.x = x;
+  p.y = y;
   return p;
 })";
   auto [err, prog] = run_multifile_merge(main_src, "vec", lib_src);
@@ -145,16 +145,16 @@ TEST(MultifileTests, FnSignatureMismatchReturnsError) {
 TEST(MultifileTests, SubsetImportOnlyMergesRequested) {
   std::string main_src = R"(import lib "vec" { struct Vector; fn make_vec(x: f64, y: f64) -> Vector; };
 let v = make_vec(1.0, 2.0);
-print(load_field(v, Vector, x)))";
+print(v.x))";
   std::string lib_src = R"(export struct Vector { x: f64; y: f64; };
 export struct Point { x: i64; y: i64; };
 export fn make_vec(x: f64, y: f64) -> Vector {
   let p = heap(Vector);
-  store_field(p, Vector, x, x);
-  store_field(p, Vector, y, y);
+  p.x = x;
+  p.y = y;
   return p;
 }
-export fn make_point(x: i64, y: i64) -> Point { let p = heap(Point); store_field(p, Point, x, x); store_field(p, Point, y, y); return p; })";
+export fn make_point(x: i64, y: i64) -> Point { let p = heap(Point); p.x = x; p.y = y; return p; })";
   auto [err, prog] = run_multifile_merge(main_src, "vec", lib_src);
   ASSERT_TRUE(err.empty()) << err;
   ASSERT_TRUE(prog);

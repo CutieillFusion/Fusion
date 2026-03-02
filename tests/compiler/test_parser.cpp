@@ -252,7 +252,7 @@ TEST(ParserTests, ParsesImportLibBlock) {
 
 TEST(ParserTests, ParsesExportStructAndFn) {
   auto tokens = fusion::lex(
-      "export struct Point { x: f64; y: f64; }; export fn zero() -> Point { let p = heap(Point); store_field(p, Point, x, 0.0); store_field(p, Point, y, 0.0); return p; } print(1)");
+      "export struct Point { x: f64; y: f64; }; export fn zero() -> Point { let p = heap(Point); p.x = 0.0; p.y = 0.0; return p; } print(1)");
   auto result = fusion::parse(tokens);
   ASSERT_TRUE(result.ok()) << result.error.message;
   ASSERT_TRUE(result.program);

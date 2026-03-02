@@ -15,8 +15,8 @@ let w = add_vec(u, v);
 let z = cos_vec(0.0);
 
 print("Vector w: ");
-print(load_field(w, Vector, x));
-print(load_field(w, Vector, y));
+print(w.x);
+print(w.y);
 print("Cosine vector: ");
-print(load_field(z, Vector, x));
-print(load_field(z, Vector, y));
+print(z.x);
+print(z.y);

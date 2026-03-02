@@ -100,7 +100,7 @@ store(param0_slot, load_ptr(dev_buf_slot));
 
 # Allocate parameters
 let params = heap(KernelParam);
-store_field(params, KernelParam, p0, param0_slot);
+params.p0 = param0_slot;
 cuLaunchKernel(load_ptr(func_slot), 1, 1, 1, 1, 1, 1, 0, 0, params, 0);
 
 # Sync, copy result back (D2H = kind 2), print, cleanup

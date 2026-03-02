@@ -63,6 +63,7 @@ struct Expr {
     Store,
     LoadField,
     StoreField,
+    FieldAccess,
     Cast,
     Compare,
     Index
@@ -80,8 +81,9 @@ struct Expr {
   std::vector<ExprPtr> args;
   std::string call_type_arg;  // optional type arg for Call: e.g. range elem type, from_str result type; "" = none
   std::string var_name;  // for VarRef, or alloc type name for Alloc
-  std::string load_field_struct;  // for LoadField
+  std::string load_field_struct;  // for LoadField / FieldAccess (base struct name, filled by sema)
   std::string load_field_field;   // for LoadField
+  std::vector<std::string> field_chain;  // for FieldAccess: ordered list of field names
 
   /* When non-empty, sema inferred the call signature for call(ptr, ...); codegen uses this. */
   std::vector<FfiType> inferred_call_param_types;
@@ -110,6 +112,7 @@ struct Expr {
   static ExprPtr make_store(ExprPtr ptr, ExprPtr value);
   static ExprPtr make_load_field(ExprPtr ptr, std::string struct_name, std::string field_name);
   static ExprPtr make_store_field(ExprPtr ptr, std::string struct_name, std::string field_name, ExprPtr value);
+  static ExprPtr make_field_access(ExprPtr base, std::vector<std::string> field_chain);
   static ExprPtr make_cast(ExprPtr operand, std::string target_type_name);
   static ExprPtr make_compare(CompareOp op, ExprPtr left, ExprPtr right);
 
@@ -197,10 +200,13 @@ struct FnDef {
   FnDef clone() const;
 };
 
-/* struct Name { field: type; ... }; fields use primitive FfiType only in v1. */
+/* struct Name { field: type; ... }; fields may be primitives or embedded structs.
+ * field_type_names[i] non-empty means fields[i] is an embedded struct of that name
+ * (FfiType for that field is Void as placeholder). */
 struct StructDef {
   std::string name;
   std::vector<std::pair<std::string, FfiType>> fields;
+  std::vector<std::string> field_type_names;  // parallel to fields; "" = primitive, else = struct name
   bool exported = false;
 };
 

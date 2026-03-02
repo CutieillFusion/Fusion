@@ -13,12 +13,12 @@ import lib "moons" {
 
 import lib "value" {
 	struct Value;
-	fn alloc_value(data: f64, prev: ptr, children_count: i64, backward: ptr) -> ptr;
-	fn add_forward(a: ptr, b: ptr) -> ptr;
-	fn mul_forward(a: ptr, b: ptr) -> ptr;
-	fn relu_forward(x: ptr) -> ptr;
-	fn make_leaf(data: f64) -> ptr;
-	fn free_value(v: ptr) -> void;
+	fn alloc_value(data: f64, prev: ptr, children_count: i64, backward: ptr) -> Value;
+	fn add_forward(a: Value, b: Value) -> Value;
+	fn mul_forward(a: Value, b: Value) -> Value;
+	fn relu_forward(x: Value) -> Value;
+	fn make_leaf(data: f64) -> Value;
+	fn free_value(v: Value) -> void;
 }
 
 import lib "autograd" {
@@ -110,9 +110,9 @@ for (let epoch = 0; epoch < num_epochs; epoch = epoch + 1) {
 	let running_correct = make_leaf(0.0);
 
 	for (let sample_idx = 0; sample_idx < batch_size; sample_idx = sample_idx + 1) {
-		X[0] = make_leaf(load_field(moons[sample_idx], Point, x));
-		X[1] = make_leaf(load_field(moons[sample_idx], Point, y));
-		y[0] = make_leaf(load_field(moons[sample_idx], Point, class) as f64);
+		X[0] = make_leaf((moons[sample_idx] as Point).x);
+		X[1] = make_leaf((moons[sample_idx] as Point).y);
+		y[0] = make_leaf((moons[sample_idx] as Point).class as f64);
 
 		# Forward layer 1: h1[j] = relu( sum_i X[i]*W1[i,j] + b1[j] )
 		for (let j = 0; j < hidden_size; j = j + 1) {
@@ -146,16 +146,16 @@ for (let epoch = 0; epoch < num_epochs; epoch = epoch + 1) {
 		running = add_forward(running, sample_loss);
 
 		# Accuracy: labels are -1 and 1; correct if pred and label have same sign
-		let pred_val = load_field(h2[0], Value, data);
-		let true_val = load_field(y[0], Value, data);
+		let pred_val = (h2[0] as Value).data;
+		let true_val = (y[0] as Value).data;
 		let correct_this = make_leaf(0.0);
 		if (pred_val > 0.0) {
 			if (true_val > 0.0) {
-				store_field(correct_this, Value, data, 1.0);
+				(correct_this as Value).data = 1.0;
 			}
 		} else {
 			if (true_val <= 0.0) {
-				store_field(correct_this, Value, data, 1.0);
+				(correct_this as Value).data = 1.0;
 			}
 		}
 		running_correct = add_forward(running_correct, correct_this);
@@ -172,47 +172,43 @@ for (let epoch = 0; epoch < num_epochs; epoch = epoch + 1) {
 	let reg_loss_scaled = mul_forward(make_leaf(alpha), reg_loss);
 	let total_loss = add_forward(running, reg_loss_scaled);
 
-	store_field(total_loss, Value, grad, 1.0);
+	(total_loss as Value).grad = 1.0;
 
-	let total_correct = load_field(running_correct, Value, data);
+	let total_correct = (running_correct as Value).data;
 
 	free_graph(running_correct, weight_ptrs, num_weights);
 	backward_with_free(total_loss, weight_ptrs, num_weights);
 
 	for (let i = 0; i < input_size; i = i + 1) {
 		for (let j = 0; j < hidden_size; j = j + 1) {
-			let w1_grad = load_field(W1[i * hidden_size + j], Value, grad);
-			let w1_data = load_field(W1[i * hidden_size + j], Value, data);
-			let new_data = w1_data - learning_rate * w1_grad;
-			store_field(W1[i * hidden_size + j], Value, data, new_data);
-			store_field(W1[i * hidden_size + j], Value, grad, 0.0);
+			let w = W1[i * hidden_size + j] as Value;
+			let new_data = w.data - learning_rate * w.grad;
+			w.data = new_data;
+			w.grad = 0.0;
 		}
 	}
 
 	for (let i = 0; i < hidden_size; i = i + 1) {
 		for (let j = 0; j < output_size; j = j + 1) {
-			let w2_grad = load_field(W2[i * output_size + j], Value, grad);
-			let w2_data = load_field(W2[i * output_size + j], Value, data);
-			let new_data = w2_data - learning_rate * w2_grad;
-			store_field(W2[i * output_size + j], Value, data, new_data);
-			store_field(W2[i * output_size + j], Value, grad, 0.0);
+			let w = W2[i * output_size + j] as Value;
+			let new_data = w.data - learning_rate * w.grad;
+			w.data = new_data;
+			w.grad = 0.0;
 		}
 	}
 
 	for (let i = 0; i < hidden_size; i = i + 1) {
-		let b1_grad = load_field(b1[i], Value, grad);
-		let b1_data = load_field(b1[i], Value, data);
-		let new_data = b1_data - learning_rate * b1_grad;
-		store_field(b1[i], Value, data, new_data);
-		store_field(b1[i], Value, grad, 0.0);
+		let w = b1[i] as Value;
+		let new_data = w.data - learning_rate * w.grad;
+		w.data = new_data;
+		w.grad = 0.0;
 	}
 
 	for (let i = 0; i < output_size; i = i + 1) {
-		let b2_grad = load_field(b2[i], Value, grad);
-		let b2_data = load_field(b2[i], Value, data);
-		let new_data = b2_data - learning_rate * b2_grad;
-		store_field(b2[i], Value, data, new_data);
-		store_field(b2[i], Value, grad, 0.0);
+		let w = b2[i] as Value;
+		let new_data = w.data - learning_rate * w.grad;
+		w.data = new_data;
+		w.grad = 0.0;
 	}
 
 	let accuracy = total_correct / (batch_size as f64);
@@ -234,7 +230,7 @@ print("Weights for trained model:");
 print("W1:");
 for (let i = 0; i < input_size; i = i + 1) {
 	for (let j = 0; j < hidden_size; j = j + 1) {
-		let data = load_field(W1[i * hidden_size + j], Value, data);
+		let data = (W1[i * hidden_size + j] as Value).data;
 		print(data);
 		W1_trained[i * hidden_size + j] = 0.0 + data;
 	}
@@ -243,7 +239,7 @@ for (let i = 0; i < input_size; i = i + 1) {
 print("W2:");
 for (let i = 0; i < hidden_size; i = i + 1) {
 	for (let j = 0; j < output_size; j = j + 1) {
-		let data = load_field(W2[i * output_size + j], Value, data);
+		let data = (W2[i * output_size + j] as Value).data;
 		print(data);
 		W2_trained[i * output_size + j] = 0.0 + data;
 	}
@@ -251,14 +247,14 @@ for (let i = 0; i < hidden_size; i = i + 1) {
 
 print("b1:");
 for (let i = 0; i < hidden_size; i = i + 1) {
-	let data = load_field(b1[i], Value, data);
+	let data = (b1[i] as Value).data;
 	print(data);
 	b1_trained[i] = 0.0 + data;
 }
 
 print("b2:");
 for (let i = 0; i < output_size; i = i + 1) {
-	let data = load_field(b2[i], Value, data);
+	let data = (b2[i] as Value).data;
 	print(data);
 	b2_trained[i] = 0.0 + data;
 }
@@ -353,11 +349,11 @@ for (let y = 0; y < H; y = y + 1) {
 		for (let d = 0; d < n_moons; d = d + 1) {
 			let px = 0.0 - 1.5 + (x as f64) * 4.0 / (W as f64);
 			let py = 0.0 - 1.5 + (y as f64) * 4.0 / (H as f64);
-			let x_diff = px - load_field(moons[d], Point, x);
-			let y_diff = py - load_field(moons[d], Point, y);
+			let x_diff = px - (moons[d] as Point).x;
+			let y_diff = py - (moons[d] as Point).y;
 			if (x_diff * x_diff + y_diff * y_diff < radius_sq) {
 				on_any_dot = 1;
-				moon_class = load_field(moons[d], Point, class);
+				moon_class = (moons[d] as Point).class;
 			}
 		}
 		if (on_any_dot != 0) {

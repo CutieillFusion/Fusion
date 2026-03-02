@@ -61,7 +61,7 @@ TEST(CodegenTests, EmitsCompareForEqNeq) {
 TEST(CodegenTests, EmitsStructFieldGEP) {
   auto tokens = fusion::lex(
       "struct P { x: f64; y: f64; }; "
-      "let p = heap(P); store_field(p, P, x, 1.0); print(load_field(p, P, x)); free(as_heap(p))");
+      "let p = heap(P); p.x = 1.0; print(p.x); free(as_heap(p))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());

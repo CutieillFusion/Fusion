@@ -29,6 +29,7 @@ inline size_t ffi_type_align(FfiType t) {
 struct FieldLayout {
   size_t offset = 0;
   FfiType type = FfiType::Void;
+  std::string struct_name;  // non-empty for embedded struct fields
 };
 
 struct StructLayout {
@@ -37,11 +38,12 @@ struct StructLayout {
   std::vector<std::pair<std::string, FieldLayout>> fields;
 };
 
-/* Compute C layout for a struct. Returns empty layout if def has no fields or invalid. */
-StructLayout compute_layout(const StructDef& def);
-
 /* Map struct name -> layout. Build from Program::struct_defs. */
 using LayoutMap = std::unordered_map<std::string, StructLayout>;
+
+/* Compute C layout for a struct. Returns empty layout if def has no fields or invalid. */
+/* known_layouts is used for embedded struct field sizes (pass {} if not needed). */
+StructLayout compute_layout(const StructDef& def, const LayoutMap& known_layouts = {});
 LayoutMap build_layout_map(const std::vector<StructDef>& struct_defs);
 
 }  // namespace fusion

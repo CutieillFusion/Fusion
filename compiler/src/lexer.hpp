@@ -26,6 +26,7 @@ enum class TokenKind {
   Comma,
   Semicolon,
   Colon,
+  Dot,     // .
   Equals,  // =
   Arrow,   // ->
   // Keywords (recognized as ident then mapped in parser, or distinct kinds)

@@ -47,6 +47,10 @@ struct SemaContext {
   std::vector<std::unordered_map<std::string, FnPtrSig>> fnptr_scope_stack;
   std::vector<std::unordered_map<std::string, AllocFlavor>> var_flavor_scope_stack;
   std::vector<std::unordered_map<std::string, PtrBase>> var_base_scope_stack;
+  /* Ptr-to-struct tracking: variable name -> struct name it points to */
+  std::vector<std::unordered_map<std::string, std::string>> var_struct_scope_stack;
+  /* Array element struct tracking: variable name -> struct name of elements */
+  std::vector<std::unordered_map<std::string, std::string>> array_struct_scope_stack;
   LayoutMap* layout_map = nullptr;  // from Program::struct_defs
   Program* program = nullptr;
   SemaError* err = nullptr;
@@ -95,6 +99,29 @@ static PtrBase var_base_lookup(SemaContext* ctx, const std::string& name) {
   return PtrBase::Unknown;
 }
 
+/* Lookup which struct a pointer variable points to. Returns "" if unknown. */
+static std::string var_struct_lookup(SemaContext* ctx, const std::string& name) {
+  if (!ctx || ctx->var_struct_scope_stack.empty()) return "";
+  for (auto it = ctx->var_struct_scope_stack.rbegin(); it != ctx->var_struct_scope_stack.rend(); ++it) {
+    auto fit = it->find(name);
+    if (fit != it->end()) return fit->second;
+  }
+  return "";
+}
+
+/* Lookup struct name for elements of an array variable. Returns "" if unknown. */
+static std::string array_struct_lookup(SemaContext* ctx, const std::string& name) {
+  if (!ctx || ctx->array_struct_scope_stack.empty()) return "";
+  for (auto it = ctx->array_struct_scope_stack.rbegin(); it != ctx->array_struct_scope_stack.rend(); ++it) {
+    auto fit = it->find(name);
+    if (fit != it->end()) return fit->second;
+  }
+  return "";
+}
+
+/* Get the struct name that an expression points to (for field access). */
+static std::string expr_struct_name(Expr* expr, SemaContext* ctx);
+
 static bool may_outlive_function(PtrBase b) {
   return b != PtrBase::StackLocal;
 }
@@ -121,6 +148,79 @@ static void update_var_flavor_base(SemaContext* ctx, const std::string& name, Al
 }
 
 static FfiType expr_type(Expr* expr, SemaContext* ctx);  // forward
+
+/* Returns the struct name an expression points to (for field access resolution). */
+static std::string expr_struct_name(Expr* expr, SemaContext* ctx) {
+  if (!expr || !ctx) return "";
+  switch (expr->kind) {
+    case Expr::Kind::VarRef:
+      return var_struct_lookup(ctx, expr->var_name);
+    case Expr::Kind::HeapAlloc:
+    case Expr::Kind::StackAlloc:
+      // Only struct names (not primitive type names)
+      if (ctx->program) {
+        for (const auto& s : ctx->program->struct_defs)
+          if (s.name == expr->var_name) return expr->var_name;
+      }
+      return "";
+    case Expr::Kind::Index:
+      if (expr->left && expr->left->kind == Expr::Kind::VarRef)
+        return array_struct_lookup(ctx, expr->left->var_name);
+      if (expr->left && (expr->left->kind == Expr::Kind::HeapArray ||
+                          expr->left->kind == Expr::Kind::StackArray)) {
+        const std::string& tn = expr->left->var_name;
+        if (ctx->program)
+          for (const auto& s : ctx->program->struct_defs)
+            if (s.name == tn) return tn;
+      }
+      return "";
+    case Expr::Kind::FieldAccess: {
+      // The struct name of the last field in the chain
+      if (expr->field_chain.empty() || !ctx->layout_map) return "";
+      std::string cur = expr_struct_name(expr->left.get(), ctx);
+      if (cur.empty()) return "";
+      for (size_t fi = 0; fi + 1 < expr->field_chain.size(); ++fi) {
+        auto it = ctx->layout_map->find(cur);
+        if (it == ctx->layout_map->end()) return "";
+        bool found = false;
+        for (const auto& f : it->second.fields) {
+          if (f.first == expr->field_chain[fi]) {
+            cur = f.second.struct_name;
+            found = true;
+            break;
+          }
+        }
+        if (!found || cur.empty()) return "";
+      }
+      // Last field: return its struct_name if embedded, else ""
+      auto it = ctx->layout_map->find(cur);
+      if (it == ctx->layout_map->end()) return "";
+      const std::string& last_field = expr->field_chain.back();
+      for (const auto& f : it->second.fields) {
+        if (f.first == last_field) return f.second.struct_name;
+      }
+      return "";
+    }
+    case Expr::Kind::Cast:
+      if (ctx->program) {
+        for (const auto& s : ctx->program->struct_defs)
+          if (s.name == expr->var_name) return expr->var_name;
+      }
+      return "";
+    case Expr::Kind::Call: {
+      if (!ctx) return "";
+      auto user_it = ctx->user_fn_by_name.find(expr->callee);
+      if (user_it != ctx->user_fn_by_name.end() && !user_it->second->return_type_name.empty())
+        return user_it->second->return_type_name;
+      auto ext_it = ctx->extern_fn_by_name.find(expr->callee);
+      if (ext_it != ctx->extern_fn_by_name.end() && !ext_it->second.return_type_name.empty())
+        return ext_it->second.return_type_name;
+      return "";
+    }
+    default:
+      return "";
+  }
+}
 
 static AllocFlavor expr_flavor(Expr* expr, SemaContext* ctx) {
   if (!expr || !ctx) return AllocFlavor::Unknown;
@@ -680,6 +780,51 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
       }
       return true;
     }
+    case Expr::Kind::FieldAccess: {
+      if (!expr->left || expr->field_chain.empty()) return false;
+      if (!check_expr(expr->left.get(), ctx)) return false;
+      if (expr_type(expr->left.get(), &ctx) != FfiType::Ptr) {
+        ctx.err->message = "field access: base must be a pointer";
+        return false;
+      }
+      if (!ctx.layout_map) return false;
+      std::string struct_name = expr_struct_name(expr->left.get(), &ctx);
+      if (struct_name.empty()) {
+        ctx.err->message = "field access: cannot determine struct type of base expression";
+        return false;
+      }
+      // Annotate for codegen
+      expr->load_field_struct = struct_name;
+      std::string cur = struct_name;
+      for (size_t fi = 0; fi < expr->field_chain.size(); ++fi) {
+        auto it = ctx.layout_map->find(cur);
+        if (it == ctx.layout_map->end()) {
+          ctx.err->message = "field access: unknown struct '" + cur + "'";
+          return false;
+        }
+        const std::string& field = expr->field_chain[fi];
+        bool found = false;
+        for (const auto& f : it->second.fields) {
+          if (f.first == field) {
+            if (fi + 1 < expr->field_chain.size()) {
+              if (f.second.struct_name.empty()) {
+                ctx.err->message = "field access: intermediate field '" + field +
+                    "' is not an embedded struct in '" + cur + "'";
+                return false;
+              }
+              cur = f.second.struct_name;
+            }
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          ctx.err->message = "field access: unknown field '" + field + "' in struct '" + cur + "'";
+          return false;
+        }
+      }
+      return true;
+    }
     case Expr::Kind::Cast: {
       if (!expr->left || expr->var_name.empty()) return false;
       if (!check_expr(expr->left.get(), ctx)) return false;
@@ -699,7 +844,19 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
         }
         return true;
       }
-      ctx.err->message = "cast: target type must be ptr, i64, i32, f64, or f32";
+      /* Cast to struct: ptr -> struct* (reinterpret) */
+      if (ctx.program) {
+        for (const auto& s : ctx.program->struct_defs) {
+          if (s.name == expr->var_name) {
+            if (from != FfiType::Ptr) {
+              ctx.err->message = "cast to struct: operand must be a pointer";
+              return false;
+            }
+            return true;
+          }
+        }
+      }
+      ctx.err->message = "cast: target type must be ptr, i64, i32, f64, f32, or a struct name";
       return false;
     }
     case Expr::Kind::Compare: {
@@ -810,12 +967,44 @@ static FfiType expr_type(Expr* expr, SemaContext* ctx) {
         if (f.first == expr->load_field_field) return f.second.type;
       return FfiType::Void;
     }
+    case Expr::Kind::FieldAccess: {
+      if (!ctx || !ctx->layout_map || expr->field_chain.empty()) return FfiType::Void;
+      // Use annotated struct name if available, else derive
+      std::string struct_name = expr->load_field_struct;
+      if (struct_name.empty()) struct_name = expr_struct_name(expr->left.get(), ctx);
+      if (struct_name.empty()) return FfiType::Void;
+      std::string cur = struct_name;
+      for (size_t fi = 0; fi < expr->field_chain.size(); ++fi) {
+        auto it = ctx->layout_map->find(cur);
+        if (it == ctx->layout_map->end()) return FfiType::Void;
+        const std::string& field = expr->field_chain[fi];
+        bool found = false;
+        for (const auto& f : it->second.fields) {
+          if (f.first == field) {
+            if (fi + 1 < expr->field_chain.size()) {
+              cur = f.second.struct_name;
+            } else {
+              // Last field
+              return f.second.struct_name.empty() ? f.second.type : FfiType::Ptr;
+            }
+            found = true;
+            break;
+          }
+        }
+        if (!found) return FfiType::Void;
+      }
+      return FfiType::Void;
+    }
     case Expr::Kind::Cast:
       if (expr->var_name == "ptr") return FfiType::Ptr;
       if (expr->var_name == "i64") return FfiType::I64;
       if (expr->var_name == "i32") return FfiType::I32;
       if (expr->var_name == "f64") return FfiType::F64;
       if (expr->var_name == "f32") return FfiType::F32;
+      if (ctx && ctx->program) {
+        for (const auto& s : ctx->program->struct_defs)
+          if (s.name == expr->var_name) return FfiType::Ptr;
+      }
       return FfiType::Void;
     case Expr::Kind::Compare:
       return FfiType::I64;  /* condition type as i64 0/1 for codegen */
@@ -882,21 +1071,49 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
         if (lookup_fnptr_sig(&ctx, stmt->init.get(), &sig))
           ctx.fnptr_scope_stack.back()[stmt->name] = sig;
       }
+      // Track ptr-to-struct
+      if (let_ty == FfiType::Ptr && !ctx.var_struct_scope_stack.empty()) {
+        std::string sname = expr_struct_name(stmt->init.get(), &ctx);
+        if (!sname.empty())
+          ctx.var_struct_scope_stack.back()[stmt->name] = sname;
+      }
       FfiType elem_ty = get_array_element_type(stmt->init.get(), &ctx);
       if (elem_ty != FfiType::Void) {
         ctx.array_element_scope_stack.back()[stmt->name] = elem_ty;
-      } else if (let_ty == FfiType::Ptr && stmt->init->kind == Expr::Kind::LoadField) {
+      } else if (let_ty == FfiType::Ptr && stmt->init->kind == Expr::Kind::FieldAccess) {
         Expr* e = stmt->init.get();
-        auto it = ctx.layout_map->find(e->load_field_struct);
-        if (it != ctx.layout_map->end()) {
-          for (const auto& f : it->second.fields)
-            if (f.first == e->load_field_field && f.second.type == FfiType::Ptr) {
-              ctx.array_element_scope_stack.back()[stmt->name] = FfiType::Ptr;
-              break;
+        if (!e->field_chain.empty() && !e->load_field_struct.empty() && ctx.layout_map) {
+          std::string cur = e->load_field_struct;
+          for (size_t fi = 0; fi < e->field_chain.size(); ++fi) {
+            auto it = ctx.layout_map->find(cur);
+            if (it == ctx.layout_map->end()) break;
+            bool found = false;
+            for (const auto& f : it->second.fields) {
+              if (f.first == e->field_chain[fi]) {
+                if (fi + 1 == e->field_chain.size() && f.second.type == FfiType::Ptr) {
+                  ctx.array_element_scope_stack.back()[stmt->name] = FfiType::Ptr;
+                }
+                cur = f.second.struct_name.empty() ? cur : f.second.struct_name;
+                found = true;
+                break;
+              }
             }
+            if (!found) break;
+          }
         }
       } else if (let_ty == FfiType::Ptr && stmt->init->kind == Expr::Kind::Call)
         ctx.array_element_scope_stack.back()[stmt->name] = FfiType::Ptr;
+      // Track array element struct name
+      if (!ctx.array_struct_scope_stack.empty()) {
+        Expr* init = stmt->init.get();
+        if (init && (init->kind == Expr::Kind::HeapArray || init->kind == Expr::Kind::StackArray) && ctx.program) {
+          for (const auto& s : ctx.program->struct_defs)
+            if (s.name == init->var_name) {
+              ctx.array_struct_scope_stack.back()[stmt->name] = init->var_name;
+              break;
+            }
+        }
+      }
       return true;
     }
     case Stmt::Kind::Expr:
@@ -908,6 +1125,8 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
       ctx.fnptr_scope_stack.push_back({});
       ctx.var_flavor_scope_stack.push_back({});
       ctx.var_base_scope_stack.push_back({});
+      ctx.var_struct_scope_stack.push_back({});
+      ctx.array_struct_scope_stack.push_back({});
       for (StmtPtr& s : stmt->then_body)
         if (!check_stmt(ctx, def, s.get())) {
           ctx.var_scope_stack.pop_back();
@@ -915,6 +1134,8 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
           ctx.fnptr_scope_stack.pop_back();
           ctx.var_flavor_scope_stack.pop_back();
           ctx.var_base_scope_stack.pop_back();
+          ctx.var_struct_scope_stack.pop_back();
+          ctx.array_struct_scope_stack.pop_back();
           return false;
         }
       ctx.var_scope_stack.pop_back();
@@ -922,12 +1143,16 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
       ctx.fnptr_scope_stack.pop_back();
       ctx.var_flavor_scope_stack.pop_back();
       ctx.var_base_scope_stack.pop_back();
+      ctx.var_struct_scope_stack.pop_back();
+      ctx.array_struct_scope_stack.pop_back();
       if (stmt->else_body.empty()) return true;
       ctx.var_scope_stack.push_back({});
       ctx.array_element_scope_stack.push_back({});
       ctx.fnptr_scope_stack.push_back({});
       ctx.var_flavor_scope_stack.push_back({});
       ctx.var_base_scope_stack.push_back({});
+      ctx.var_struct_scope_stack.push_back({});
+      ctx.array_struct_scope_stack.push_back({});
       for (StmtPtr& s : stmt->else_body)
         if (!check_stmt(ctx, def, s.get())) {
           ctx.var_scope_stack.pop_back();
@@ -935,6 +1160,8 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
           ctx.fnptr_scope_stack.pop_back();
           ctx.var_flavor_scope_stack.pop_back();
           ctx.var_base_scope_stack.pop_back();
+          ctx.var_struct_scope_stack.pop_back();
+          ctx.array_struct_scope_stack.pop_back();
           return false;
         }
       ctx.var_scope_stack.pop_back();
@@ -942,6 +1169,8 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
       ctx.fnptr_scope_stack.pop_back();
       ctx.var_flavor_scope_stack.pop_back();
       ctx.var_base_scope_stack.pop_back();
+      ctx.var_struct_scope_stack.pop_back();
+      ctx.array_struct_scope_stack.pop_back();
       return true;
     case Stmt::Kind::For: {
       if (!stmt->cond) return false;
@@ -950,6 +1179,8 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
       ctx.fnptr_scope_stack.push_back({});
       ctx.var_flavor_scope_stack.push_back({});
       ctx.var_base_scope_stack.push_back({});
+      ctx.var_struct_scope_stack.push_back({});
+      ctx.array_struct_scope_stack.push_back({});
       if (stmt->for_init) {
         if (stmt->for_init->kind == Stmt::Kind::Let) {
           if (!check_expr(stmt->for_init->init.get(), ctx)) {
@@ -958,6 +1189,8 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
             ctx.fnptr_scope_stack.pop_back();
             ctx.var_flavor_scope_stack.pop_back();
             ctx.var_base_scope_stack.pop_back();
+            ctx.var_struct_scope_stack.pop_back();
+            ctx.array_struct_scope_stack.pop_back();
             return false;
           }
           if (ctx.var_scope_stack.back().count(stmt->for_init->name)) {
@@ -969,6 +1202,8 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
             ctx.fnptr_scope_stack.pop_back();
             ctx.var_flavor_scope_stack.pop_back();
             ctx.var_base_scope_stack.pop_back();
+            ctx.var_struct_scope_stack.pop_back();
+            ctx.array_struct_scope_stack.pop_back();
             return false;
           }
           ctx.var_scope_stack.back()[stmt->for_init->name] = expr_type(stmt->for_init->init.get(), &ctx);
@@ -984,6 +1219,8 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
             ctx.fnptr_scope_stack.pop_back();
             ctx.var_flavor_scope_stack.pop_back();
             ctx.var_base_scope_stack.pop_back();
+            ctx.var_struct_scope_stack.pop_back();
+            ctx.array_struct_scope_stack.pop_back();
             return false;
           }
         }
@@ -994,6 +1231,8 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
         ctx.fnptr_scope_stack.pop_back();
         ctx.var_flavor_scope_stack.pop_back();
         ctx.var_base_scope_stack.pop_back();
+        ctx.var_struct_scope_stack.pop_back();
+        ctx.array_struct_scope_stack.pop_back();
         return false;
       }
       if (stmt->for_update) {
@@ -1003,6 +1242,8 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
           ctx.fnptr_scope_stack.pop_back();
           ctx.var_flavor_scope_stack.pop_back();
           ctx.var_base_scope_stack.pop_back();
+          ctx.var_struct_scope_stack.pop_back();
+          ctx.array_struct_scope_stack.pop_back();
           return false;
         }
       }
@@ -1013,6 +1254,8 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
           ctx.fnptr_scope_stack.pop_back();
           ctx.var_flavor_scope_stack.pop_back();
           ctx.var_base_scope_stack.pop_back();
+          ctx.var_struct_scope_stack.pop_back();
+          ctx.array_struct_scope_stack.pop_back();
           return false;
         }
       ctx.var_scope_stack.pop_back();
@@ -1020,6 +1263,8 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
       ctx.fnptr_scope_stack.pop_back();
       ctx.var_flavor_scope_stack.pop_back();
       ctx.var_base_scope_stack.pop_back();
+      ctx.var_struct_scope_stack.pop_back();
+      ctx.array_struct_scope_stack.pop_back();
       return true;
     }
     case Stmt::Kind::Assign: {
@@ -1067,7 +1312,27 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
         }
         return true;
       }
-      ctx.err->message = "assignment target must be a variable or index";
+      if (stmt->expr->kind == Expr::Kind::FieldAccess) {
+        FfiType field_ty = expr_type(stmt->expr.get(), &ctx);
+        FfiType val_ty = expr_type(stmt->init.get(), &ctx);
+        bool compat = (field_ty == val_ty) ||
+          (field_ty == FfiType::Ptr && val_ty == FfiType::I64) ||
+          (field_ty == FfiType::I64 && val_ty == FfiType::Ptr) ||
+          (field_ty == FfiType::F64 && val_ty == FfiType::I64) ||
+          (field_ty == FfiType::I64 && val_ty == FfiType::F64);
+        if (!compat) {
+          ctx.err->message = "field assignment: value type does not match field type";
+          return false;
+        }
+        if (field_ty == FfiType::Ptr && val_ty == FfiType::Ptr &&
+            is_stack_ptr(expr_flavor(stmt->init.get(), &ctx)) &&
+            may_outlive_function(expr_base(stmt->expr->left.get(), &ctx))) {
+          ctx.err->message = "cannot store stack pointer into memory that may outlive function";
+          return false;
+        }
+        return true;
+      }
+      ctx.err->message = "assignment target must be a variable, index, or field access";
       return false;
     }
   }
@@ -1098,6 +1363,16 @@ static bool check_fn_def(SemaContext& ctx, FnDef& def) {
   fn_ctx.fnptr_scope_stack.push_back({});
   fn_ctx.var_flavor_scope_stack.push_back(std::move(param_flavor));
   fn_ctx.var_base_scope_stack.push_back(std::move(param_base));
+  std::unordered_map<std::string, std::string> param_struct;
+  if (ctx.program) {
+    for (size_t j = 0; j < def.params.size() && j < def.param_type_names.size(); ++j) {
+      if (!def.param_type_names[j].empty() &&
+          is_named_type_known(def.param_type_names[j], ctx.program))
+        param_struct[def.params[j].first] = def.param_type_names[j];
+    }
+  }
+  fn_ctx.var_struct_scope_stack.push_back(std::move(param_struct));
+  fn_ctx.array_struct_scope_stack.push_back({});
   for (StmtPtr& stmt : def.body) {
     if (!check_stmt(fn_ctx, &def, stmt.get())) return false;
   }
@@ -1163,6 +1438,8 @@ SemaResult check(Program* program) {
   ctx.fnptr_scope_stack.push_back({});
   ctx.var_flavor_scope_stack.push_back({});
   ctx.var_base_scope_stack.push_back({});
+  ctx.var_struct_scope_stack.push_back({});
+  ctx.array_struct_scope_stack.push_back({});
   for (const TopLevelItem& item : program->top_level) {
     if (const LetBinding* binding = std::get_if<LetBinding>(&item)) {
       if (!check_expr(binding->init.get(), ctx)) return r;
@@ -1186,6 +1463,45 @@ SemaResult check(Program* program) {
         ctx.array_element_scope_stack.back()[binding->name] = elem_ty;
       else if (ty == FfiType::Ptr && binding->init->kind == Expr::Kind::Call)
         ctx.array_element_scope_stack.back()[binding->name] = FfiType::Ptr;
+      else if (ty == FfiType::Ptr && binding->init->kind == Expr::Kind::FieldAccess) {
+        Expr* e = binding->init.get();
+        if (!e->field_chain.empty() && !e->load_field_struct.empty() && ctx.layout_map) {
+          std::string cur = e->load_field_struct;
+          for (size_t fi = 0; fi < e->field_chain.size(); ++fi) {
+            auto it = ctx.layout_map->find(cur);
+            if (it == ctx.layout_map->end()) break;
+            bool found = false;
+            for (const auto& f : it->second.fields) {
+              if (f.first == e->field_chain[fi]) {
+                if (fi + 1 == e->field_chain.size() && f.second.type == FfiType::Ptr) {
+                  ctx.array_element_scope_stack.back()[binding->name] = FfiType::Ptr;
+                }
+                cur = f.second.struct_name.empty() ? cur : f.second.struct_name;
+                found = true;
+                break;
+              }
+            }
+            if (!found) break;
+          }
+        }
+      }
+      // Track ptr-to-struct for top-level bindings
+      if (ty == FfiType::Ptr) {
+        std::string sname = expr_struct_name(binding->init.get(), &ctx);
+        if (!sname.empty())
+          ctx.var_struct_scope_stack.back()[binding->name] = sname;
+      }
+      // Track array element struct name
+      {
+        Expr* init = binding->init.get();
+        if (init && (init->kind == Expr::Kind::HeapArray || init->kind == Expr::Kind::StackArray) && ctx.program) {
+          for (const auto& s : ctx.program->struct_defs)
+            if (s.name == init->var_name) {
+              ctx.array_struct_scope_stack.back()[binding->name] = init->var_name;
+              break;
+            }
+        }
+      }
     } else if (const ExprPtr* expr = std::get_if<ExprPtr>(&item)) {
       if (!check_expr(expr->get(), ctx)) return r;
     } else {
