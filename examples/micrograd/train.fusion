@@ -22,7 +22,6 @@ import lib "value" {
 }
 
 import lib "autograd" {
-	fn backward(root: ptr) -> void;
 	fn backward_with_free(root: ptr, weight_ptrs: ptr, weight_count: i64) -> void;
 	fn free_graph(root: ptr, weight_ptrs: ptr, weight_count: i64) -> void;
 }
@@ -31,15 +30,10 @@ import lib "rand" {
 	fn rand_uniform_neg1_1() -> f64;
 }
 
-# Process-global Value alloc/free counters for leak diagnosis.
-extern lib "" {
-	fn rt_value_alloc_inc() -> void;
-	fn rt_value_free_inc() -> void;
-	fn rt_value_alloc_count() -> i64;
-	fn rt_value_free_count() -> i64;
-};
+import lib "bmp" {
+	fn build_bmp_header(w: i64, h: i64) -> ptr;
+}
 
-# Scale init so ReLUs don't all go dead after first update (ReLU grad is 0 when pre-act <= 0).
 let init_scale = 0.5;
 
 let n_moons = 500;
@@ -50,7 +44,6 @@ let input_size = 2;
 let hidden_size = 16;
 let output_size = 1;
 let num_epochs = 100;
-# Keep LR small to avoid overshooting: hinge + ReLU can collapse to constant predictor if steps are too large.
 let learning_rate = 0.005;
 
 let W1 = heap_array(ptr, input_size * hidden_size);
@@ -168,12 +161,23 @@ for (let epoch = 0; epoch < num_epochs; epoch = epoch + 1) {
 		running_correct = add_forward(running_correct, correct_this);
 	}
 
-	store_field(running, Value, grad, 1.0);
+	# L2 regularization
+	let alpha = 0.0001;
+	let reg_loss = make_leaf(0.0);
+	for (let i = 0; i < num_weights; i = i + 1) {
+		let p = weight_ptrs[i];
+		let p_sq = mul_forward(p, p);
+		reg_loss = add_forward(reg_loss, p_sq);
+	}
+	let reg_loss_scaled = mul_forward(make_leaf(alpha), reg_loss);
+	let total_loss = add_forward(running, reg_loss_scaled);
+
+	store_field(total_loss, Value, grad, 1.0);
 
 	let total_correct = load_field(running_correct, Value, data);
 
 	free_graph(running_correct, weight_ptrs, num_weights);
-	backward_with_free(running, weight_ptrs, num_weights);
+	backward_with_free(total_loss, weight_ptrs, num_weights);
 
 	for (let i = 0; i < input_size; i = i + 1) {
 		for (let j = 0; j < hidden_size; j = j + 1) {
@@ -214,10 +218,51 @@ for (let epoch = 0; epoch < num_epochs; epoch = epoch + 1) {
 	let accuracy = total_correct / (batch_size as f64);
 	print("accuracy:");
 	print(accuracy);
+	
+	# break statement for early stopping
+	if (accuracy >= 1.0) {
+		epoch = num_epochs;
+	}
 }
 
-# Free all long-lived allocations so LeakSanitizer reports no leaks.
-free_moons(moons, n_moons);
+let W1_trained = heap_array(f64, input_size * hidden_size);
+let W2_trained = heap_array(f64, hidden_size * output_size);
+let b1_trained = heap_array(f64, hidden_size);
+let b2_trained = heap_array(f64, output_size);
+
+print("Weights for trained model:");
+print("W1:");
+for (let i = 0; i < input_size; i = i + 1) {
+	for (let j = 0; j < hidden_size; j = j + 1) {
+		let data = load_field(W1[i * hidden_size + j], Value, data);
+		print(data);
+		W1_trained[i * hidden_size + j] = 0.0 + data;
+	}
+}
+
+print("W2:");
+for (let i = 0; i < hidden_size; i = i + 1) {
+	for (let j = 0; j < output_size; j = j + 1) {
+		let data = load_field(W2[i * output_size + j], Value, data);
+		print(data);
+		W2_trained[i * output_size + j] = 0.0 + data;
+	}
+}
+
+print("b1:");
+for (let i = 0; i < hidden_size; i = i + 1) {
+	let data = load_field(b1[i], Value, data);
+	print(data);
+	b1_trained[i] = 0.0 + data;
+}
+
+print("b2:");
+for (let i = 0; i < output_size; i = i + 1) {
+	let data = load_field(b2[i], Value, data);
+	print(data);
+	b2_trained[i] = 0.0 + data;
+}
+
 for (let i = 0; i < input_size; i = i + 1) {
 	for (let j = 0; j < hidden_size; j = j + 1) {
 		free_value(W1[i * hidden_size + j]);
@@ -245,10 +290,108 @@ free_array(as_array(h1, ptr));
 free_array(as_array(h2, ptr));
 free_array(as_array(losses, ptr));
 
-# Leak diagnosis: Value alloc/free counters.
-print("value allocs:");
-print(rt_value_alloc_count());
-print("value frees:");
-print(rt_value_free_count());
-print("allocs - frees:");
-print(rt_value_alloc_count() - rt_value_free_count());
+let W = 800;
+let H = 800;
+
+let stride = ((W * 3 + 3) / 4) * 4;
+let pixel_size = stride * H;
+
+# Create header and pixel buffer
+let header = build_bmp_header(W, H);
+let pixels = heap_array(i8, pixel_size);
+
+let X_trained = heap_array(f64, input_size);
+let h1_trained = heap_array(f64, hidden_size);
+let h2_trained = heap_array(f64, output_size);
+
+for (let y = 0; y < H; y = y + 1) {
+	for (let x = 0; x < W; x = x + 1) {
+		let idx = y * stride + x * 3;
+		X_trained[0] = 0.0 - 1.5 + (x as f64) * 4.0 / (W as f64);
+		X_trained[1] = 0.0 - 1.5 + (y as f64) * 4.0 / (H as f64);
+		for (let j = 0; j < hidden_size; j = j + 1) {
+			let acc = b1_trained[j];
+			for (let i = 0; i < input_size; i = i + 1) {
+				let acc_i = X_trained[i] * W1_trained[i * hidden_size + j];
+				acc = acc + acc_i;
+			}
+			h1_trained[j] = 0.0;
+			if (acc > 0.0) {
+				h1_trained[j] = acc;
+			}
+		}
+
+		# Forward layer 2 (linear output, micrograd MLP): h2[j] = sum_i h1[i]*W2[i,j] + b2[j]
+		for (let j = 0; j < output_size; j = j + 1) {
+			let acc = b2_trained[j];
+			for (let i = 0; i < hidden_size; i = i + 1) {
+				let acc_i = h1_trained[i] * W2_trained[i * output_size + j];
+				acc = acc + acc_i;
+			}
+			h2_trained[j] = acc;
+		}
+
+		let pred_val = h2_trained[0];
+		if (pred_val > 0.0) {
+			pixels[idx] = 195;
+			pixels[idx + 1] = 146;
+			pixels[idx + 2] = 101;
+		} else {
+			pixels[idx] = 111;
+			pixels[idx + 1] = 86;
+			pixels[idx + 2] = 208;}
+	}
+}
+
+# Draw moons on top
+let radius_sq = 0.02 * 0.02;
+for (let y = 0; y < H; y = y + 1) {
+	for (let x = 0; x < W; x = x + 1) {
+		let idx = y * stride + x * 3;
+		let on_any_dot = 0;
+		let moon_class = 0.0;
+		for (let d = 0; d < n_moons; d = d + 1) {
+			let px = 0.0 - 1.5 + (x as f64) * 4.0 / (W as f64);
+			let py = 0.0 - 1.5 + (y as f64) * 4.0 / (H as f64);
+			let x_diff = px - load_field(moons[d], Point, x);
+			let y_diff = py - load_field(moons[d], Point, y);
+			if (x_diff * x_diff + y_diff * y_diff < radius_sq) {
+				on_any_dot = 1;
+				moon_class = load_field(moons[d], Point, class);
+			}
+		}
+		if (on_any_dot != 0) {
+			if (moon_class > 0.0) {
+				pixels[idx] = 162;
+				pixels[idx + 1] = 79;
+				pixels[idx + 2] = 94;
+			} else {
+				pixels[idx] = 66;
+				pixels[idx + 1] = 1;
+				pixels[idx + 2] = 158;
+			}
+		}
+	}
+}
+
+# Save BMP file
+let path = "examples/moons/out.bmp";
+let h = open(path, "wb");
+let n1 = write_bytes(h, header, 54);
+let n2 = write_bytes(h, pixels, pixel_size);
+close(h);
+print("Wrote examples/moons/out.bmp");
+
+# Free
+free_array(as_array(header, ptr));
+free_array(as_array(pixels, ptr));
+
+free_array(as_array(W1_trained, f64));
+free_array(as_array(W2_trained, f64));
+free_array(as_array(b1_trained, f64));
+free_array(as_array(b2_trained, f64));
+free_array(as_array(X_trained, f64));
+free_array(as_array(h1_trained, f64));
+free_array(as_array(h2_trained, f64));
+
+free_moons(moons, n_moons);

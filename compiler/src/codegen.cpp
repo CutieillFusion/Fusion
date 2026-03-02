@@ -272,6 +272,22 @@ static FfiType array_element_type_from_expr(Expr* expr, CodegenEnv& env) {
   return FfiType::Void;
 }
 
+/* Like expr_type but uses array_element_type_from_expr for Index so f64 arrays yield F64. */
+static FfiType expr_type_proper(Expr* expr, Program* program,
+    const std::unordered_map<std::string, FfiType>* local_types, CodegenEnv& env) {
+  if (!expr) return FfiType::Void;
+  if (expr->kind == Expr::Kind::Index) {
+    FfiType e = array_element_type_from_expr(expr->left.get(), env);
+    return (e != FfiType::Void) ? e : FfiType::I64;
+  }
+  if (expr->kind == Expr::Kind::BinaryOp) {
+    FfiType l = expr_type_proper(expr->left.get(), program, local_types, env);
+    FfiType r = expr_type_proper(expr->right.get(), program, local_types, env);
+    return (l == FfiType::F64 || r == FfiType::F64) ? FfiType::F64 : FfiType::I64;
+  }
+  return expr_type(expr, program, local_types);
+}
+
 /* Header size H = align_up(8, alignof(T)). Returns 8 for primitives; for structs uses layout. */
 static size_t array_header_size(const std::string& elem_type_name, LayoutMap* layout_map) {
   size_t align = 8;
@@ -393,8 +409,8 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
           s_codegen_error = "binary op: left or right expression failed";
         return nullptr;
       }
-      FfiType tyL = expr_type(expr->left.get(), prog, env.var_types);
-      FfiType tyR = expr_type(expr->right.get(), prog, env.var_types);
+      FfiType tyL = expr_type_proper(expr->left.get(), prog, env.var_types, env);
+      FfiType tyR = expr_type_proper(expr->right.get(), prog, env.var_types, env);
       bool is_f64 = (tyL == FfiType::F64 || tyR == FfiType::F64);
       if (is_f64) {
         if (L->getType() != B.getDoubleTy()) L = B.CreateSIToFP(L, B.getDoubleTy());
@@ -483,7 +499,12 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         Value* stream_val = expr->args.size() >= 2 ? emit_expr(env, expr->args[1].get()) : B.getInt64(0);
         if (!stream_val) return nullptr;
         if (stream_val->getType() != B.getInt64Ty()) stream_val = B.CreateIntCast(stream_val, B.getInt64Ty(), true);
-        FfiType arg_ty = expr_type(expr->args[0].get(), prog, env.var_types);
+        FfiType arg_ty = FfiType::Void;
+        if (expr->args[0]->kind == Expr::Kind::Index) {
+          arg_ty = array_element_type_from_expr(expr->args[0]->left.get(), env);
+        }
+        if (arg_ty == FfiType::Void)
+          arg_ty = expr_type(expr->args[0].get(), prog, env.var_types);
         Function* rt_print = nullptr;
         if (arg_ty == FfiType::F64) {
           rt_print = M->getFunction("rt_print_f64");
@@ -509,7 +530,12 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         return B.CreateCall(fn, {}, "read_line");
       }
       if (expr->callee == "to_str") {
-        FfiType t = expr_type(expr->args[0].get(), prog, env.var_types);
+        FfiType t = FfiType::Void;
+        if (expr->args[0]->kind == Expr::Kind::Index) {
+          t = array_element_type_from_expr(expr->args[0]->left.get(), env);
+        }
+        if (t == FfiType::Void)
+          t = expr_type(expr->args[0].get(), prog, env.var_types);
         Value* arg_val = emit_expr(env, expr->args[0].get());
         if (!arg_val) return nullptr;
         Function* fn = (t == FfiType::F64) ? M->getFunction("rt_to_str_f64") : M->getFunction("rt_to_str_i64");
@@ -1242,14 +1268,7 @@ static void collect_loop_body_let_types(const std::vector<StmtPtr>& body, Progra
     if (!s) continue;
     if (s->kind == Stmt::Kind::Let) {
       if (!for_init_name.empty() && s->name == for_init_name) continue;
-      FfiType ty;
-      if (s->init && s->init->kind == Expr::Kind::Index) {
-        ty = array_element_type_from_expr(s->init->left.get(), env);
-        if (ty == FfiType::Void)
-          ty = expr_type(s->init.get(), program, &combined);
-      } else {
-        ty = expr_type(s->init.get(), program, &combined);
-      }
+      FfiType ty = s->init ? expr_type_proper(s->init.get(), program, &combined, env) : FfiType::Void;
       if (ty != FfiType::Void && out.find(s->name) == out.end()) {
         out[s->name] = ty;
         combined[s->name] = ty;  /* so later lets in same body see this type */
@@ -1285,7 +1304,7 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
       return true;
     }
     case Stmt::Kind::Let: {
-      FfiType let_ty = expr_type(stmt->init.get(), env.program, env.var_types);
+      FfiType let_ty = expr_type_proper(stmt->init.get(), env.program, env.var_types, env);
       if (env.fn_var_types)
         (*env.fn_var_types)[stmt->name] = let_ty;
       AllocaInst* slot = nullptr;
@@ -1682,6 +1701,28 @@ static bool emit_user_fn_body(CodegenEnv& env, FnDef& def, Function* fn) {
   return true;
 }
 
+static void hoist_allocas_to_entry(llvm::Function* fn) {
+  using namespace llvm;
+  BasicBlock& entry = fn->getEntryBlock();
+  // Insert hoisted allocas after any existing allocas at the start of the entry block.
+  Instruction* insert_before = entry.getFirstNonPHI();
+  while (insert_before && isa<AllocaInst>(insert_before))
+    insert_before = insert_before->getNextNode();
+  if (!insert_before)
+    insert_before = entry.getTerminator();
+
+  for (BasicBlock& bb : *fn) {
+    if (&bb == &entry) continue;
+    SmallVector<AllocaInst*, 16> to_hoist;
+    for (Instruction& inst : bb)
+      if (auto* ai = dyn_cast<AllocaInst>(&inst))
+        if (isa<ConstantInt>(ai->getArraySize()))
+          to_hoist.push_back(ai);
+    for (AllocaInst* ai : to_hoist)
+      ai->moveBefore(insert_before);
+  }
+}
+
 std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) {
   s_codegen_error.clear();
   auto module = std::make_unique<Module>("fusion", ctx);
@@ -1765,6 +1806,7 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
     for (FnDef& def : program->user_fns) {
       Function* fn = env.user_fns[def.name];
       if (!fn || !emit_user_fn_body(env, def, fn)) return nullptr;
+      hoist_allocas_to_entry(fn);
     }
   }
 
@@ -1882,6 +1924,7 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
     env.fn_var_types = saved_fn_var_types;
   }
   builder.CreateRetVoid();
+  hoist_allocas_to_entry(main_fn);
   return module;
 }
 
@@ -1980,8 +2023,6 @@ CodegenResult run_jit(std::unique_ptr<llvm::Module> module,
       !add_sym("rt_write_file_i64") || !add_sym("rt_write_file_f64") || !add_sym("rt_write_file_ptr") ||
       !add_sym("rt_write_bytes") || !add_sym("rt_read_bytes") ||
       !add_sym("rt_eof_file") || !add_sym("rt_line_count_file") ||
-      !add_sym("rt_value_alloc_inc") || !add_sym("rt_value_free_inc") ||
-      !add_sym("rt_value_alloc_count") || !add_sym("rt_value_free_count") ||
       !add_sym("rt_dlopen") || !add_sym("rt_dlsym") || !add_sym("rt_dlerror_last") ||
       !add_sym("rt_ffi_sig_create") || !add_sym("rt_ffi_call") || !add_sym("rt_ffi_error_last")) {
     r.error = "runtime symbols not found (link runtime or use dlsym)";

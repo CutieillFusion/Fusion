@@ -464,6 +464,75 @@ TEST(JitTests, ExecutesAllocArrayAndIndex) {
   unlink(path);
 }
 
+TEST(JitTests, ExecutesHeapArrayF64Print) {
+  /* heap_array(f64, n); fill with 1.5; print(x[i]) must print 1.5, not truncated to 1 */
+  const char* path = "/tmp/fusion_jit_heap_array_f64_print.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex(
+      "let a = 1.5; let n = 3; let x = heap_array(f64, n); "
+      "for (let i = 0; i < n; i = i + 1) { x[i] = a; } "
+      "print(x[0]); print(x[1]); print(x[2]); print(a); print(x[0]); "
+      "free_array(as_array(x, f64))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[64];
+  for (int i = 0; i < 5; ++i) {
+    ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr) << "line " << i;
+    EXPECT_NEAR(std::atof(buf), 1.5, 0.0001) << "line " << i << " expected 1.5, got " << buf;
+  }
+  fclose(cap);
+  unlink(path);
+}
+
+TEST(JitTests, ExecutesForOverF64Array) {
+  /* for (let i = 0; i < len(arr); i = i + 1) { print(arr[i]); } with f64 array => 1.5, 1.5, 1.5 */
+  const char* path = "/tmp/fusion_jit_for_f64_arr.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex(
+      "let arr = heap_array(f64, 3); arr[0] = 1.5; arr[1] = 1.5; arr[2] = 1.5; "
+      "for (let i = 0; i < len(arr); i = i + 1) { print(arr[i]); } "
+      "free_array(as_array(arr, f64))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[64];
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr) << "line " << i;
+    EXPECT_NEAR(std::atof(buf), 1.5, 0.0001) << "line " << i << " expected 1.5, got " << buf;
+  }
+  fclose(cap);
+  unlink(path);
+}
+
 TEST(JitTests, ExecutesCStyleFor) {
   /* for (let i = 0; i < 5; i = i + 1) { print(i); } print(0) => prints 0,1,2,3,4 then 0 */
   const char* path = "/tmp/fusion_jit_for_range_test.txt";
@@ -972,5 +1041,53 @@ TEST(JitTests, ExecutesLenOnHeapArray) {
   fclose(cap);
   unlink(path);
   EXPECT_EQ(std::atoi(buf), 11);
+}
+
+TEST(JitTests, FreeArrayF64Direct) {
+  // heap_array(f64, 4); fill; free_array(as_array(a, f64)) must not leak
+  auto tokens = fusion::lex(
+      "let a = heap_array(f64, 4); "
+      "a[0] = 1.0; a[1] = 2.0; a[2] = 3.0; a[3] = 4.0; "
+      "free_array(as_array(a, f64))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+}
+
+TEST(JitTests, FreeMultipleF64ArraysTrainedWeightPattern) {
+  // Simulates train.fusion's _trained arrays: W1(2x4=8), W2(4x1=4), b1(4), b2(1),
+  // X(2), h1(4), h2(1) — all allocated and freed via as_array(_, f64).
+  auto tokens = fusion::lex(
+      "let W1 = heap_array(f64, 8); "
+      "let W2 = heap_array(f64, 4); "
+      "let b1 = heap_array(f64, 4); "
+      "let b2 = heap_array(f64, 1); "
+      "let X  = heap_array(f64, 2); "
+      "let h1 = heap_array(f64, 4); "
+      "let h2 = heap_array(f64, 1); "
+      "W1[0] = 1.0; W2[0] = 2.0; b1[0] = 3.0; b2[0] = 4.0; "
+      "X[0] = 5.0;  h1[0] = 6.0; h2[0] = 7.0; "
+      "free_array(as_array(W1, f64)); "
+      "free_array(as_array(W2, f64)); "
+      "free_array(as_array(b1, f64)); "
+      "free_array(as_array(b2, f64)); "
+      "free_array(as_array(X,  f64)); "
+      "free_array(as_array(h1, f64)); "
+      "free_array(as_array(h2, f64))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
 }
 #endif

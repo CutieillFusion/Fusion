@@ -27,7 +27,7 @@ static void capture_dlerror(const char *context) {
 
 rt_lib_handle_t rt_dlopen(const char *path) {
   rt_dl_error_buf[0] = '\0';
-  /* Empty or null path = current process (for process-global symbols e.g. rt_value_*). */
+  /* Empty or null path = current process (for process-global symbols e.g. rt_panic). */
   const char *load_path = (path && path[0] != '\0') ? path : NULL;
   rt_lib_handle_t h = (rt_lib_handle_t)dlopen(load_path, RTLD_NOW);
   if (!h)

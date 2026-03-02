@@ -1,0 +1,70 @@
+# 24-bit BMP writer: header, background, per-point drawing, moons, then save.
+# BMP: 54-byte header then BGR pixel data, row stride multiple of 4, rows bottom-to-top.
+
+import lib "moons" {
+	struct Point;
+	fn create_moons(n: i64, sigma: f64) -> ptr;
+	fn free_moons(moons: ptr, n: i64) -> void;
+};
+
+export fn build_bmp_header(w: i64, h: i64) -> ptr {
+	let s = ((w * 3 + 3) / 4) * 4;
+	let psize = s * h;
+	let fsize = 54 + psize;
+	let header = heap_array(i8, 54);
+	header[0] = 66;
+	header[1] = 77;
+	header[2] = fsize - (fsize / 256) * 256;
+	header[3] = (fsize / 256) - (fsize / 65536) * 256;
+	header[4] = (fsize / 65536) - (fsize / 16777216) * 256;
+	header[5] = fsize / 16777216;
+	header[6] = 0;
+	header[7] = 0;
+	header[8] = 0;
+	header[9] = 0;
+	header[10] = 54;
+	header[11] = 0;
+	header[12] = 0;
+	header[13] = 0;
+	header[14] = 40;
+	header[15] = 0;
+	header[16] = 0;
+	header[17] = 0;
+	header[18] = w - (w / 256) * 256;
+	header[19] = (w / 256) - (w / 65536) * 256;
+	header[20] = (w / 65536) - (w / 16777216) * 256;
+	header[21] = w / 16777216;
+	header[22] = h - (h / 256) * 256;
+	header[23] = (h / 256) - (h / 65536) * 256;
+	header[24] = (h / 65536) - (h / 16777216) * 256;
+	header[25] = h / 16777216;
+	header[26] = 1;
+	header[27] = 0;
+	header[28] = 24;
+	header[29] = 0;
+	header[30] = 0;
+	header[31] = 0;
+	header[32] = 0;
+	header[33] = 0;
+	header[34] = psize - (psize / 256) * 256;
+	header[35] = (psize / 256) - (psize / 65536) * 256;
+	header[36] = (psize / 65536) - (psize / 16777216) * 256;
+	header[37] = psize / 16777216;
+	header[38] = 0;
+	header[39] = 0;
+	header[40] = 0;
+	header[41] = 0;
+	header[42] = 0;
+	header[43] = 0;
+	header[44] = 0;
+	header[45] = 0;
+	header[46] = 0;
+	header[47] = 0;
+	header[48] = 0;
+	header[49] = 0;
+	header[50] = 0;
+	header[51] = 0;
+	header[52] = 0;
+	header[53] = 0;
+	return header;
+}
