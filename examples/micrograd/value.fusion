@@ -28,7 +28,7 @@ export fn add_forward(a: Value, b: Value) -> Value {
     let prev = heap_array(ptr, 2);
     prev[0] = a;
     prev[1] = b;
-
+    
     let value = alloc_value(data, prev, 2, get_func_ptr(add_backward));
     return value;
 }
@@ -37,17 +37,20 @@ fn add_backward(out: Value) -> void {
     let prev = out.prev;
     let a = prev[0] as Value;
     let b = prev[1] as Value;
-    a.grad = a.grad + out.grad;
-    b.grad = b.grad + out.grad;
+    let grad = out.grad;
+    let a_grad = a.grad;
+    let b_grad = b.grad;
+    let new_a_grad = a_grad + grad;
+    let new_b_grad = b_grad + grad;
+    a.grad = new_a_grad;
+    b.grad = new_b_grad;
 }
 
 export fn mul_forward(a: Value, b: Value) -> Value {
     let data = a.data * b.data;
-
     let prev = heap_array(ptr, 2);
     prev[0] = a;
     prev[1] = b;
-
     let value = alloc_value(data, prev, 2, get_func_ptr(mul_backward));
     return value;
 }
@@ -56,8 +59,15 @@ fn mul_backward(out: Value) -> void {
     let prev = out.prev;
     let a = prev[0] as Value;
     let b = prev[1] as Value;
-    a.grad = a.grad + b.grad * out.grad;
-    b.grad = b.grad + a.grad * out.grad;
+    let grad = out.grad;
+    let a_data = a.data;
+    let b_data = b.data;
+    let a_grad = a.grad;
+    let b_grad = b.grad;
+    let new_a_grad = a_grad + b_data * grad;
+    let new_b_grad = b_grad + a_data * grad;
+    a.grad = new_a_grad;
+    b.grad = new_b_grad;
 }
 
 export fn relu_forward(x: Value) -> Value {
@@ -65,10 +75,8 @@ export fn relu_forward(x: Value) -> Value {
     if (data <= 0.0) {
         data = 0.0;
     }
-
     let prev = heap_array(ptr, 1);
     prev[0] = x;
-    
     let value = alloc_value(data, prev, 1, get_func_ptr(relu_backward));
     return value;
 }
@@ -78,10 +86,14 @@ fn relu_backward(out: Value) -> void {
     let prev = out.prev;
     let x = prev[0] as Value;
     let v = 0.0;
-    if (out.data > 0.0) {
+    let data = out.data;
+    if (data > 0.0) {
         v = 1.0;
     }
-    x.grad = x.grad + v * out.grad;
+    let grad = out.grad;
+    let x_grad = x.grad;
+    let new_grad = x_grad + v * grad;
+    x.grad = new_grad;
 }
 
 fn leaf_backward(v: Value) -> void {
@@ -175,7 +187,7 @@ fn test_relu() -> void {
         print(a_grad);
     }
 
-    let c = make_leaf(0.0 - 1.0);
+    let c = make_leaf(-1.0);
 
     let d = relu_forward(c);
 

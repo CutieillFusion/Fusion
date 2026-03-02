@@ -1,8 +1,8 @@
 # Make-moons dataset: two interleaving semicircles (class 0 and class 1).
 # Like sklearn.datasets.make_moons: points on two arcs in 2D.
 #
-# Moon 0 (class 0): upper semicircle  x = cos(t), y = sin(t),  t in [0, pi]
-# Moon 1 (class 1): shifted semicircle x = 1 - cos(t), y = 1 - sin(t) - 0.5
+# Moon 0 (class -1): upper semicircle  x = cos(t), y = sin(t),  t in [0, pi]
+# Moon 1 (class 1): lower semicircle x = 1 - cos(t), y = 1 - sin(t) - 0.5
 # Angles t evenly spaced. Gaussian noise (sigma) added via Box-Muller from rand().
 
 import lib "moons" {
@@ -135,7 +135,7 @@ for (let epoch = 0; epoch < num_epochs; epoch = epoch + 1) {
 		# Loss: hinge loss relu(1.0 - target * pred)
 		for (let i = 0; i < output_size; i = i + 1) {
 			let one = make_leaf(1.0);
-			let neg_one = make_leaf(0.0 - 1.0);
+			let neg_one = make_leaf(-1.0);
 			let target_pred = mul_forward(y[i], h2[i]);
 			let neg_target_pred = mul_forward(neg_one, target_pred);
 			let loss_value = add_forward(one, neg_target_pred);
@@ -303,8 +303,8 @@ let h2_trained = heap_array(f64, output_size);
 for (let y = 0; y < H; y = y + 1) {
 	for (let x = 0; x < W; x = x + 1) {
 		let idx = y * stride + x * 3;
-		X_trained[0] = 0.0 - 1.5 + (x as f64) * 4.0 / (W as f64);
-		X_trained[1] = 0.0 - 1.5 + (y as f64) * 4.0 / (H as f64);
+		X_trained[0] = -1.5 + (x as f64) * 4.0 / (W as f64);
+		X_trained[1] = -1.5 + (y as f64) * 4.0 / (H as f64);
 		for (let j = 0; j < hidden_size; j = j + 1) {
 			let acc = b1_trained[j];
 			for (let i = 0; i < input_size; i = i + 1) {
@@ -347,8 +347,8 @@ for (let y = 0; y < H; y = y + 1) {
 		let on_any_dot = 0;
 		let moon_class = 0.0;
 		for (let d = 0; d < n_moons; d = d + 1) {
-			let px = 0.0 - 1.5 + (x as f64) * 4.0 / (W as f64);
-			let py = 0.0 - 1.5 + (y as f64) * 4.0 / (H as f64);
+			let px = -1.5 + (x as f64) * 4.0 / (W as f64);
+			let py = -1.5 + (y as f64) * 4.0 / (H as f64);
 			let x_diff = px - (moons[d] as Point).x;
 			let y_diff = py - (moons[d] as Point).y;
 			if (x_diff * x_diff + y_diff * y_diff < radius_sq) {

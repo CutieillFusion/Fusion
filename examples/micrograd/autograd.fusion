@@ -53,7 +53,8 @@ fn build_topo(root: ptr, topo: ptr, _ignored: i64) -> i64 {
                     if (already_in_topo(v, topo, topo_count) != 0) {
                     } else {
                         let children = v.prev;
-                        if (v.children_count == 0) {
+                        let n = v.children_count;
+                        if (n == 0) {
                             if (topo_count >= max_nodes) {
                                 rt_panic("autograd topo overflow: graph too large");
                             }
@@ -74,7 +75,8 @@ fn build_topo(root: ptr, topo: ptr, _ignored: i64) -> i64 {
                     }
                 } else {
                     let children = v.prev;
-                    if (j < v.children_count) {
+                    let n = v.children_count;
+                    if (j < n) {
                         if (stack_top + 2 > max_nodes) {
                             rt_panic("autograd stack overflow: graph too large");
                         }
@@ -113,9 +115,9 @@ export fn backward(root: ptr) -> void {
     for (let i = 0; i < total_topo_count; i = i + 1) {
         let idx = total_topo_count - 1 - i;
         let v = topo[idx] as Value;
-        call(v.backward, v);
+        let backward = v.backward;
+        call(backward, v);
     }
-    free_array(topo);
 }
 
 # Free all graph nodes except weights (no backward). Use for non-loss roots e.g. running_correct.
@@ -141,7 +143,8 @@ export fn backward_with_free(root: ptr, weight_ptrs: ptr, weight_count: i64) -> 
     for (let i = 0; i < total_topo_count; i = i + 1) {
         let idx = total_topo_count - 1 - i;
         let v = topo[idx] as Value;
-        call(v.backward, v);
+        let backward = v.backward;
+        call(backward, v);
     }
     for (let i = 0; i < total_topo_count; i = i + 1) {
         let v = topo[i] as Value;
@@ -195,13 +198,10 @@ fn test_backward_gradients() -> void {
         print("ERROR: w.grad should be 2.0 (x.data * 1)");
         print(w_grad);
     }
-    let empty = heap_array(ptr, 0);
-    free_graph(out, empty, 0);
-    free_array(empty);
 }
 
 fn test_backward_relu_zero() -> void {
-    let x = make_leaf(0.0 - 1.0);
+    let x = make_leaf(-1.0);
     let out = relu_forward(x);
     out.grad = 1.0;
     backward(out);
@@ -210,9 +210,6 @@ fn test_backward_relu_zero() -> void {
         print("ERROR: x.grad should be 0.0 (ReLU zero branch)");
         print(x_grad);
     }
-    let empty = heap_array(ptr, 0);
-    free_graph(out, empty, 0);
-    free_array(empty);
 }
 
 fn test_backward_diamond() -> void {
@@ -264,9 +261,6 @@ fn test_backward_diamond() -> void {
         print("ERROR: z.grad should be 3.0 (y from b branch)");
         print(z_grad);
     }
-    let empty = heap_array(ptr, 0);
-    free_graph(out, empty, 0);
-    free_array(empty);
 }
 
 test_backward_gradients();

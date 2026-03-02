@@ -111,6 +111,19 @@ static ExprPtr parse_primary(const std::vector<Token>& tokens, size_t& i) {
   if (at_eof(tokens, i)) return nullptr;
   const Token& t = tokens[i];
 
+  /* Unary minus: -expr  =>  0 - expr */
+  if (t.kind == TokenKind::Minus) {
+    i++;
+    ExprPtr inner = parse_primary(tokens, i);
+    if (!inner) return nullptr;
+    return Expr::make_binop(BinOp::Sub, Expr::make_int(0), std::move(inner));
+  }
+  /* Unary plus: +expr  =>  expr (no-op) */
+  if (t.kind == TokenKind::Plus) {
+    i++;
+    return parse_primary(tokens, i);
+  }
+
   if (t.kind == TokenKind::IntLiteral) {
     int64_t value = t.int_value;
     i++;

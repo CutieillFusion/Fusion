@@ -46,6 +46,23 @@ TEST(ParserTests, ParsesSub) {
   EXPECT_EQ(arg->right->int_value, 2);
 }
 
+TEST(ParserTests, ParsesUnaryMinusFloat) {
+  auto tokens = fusion::lex("let x = -1.0; print(x)");
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok()) << result.error.message;
+  ASSERT_TRUE(result.program);
+  const fusion::LetBinding* b = std::get_if<fusion::LetBinding>(&result.program->top_level[0]);
+  ASSERT_NE(b, nullptr);
+  EXPECT_EQ(b->name, "x");
+  ASSERT_TRUE(b->init);
+  EXPECT_EQ(b->init->kind, fusion::Expr::Kind::BinaryOp);
+  EXPECT_EQ(b->init->bin_op, fusion::BinOp::Sub);
+  EXPECT_EQ(b->init->left->kind, fusion::Expr::Kind::IntLiteral);
+  EXPECT_EQ(b->init->left->int_value, 0);
+  EXPECT_EQ(b->init->right->kind, fusion::Expr::Kind::FloatLiteral);
+  EXPECT_DOUBLE_EQ(b->init->right->float_value, 1.0);
+}
+
 TEST(ParserTests, ParsesMulAndDiv) {
   auto tokens = fusion::lex("print(2*3); print(6/2);");
   auto result = fusion::parse(tokens);
