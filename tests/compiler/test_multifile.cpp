@@ -311,6 +311,30 @@ export fn make() -> ptr {
   EXPECT_EQ(target_count, 1u);
 }
 
+TEST(MultifileTests, ImportPtrArrayElementStructMatchesExport) {
+  /* Import and export both use ptr[Point]; must match for merge to succeed. */
+  std::string main_src = R"(import lib "moons" { struct Point; fn create_moons(n: i64, sigma: f64) -> ptr[Point]; };
+let moons = create_moons(10, 0.1);
+print(moons[0].x))";
+  std::string lib_src = R"(export struct Point { x: f64; y: f64; class: f64; }
+export fn create_moons(n: i64, sigma: f64) -> ptr[Point] {
+  let arr = heap_array(ptr, n);
+  for (let i = 0; i < n; i = i + 1) {
+    let p = heap(Point);
+    p.x = 0.0;
+    p.y = 0.0;
+    p.class = 0.0;
+    arr[i] = p;
+  }
+  return arr;
+})";
+  auto [err, prog] = run_multifile_merge(main_src, "moons", lib_src);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_TRUE(prog);
+  auto sema_result = fusion::check(prog.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
 #ifdef FUSION_HAVE_LLVM
 TEST(MultifileTests, JitRunsAfterMerge) {
   std::string main_src = R"(import lib "vec" { fn answer() -> i64; };

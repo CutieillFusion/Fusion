@@ -134,6 +134,7 @@ struct ExternFn {
   std::vector<std::string> param_type_names;  // same size as params; "" = keyword type
   FfiType return_type;
   std::string return_type_name;  // non-empty = named type (opaque/struct) -> PTR
+  std::string array_element_struct;  // non-empty when return ptr: array elements are ptr to this struct
   std::string lib_name;  // empty = default lib
 };
 
@@ -144,6 +145,7 @@ struct FnDecl {
   std::vector<std::string> param_type_names;
   FfiType return_type = FfiType::Void;
   std::string return_type_name;
+  std::string array_element_struct;  // non-empty when return ptr: array elements are ptr to this struct
 };
 
 /* import lib "name" { struct X; fn foo(...) -> ret; }; struct_names are name-only. */
@@ -193,6 +195,7 @@ struct FnDef {
   std::vector<bool> param_noescape;  // same size as params; true = noescape
   FfiType return_type = FfiType::Void;
   std::string return_type_name;  // non-empty = named type -> PTR
+  std::string array_element_struct;  // non-empty when return ptr: array elements are ptr to this struct
   std::vector<StmtPtr> body;
   bool exported = false;
 

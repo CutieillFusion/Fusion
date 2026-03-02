@@ -296,6 +296,7 @@ FnDef FnDef::clone() const {
   c.param_noescape = param_noescape;
   c.return_type = return_type;
   c.return_type_name = return_type_name;
+  c.array_element_struct = array_element_struct;
   c.exported = exported;
   for (const auto& b : body) c.body.push_back(b ? b->clone() : nullptr);
   return c;

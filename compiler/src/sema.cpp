@@ -119,6 +119,24 @@ static std::string array_struct_lookup(SemaContext* ctx, const std::string& name
   return "";
 }
 
+/* For a Call that returns ptr, return array_element_struct if the callee declares it. */
+static std::string get_call_array_element_struct(Expr* expr, SemaContext* ctx) {
+  if (!expr || expr->kind != Expr::Kind::Call || !ctx) return "";
+  auto user_it = ctx->user_fn_by_name.find(expr->callee);
+  if (user_it != ctx->user_fn_by_name.end()) {
+    const FnDef& def = *user_it->second;
+    if (def.return_type == FfiType::Ptr && def.return_type_name.empty() && !def.array_element_struct.empty())
+      return def.array_element_struct;
+  }
+  auto ext_it = ctx->extern_fn_by_name.find(expr->callee);
+  if (ext_it != ctx->extern_fn_by_name.end()) {
+    const ExternFn& ext = ext_it->second;
+    if (ext.return_type == FfiType::Ptr && ext.return_type_name.empty() && !ext.array_element_struct.empty())
+      return ext.array_element_struct;
+  }
+  return "";
+}
+
 /* Get the struct name that an expression points to (for field access). */
 static std::string expr_struct_name(Expr* expr, SemaContext* ctx);
 
@@ -1112,6 +1130,10 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
               ctx.array_struct_scope_stack.back()[stmt->name] = init->var_name;
               break;
             }
+        } else if (init && init->kind == Expr::Kind::Call && let_ty == FfiType::Ptr) {
+          std::string elem_struct = get_call_array_element_struct(init, &ctx);
+          if (!elem_struct.empty())
+            ctx.array_struct_scope_stack.back()[stmt->name] = elem_struct;
         }
       }
       return true;
@@ -1340,6 +1362,11 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
 }
 
 static bool check_fn_def(SemaContext& ctx, FnDef& def) {
+  if (!def.array_element_struct.empty() && ctx.program &&
+      !is_named_type_known(def.array_element_struct, ctx.program)) {
+    ctx.err->message = "unknown array element struct '" + def.array_element_struct + "' in fn '" + def.name + "'";
+    return false;
+  }
   std::unordered_map<std::string, FfiType> local;
   std::unordered_map<std::string, FfiType> array_local;
   std::unordered_map<std::string, AllocFlavor> param_flavor;
@@ -1408,6 +1435,10 @@ SemaResult check(Program* program) {
     }
     if (!ext.return_type_name.empty() && !is_named_type_known(ext.return_type_name, program)) {
       r.error.message = "unknown return type '" + ext.return_type_name + "' in extern fn '" + ext.name + "'";
+      return r;
+    }
+    if (!ext.array_element_struct.empty() && !is_named_type_known(ext.array_element_struct, program)) {
+      r.error.message = "unknown array element struct '" + ext.array_element_struct + "' in extern fn '" + ext.name + "'";
       return r;
     }
   }
@@ -1500,6 +1531,10 @@ SemaResult check(Program* program) {
               ctx.array_struct_scope_stack.back()[binding->name] = init->var_name;
               break;
             }
+        } else if (init && init->kind == Expr::Kind::Call && ty == FfiType::Ptr) {
+          std::string elem_struct = get_call_array_element_struct(init, &ctx);
+          if (!elem_struct.empty())
+            ctx.array_struct_scope_stack.back()[binding->name] = elem_struct;
         }
       }
     } else if (const ExprPtr* expr = std::get_if<ExprPtr>(&item)) {

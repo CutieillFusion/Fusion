@@ -4,6 +4,7 @@
 #include "parser.hpp"
 #include <cstring>
 #include <fstream>
+#include <iostream>
 #include <map>
 #include <set>
 #include <sstream>
@@ -43,6 +44,7 @@ static bool fn_def_signature_equal(const FnDef& a, const FnDef& b) {
   }
   if (a.return_type != b.return_type) return false;
   if (a.return_type_name != b.return_type_name) return false;
+  if (a.array_element_struct != b.array_element_struct) return false;
   return true;
 }
 
@@ -57,6 +59,7 @@ static bool fndecl_matches_fndef(const FnDecl& decl, const FnDef& def) {
   }
   if (decl.return_type != def.return_type) return false;
   if (decl.return_type_name != def.return_type_name) return false;
+  if (decl.array_element_struct != def.array_element_struct) return false;
   return true;
 }
 
@@ -69,6 +72,7 @@ static std::string get_lib_path_by_name(const Program* prog, const std::string& 
 static bool extern_fn_signature_equal(const ExternFn& a, const ExternFn& b) {
   if (a.name != b.name) return false;
   if (a.return_type != b.return_type || a.return_type_name != b.return_type_name) return false;
+  if (a.array_element_struct != b.array_element_struct) return false;
   if (a.params.size() != b.params.size()) return false;
   for (size_t i = 0; i < a.params.size(); ++i) {
     if (a.params[i].second != b.params[i].second) return false;
@@ -233,9 +237,27 @@ static std::string merge_library_into_main(Program* main_prog, Program* lib_prog
   std::vector<const FnDef*> imported_fns;
   for (const FnDecl& fdecl : request->fn_decls) {
     const FnDef* fdef = nullptr;
-    for (const auto& f : lib_prog->user_fns)
+    const FnDef* candidate = nullptr;  /* same name and exported, for error message */
+    for (const auto& f : lib_prog->user_fns) {
+      if (f.name == fdecl.name && f.exported) candidate = &f;
       if (f.exported && fndecl_matches_fndef(fdecl, f)) { fdef = &f; break; }
-    if (!fdef) return "import lib '" + request->name + "': missing or signature mismatch for exported fn " + fdecl.name;
+    }
+    if (!fdef) {
+      std::string msg = "import lib '" + request->name + "': missing or signature mismatch for exported fn " + fdecl.name;
+      if (candidate) {
+        if (candidate->return_type != fdecl.return_type)
+          msg += " (return_type)";
+        else if (candidate->return_type_name != fdecl.return_type_name)
+          msg += " (return_type_name)";
+        else if (candidate->array_element_struct != fdecl.array_element_struct)
+          msg += " (array_element_struct: lib has '" + candidate->array_element_struct + "', import has '" + fdecl.array_element_struct + "')";
+        else if (candidate->params.size() != fdecl.params.size())
+          msg += " (param count)";
+        else
+          msg += " (param types or names)";
+      }
+      return msg;
+    }
     bool already_present_with_same_sig = false;
     for (const auto& f : main_prog->user_fns) {
       if (f.name != fdecl.name) continue;

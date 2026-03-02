@@ -3,7 +3,7 @@
 
 import lib "moons" {
 	struct Point;
-	fn create_moons(n: i64, sigma: f64) -> ptr;
+	fn create_moons(n: i64, sigma: f64) -> ptr[Point];
 	fn free_moons(moons: ptr, n: i64) -> void;
 };
 

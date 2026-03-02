@@ -7,7 +7,7 @@
 
 import lib "moons" {
 	struct Point;
-	fn create_moons(n: i64, sigma: f64) -> ptr;
+	fn create_moons(n: i64, sigma: f64) -> ptr[Point];
 	fn free_moons(moons: ptr, n: i64) -> void;
 }
 
@@ -110,9 +110,9 @@ for (let epoch = 0; epoch < num_epochs; epoch = epoch + 1) {
 	let running_correct = make_leaf(0.0);
 
 	for (let sample_idx = 0; sample_idx < batch_size; sample_idx = sample_idx + 1) {
-		X[0] = make_leaf((moons[sample_idx] as Point).x);
-		X[1] = make_leaf((moons[sample_idx] as Point).y);
-		y[0] = make_leaf((moons[sample_idx] as Point).class as f64);
+		X[0] = make_leaf(moons[sample_idx].x);
+		X[1] = make_leaf(moons[sample_idx].y);
+		y[0] = make_leaf(moons[sample_idx].class);
 
 		# Forward layer 1: h1[j] = relu( sum_i X[i]*W1[i,j] + b1[j] )
 		for (let j = 0; j < hidden_size; j = j + 1) {
@@ -349,11 +349,11 @@ for (let y = 0; y < H; y = y + 1) {
 		for (let d = 0; d < n_moons; d = d + 1) {
 			let px = -1.5 + (x as f64) * 4.0 / (W as f64);
 			let py = -1.5 + (y as f64) * 4.0 / (H as f64);
-			let x_diff = px - (moons[d] as Point).x;
-			let y_diff = py - (moons[d] as Point).y;
+			let x_diff = px - moons[d].x;
+			let y_diff = py - moons[d].y;
 			if (x_diff * x_diff + y_diff * y_diff < radius_sq) {
 				on_any_dot = 1;
-				moon_class = (moons[d] as Point).class;
+				moon_class = moons[d].class;
 			}
 		}
 		if (on_any_dot != 0) {

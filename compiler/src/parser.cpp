@@ -1,5 +1,6 @@
 #include "parser.hpp"
 #include <cstddef>
+#include <iostream>
 
 namespace fusion {
 
@@ -492,6 +493,16 @@ static bool parse_fn_decl(const std::vector<Token>& tokens, size_t& i, ExternFn&
     return false;
   }
   i++;
+  /* ptr[Point]: array of ptr to struct. Parse whenever return type is ptr and next token is [. */
+  if (out.return_type == FfiType::Ptr && !at_eof(tokens, i) && tokens[i].kind == TokenKind::LBracket) {
+    out.return_type_name.clear();
+    i++;
+    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return false;
+    out.array_element_struct = tokens[i].ident;
+    i++;
+    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::RBracket) return false;
+    i++;
+  }
   if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Semicolon) return false;
   i++;
   return true;
@@ -506,6 +517,7 @@ static bool parse_fn_decl_fndecl(const std::vector<Token>& tokens, size_t& i, Fn
   out.param_type_names = std::move(ext.param_type_names);
   out.return_type = ext.return_type;
   out.return_type_name = std::move(ext.return_type_name);
+  out.array_element_struct = std::move(ext.array_element_struct);
   return true;
 }
 
@@ -829,6 +841,15 @@ static bool parse_fn_def(const std::vector<Token>& tokens, size_t& i, Program& p
     return false;
   }
   i++;
+  if (def.return_type == FfiType::Ptr && def.return_type_name.empty() &&
+      !at_eof(tokens, i) && tokens[i].kind == TokenKind::LBracket) {
+    i++;
+    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return false;
+    def.array_element_struct = tokens[i].ident;
+    i++;
+    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::RBracket) return false;
+    i++;
+  }
   if (!parse_block(tokens, i, def.body)) return false;
   prog.user_fns.push_back(std::move(def));
   return true;

@@ -267,6 +267,39 @@ TEST(ParserTests, ParsesImportLibBlock) {
   ASSERT_EQ(result.program->top_level.size(), 1u);
 }
 
+TEST(ParserTests, ParsesImportLibPtrArrayElementStruct) {
+  auto tokens = fusion::lex(
+      "import lib \"moons\" { struct Point; fn create_moons(n: i64, sigma: f64) -> ptr[Point]; }; print(1)");
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok()) << result.error.message;
+  ASSERT_TRUE(result.program);
+  ASSERT_EQ(result.program->import_libs.size(), 1u);
+  ASSERT_EQ(result.program->import_libs[0].fn_decls.size(), 1u);
+  EXPECT_EQ(result.program->import_libs[0].fn_decls[0].name, "create_moons");
+  EXPECT_EQ(result.program->import_libs[0].fn_decls[0].array_element_struct, "Point");
+}
+
+TEST(ParserTests, ParsesImportLibPtrArrayElementStructExactTrainFormat) {
+  /* Exact format from train.fusion: tabs, newlines, multiple fns in block */
+  auto tokens = fusion::lex(
+      "import lib \"moons\" {\n"
+      "\tstruct Point;\n"
+      "\tfn create_moons(n: i64, sigma: f64) -> ptr[Point];\n"
+      "\tfn free_moons(moons: ptr, n: i64) -> void;\n"
+      "}\n"
+      "import lib \"value\" { struct Value; }; print(1)");
+  auto result = fusion::parse(tokens);
+  ASSERT_TRUE(result.ok()) << result.error.message;
+  ASSERT_TRUE(result.program);
+  ASSERT_GE(result.program->import_libs.size(), 1u);
+  ASSERT_EQ(result.program->import_libs[0].name, "moons");
+  ASSERT_GE(result.program->import_libs[0].fn_decls.size(), 1u);
+  const auto& create_moons = result.program->import_libs[0].fn_decls[0];
+  EXPECT_EQ(create_moons.name, "create_moons");
+  EXPECT_EQ(create_moons.array_element_struct, "Point")
+      << "create_moons.array_element_struct is '" << create_moons.array_element_struct << "'";
+}
+
 TEST(ParserTests, ParsesExportStructAndFn) {
   auto tokens = fusion::lex(
       "export struct Point { x: f64; y: f64; }; export fn zero() -> Point { let p = heap(Point); p.x = 0.0; p.y = 0.0; return p; } print(1)");
