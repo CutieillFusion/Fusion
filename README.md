@@ -45,11 +45,11 @@ fn shift(v: f64) -> f64 {
 let z = cos(1.0);
 print(z);
 
-let p = alloc(Point);
-store_field(p, Point, x, 3.0);
-store_field(p, Point, y, 4.0);
-print(load_field(p, Point, x));
-print(load_field(p, Point, y));
+let p = heap(Point);
+p.x = 3.0;
+p.y = 4.0;
+print(p.x);
+print(p.y);
 
 let x = z + 2;
 if (x > 0) {
@@ -108,14 +108,15 @@ Top-level items are processed in the following order:
      fn bar() -> i64;
    };
    ```
-4. User-defined functions:
+4. `import lib` declarations (for multi-file programs) and `export struct` / `export fn` (for library modules).
+5. User-defined functions:
    ```fusion
    fn f(x: i64) -> i64 {
      if (x > 0) { return 1; }
      return 0;
    }
    ```
-5. A sequence of top-level items executed in order:
+6. A sequence of top-level items executed in order:
    - `let` bindings, e.g. `let x = 1 + 2;`
    - `if` / `elif` / `else` statements
    - `for` loops
@@ -150,10 +151,9 @@ The last expression is *not* special; there is no REPL-style implicit print. All
 
 Fusion’s core value-level types correspond directly to FFI-level types:
 
-- `i32`, `i64` – signed integers
+- `i8`, `i32`, `i64` – signed integers
 - `f32`, `f64` – floating-point numbers
-- `ptr` – raw pointer (opaque at the language level)
-- `ptr` – pointer type (including pointers to C-style strings; use `ptr` wherever you would pass `const char*` or `void*` in C)
+- `ptr` – raw pointer (opaque at the language level; use `ptr` wherever you would pass `const char*` or `void*` in C)
 - `void` – used as a function return type
 
 String literals have pointer type and can be passed where a `ptr` is expected.
@@ -273,7 +273,7 @@ for (let i = 0; i < 5; i = i + 1) {
   print(i);
 }
 
-let arr = alloc_array(i64, 3);
+let arr = heap_array(i64, 3);
 arr[0] = 1;
 arr[1] = 2;
 arr[2] = 3;
@@ -297,7 +297,7 @@ Assignments are standalone statements:
 let x = 1;
 x = x + 1;
 
-let a = alloc_array(i64, 3);
+let a = heap_array(i64, 3);
 a[0] = 42;
 ```
 
@@ -336,29 +336,35 @@ print(sign(5));
 These are built-in functions parsed specially by the compiler:
 
 ```fusion
-let p = alloc(Point);
-let buf = alloc_bytes(1024);
-let xs = alloc_array(i64, 10);
+let p = heap(Point);
+let xs = heap_array(i64, 10);
+let buf = heap_array(i8, 1024);   # raw byte buffer
 ```
 
-- `alloc(T)`:
-  - `T` can be a primitive (`i32`, `i64`, `f32`, `f64`), `ptr`, or a user-defined struct/opaque name.
+For stack-allocated storage (lifetime limited to the current function):
+
+```fusion
+let p = stack(i64);
+let arr = stack_array(f64, 5);
+```
+
+- `heap(T)` / `stack(T)`:
+  - `T` can be a primitive (`i8`, `i32`, `i64`, `f32`, `f64`), `ptr`, or a user-defined struct/opaque name.
   - Returns a `ptr` pointing to storage for one `T`.
-- `alloc_array(T, count)`:
+- `heap_array(T, count)` / `stack_array(T, count)`:
   - `T` as above, `count` must be `i64`.
   - Returns a `ptr` to an array of `count` elements.
-- `alloc_bytes(size)`:
-  - `size` must be `i64`.
-  - Returns a raw `ptr` to `size` bytes.
 
-All three intrinsics lower to runtime allocations implemented in the C runtime and LLVM IR.
+Heap allocations can be freed with `free(ptr)` and `free_array(ptr)`. Use `as_heap(ptr)` or `as_array(ptr, elem_type)` when the compiler cannot infer the allocation origin.
+
+All intrinsics lower to runtime allocations (heap) or LLVM alloca (stack) implemented in the C runtime.
 
 ### Pointer operations and indexing
 
 Core pointer operations:
 
 ```fusion
-let p = alloc(i64);
+let p = heap(i64);
 store(p, 42);
 let v = load(p);
 
@@ -377,14 +383,14 @@ let ip = load_ptr(pp);   # load pointer
 Array indexing:
 
 ```fusion
-let a = alloc_array(i64, 3);
+let a = heap_array(i64, 3);
 a[0] = 10;
 a[1] = 20;
 a[2] = 30;
 print(a[0]);
 ```
 
-- Base expression must be a pointer produced by `alloc_array` (or a `let` binding of such).
+- Base expression must be a pointer produced by `heap_array` or `stack_array` (or a `let` binding of such).
 - Index expression must be `i64`.
 - The element type is inferred from the array.
 
@@ -396,22 +402,19 @@ Struct declarations:
 struct Point { x: f64; y: f64; };
 ```
 
-Usage:
+Usage with dot notation:
 
 ```fusion
-let p = alloc(Point);
-store_field(p, Point, x, 3.0);
-store_field(p, Point, y, 4.0);
-print(load_field(p, Point, x));
-print(load_field(p, Point, y));
+let p = heap(Point);
+p.x = 3.0;
+p.y = 4.0;
+print(p.x);
+print(p.y);
 ```
 
-- `store_field(p, StructName, field, value)`:
-  - `p` must be a pointer.
-  - `StructName` and `field` must refer to a known struct and field.
-  - Value type must be compatible with the field type.
-- `load_field(p, StructName, field)`:
-  - Returns the field value with the appropriate type (`i64`, `f64`, `ptr`, etc.).
+- `expr.field` – read or write a struct field via dot notation.
+- The base must be a pointer to a struct.
+- For low-level access, `load_field(p, StructName, field)` and `store_field(p, StructName, field, value)` are also available.
 
 Layout is computed from the struct definition according to the platform ABI and is shared with the FFI system.
 
@@ -443,14 +446,14 @@ The second argument, when present, must be `i64` and is interpreted as a stream 
 `len(arr)` returns the length (element count) of an array as `i64`:
 
 ```fusion
-let arr = alloc_array(i64, 5);
+let arr = heap_array(i64, 5);
 for (let i = 0; i < len(arr); i = i + 1) {
   arr[i] = i;
   print(arr[i]);
 }
 ```
 
-- `len(arr)` – `arr` must be a pointer to an array (from `alloc_array` or similar). Returns the stored length as `i64`.
+- `len(arr)` – `arr` must be a pointer to an array (from `heap_array` or `stack_array`). Returns the stored length as `i64`.
 
 ### Strings and numeric conversion
 
@@ -483,12 +486,16 @@ let path = "data.txt";
 let mode = "r";
 let f = open(path, mode);
 
-while (eof_file(f) == 0) {
-  let line = read_line_file(f);
+# First, get line count (or use eof_file to loop until EOF)
+let total_lines = line_count_file(f);
+close(f);
+
+let f2 = open(path, mode);
+for (let i = 0; i < total_lines; i = i + 1) {
+  let line = read_line_file(f2);
   print(line);
 }
-
-close(f);
+close(f2);
 ```
 
 Available operations:
@@ -502,8 +509,50 @@ Available operations:
   - `value` can be `i64`, `f64`, or pointer/string.
 - `eof_file(handle)` – returns `i64` (0 = not EOF, non-zero = EOF).
 - `line_count_file(handle)` – returns `i64` count of lines read so far.
+- `write_bytes(handle, buf, n)` – write `n` bytes from `buf` to file.
+- `read_bytes(handle, buf, n)` – read up to `n` bytes into `buf`.
 
 These functions are type-checked by the compiler to ensure handles are pointers and value types are compatible.
+
+### Function pointers and other built-ins
+
+- `get_func_ptr(fn)` – returns a `ptr` to a user-defined function.
+- `call(fp, arg1, arg2, ...)` – invokes a function through a pointer (e.g. from `get_func_ptr`).
+- `rt_panic(msg)` – terminates the program with an error message (`msg` is a `ptr` to a string).
+
+---
+
+## Multi-file programs and libraries
+
+Fusion supports splitting code across multiple `.fusion` files via `import lib` and `export`:
+
+```fusion
+# vec.fusion – library module
+export struct Vector { x: f64; y: f64; };
+
+export fn make_vec(x: f64, y: f64) -> Vector {
+  let p = heap(Vector);
+  p.x = x;
+  p.y = y;
+  return p;
+}
+```
+
+```fusion
+# main.fusion – imports the library
+import lib "vec" {
+  struct Vector;
+  fn make_vec(x: f64, y: f64) -> Vector;
+};
+
+let v = make_vec(1.0, 2.0);
+print(v.x);
+print(v.y);
+```
+
+- `import lib "name" { ... }` – loads `name.fusion` (or `name/` directory) and imports the declared structs and functions.
+- `export struct` / `export fn` – makes a struct or function visible to importers.
+- The import block lists only the struct names and function signatures; the implementation lives in the library file.
 
 ---
 
@@ -567,6 +616,7 @@ Fusion’s FFI mapping is defined by the runtime (`rt_ffi_type_kind_t`) and the 
 
 | Fusion type | C / ABI type                |
 |------------|-----------------------------|
+| `i8`       | `int8_t`                    |
 | `i32`      | `int32_t`                   |
 | `i64`      | `int64_t` / `long long`     |
 | `f32`      | `float`                     |
@@ -645,9 +695,9 @@ Some common classes of semantic errors:
   let x = len(n);   # len expects a pointer (array)
   ```
 - **Invalid casts** or mis-typed pointer operations:
-  - `load`/`load_f64`/`load_ptr` require pointer arguments.
+  - `load`/`load_f64`/`load_ptr`/`load_i32` require pointer arguments.
   - `store` requires a pointer as the first argument.
-  - `cast` target type must be one of the supported numeric or pointer-like types.
+  - `as` target type must be one of the supported numeric or pointer-like types.
 
 The error messages are designed to be explicit about which built-in or function caused the problem.
 

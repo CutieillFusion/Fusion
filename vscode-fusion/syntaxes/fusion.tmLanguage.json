@@ -5,8 +5,10 @@
     { "include": "#comments" },
     { "include": "#strings" },
     { "include": "#function-decl" },
+    { "include": "#extern-lib" },
     { "include": "#import-lib" },
     { "include": "#struct-decl" },
+    { "include": "#field-access" },
     { "include": "#variable" },
     { "include": "#builtin-calls" },
     { "include": "#function-call" },
@@ -66,6 +68,18 @@
         }
       ]
     },
+    "extern-lib": {
+      "patterns": [
+        {
+          "name": "meta.extern.fusion",
+          "match": "\\b(extern)\\s+(lib)\\s+",
+          "captures": {
+            "1": { "name": "keyword.control" },
+            "2": { "name": "storage.type" }
+          }
+        }
+      ]
+    },
     "import-lib": {
       "patterns": [
         {
@@ -74,6 +88,17 @@
           "captures": {
             "1": { "name": "keyword.control" },
             "2": { "name": "storage.type" }
+          }
+        }
+      ]
+    },
+    "field-access": {
+      "patterns": [
+        {
+          "name": "variable.other.member.fusion",
+          "match": "\\.([a-zA-Z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "variable.other.member" }
           }
         }
       ]
@@ -102,23 +127,29 @@
     "struct-use": {
       "patterns": [
         {
-          "name": "meta.struct.use.alloc.fusion",
-          "match": "\\balloc\\s*\\(\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\)",
-          "captures": { "1": { "name": "entity.name.type" } }
+          "name": "meta.struct.use.heap.fusion",
+          "match": "\\b(heap|stack)\\s*\\(\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\)",
+          "captures": {
+            "1": { "name": "support.function.builtin.alloc" },
+            "2": { "name": "entity.name.type" }
+          }
         },
         {
-          "name": "meta.struct.use.alloc_array.fusion",
-          "match": "\\balloc_array\\s*\\(\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*,",
-          "captures": { "1": { "name": "entity.name.type" } }
+          "name": "meta.struct.use.heap_array.fusion",
+          "match": "\\b(heap_array|stack_array)\\s*\\(\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*,",
+          "captures": {
+            "1": { "name": "support.function.builtin.alloc" },
+            "2": { "name": "entity.name.type" }
+          }
         },
         {
           "name": "meta.struct.use.return.fusion",
-          "match": "->\\s+(?!(?:i32|i64|u32|u64|f32|f64|void|ptr)\\b)([a-zA-Z_][a-zA-Z0-9_]*)",
+          "match": "->\\s+(?!(?:i8|i32|i64|u32|u64|f32|f64|void|ptr)\\b)([a-zA-Z_][a-zA-Z0-9_]*)",
           "captures": { "1": { "name": "entity.name.type" } }
         },
         {
           "name": "meta.struct.use.param.fusion",
-          "match": ":\\s*(?!(?:i32|i64|u32|u64|f32|f64|void|ptr)\\b)([a-zA-Z_][a-zA-Z0-9_]*)\\s*[,)]",
+          "match": ":\\s*(?!(?:i8|i32|i64|u32|u64|f32|f64|void|ptr)\\b)([a-zA-Z_][a-zA-Z0-9_]*)\\s*[,)]",
           "captures": { "1": { "name": "entity.name.type" } }
         },
         {
@@ -163,24 +194,24 @@
     "builtin-calls": {
       "patterns": [
         {
-          "name": "support.function.builtin.range.fusion",
-          "match": "\\b(range)\\s*\\(",
-          "captures": { "1": { "name": "support.function.builtin.range" } }
-        },
-        {
           "name": "support.function.builtin.io.fusion",
-          "match": "\\b(print)\\s*\\(",
+          "match": "\\b(print|read_line|open|close|read_line_file|write_file|eof_file|line_count_file|write_bytes|read_bytes|to_str|from_str)\\s*\\(",
           "captures": { "1": { "name": "support.function.builtin.io" } }
         },
         {
           "name": "support.function.builtin.alloc.fusion",
-          "match": "\\b(alloc|alloc_array|alloc_bytes)\\s*\\(",
+          "match": "\\b(heap|stack|heap_array|stack_array)\\s*\\(",
           "captures": { "1": { "name": "support.function.builtin.alloc" } }
         },
         {
           "name": "support.function.builtin.memory.fusion",
-          "match": "\\b(load|store|load_field|store_field|load_f64|load_i32|load_ptr|addr_of)\\s*\\(",
+          "match": "\\b(load|store|load_field|store_field|load_f64|load_i32|load_ptr|addr_of|free|free_array|as_heap|as_array)\\s*\\(",
           "captures": { "1": { "name": "support.function.builtin.memory" } }
+        },
+        {
+          "name": "support.function.builtin.other.fusion",
+          "match": "\\b(len|get_func_ptr|call|rt_panic)\\s*\\(",
+          "captures": { "1": { "name": "support.function.builtin" } }
         }
       ]
     },
@@ -200,27 +231,27 @@
       "patterns": [
         {
           "name": "storage.type",
-          "match": "\\b(i32|i64|u32|u64|f32|f64|void|ptr)\\b"
+          "match": "\\b(i8|i32|i64|u32|u64|f32|f64|void|ptr)\\b"
         }
       ]
     },
     "builtins": {
       "patterns": [
         {
-          "name": "support.function.builtin.range",
-          "match": "\\b(range)\\b"
-        },
-        {
           "name": "support.function.builtin.io",
-          "match": "\\b(print)\\b"
+          "match": "\\b(print|read_line|open|close|read_line_file|write_file|eof_file|line_count_file|write_bytes|read_bytes|to_str|from_str)\\b"
         },
         {
           "name": "support.function.builtin.alloc",
-          "match": "\\b(alloc|alloc_array|alloc_bytes)\\b"
+          "match": "\\b(heap|stack|heap_array|stack_array)\\b"
         },
         {
           "name": "support.function.builtin.memory",
-          "match": "\\b(load|store|load_field|store_field|load_f64|load_i32|load_ptr|addr_of)\\b"
+          "match": "\\b(load|store|load_field|store_field|load_f64|load_i32|load_ptr|addr_of|free|free_array|as_heap|as_array)\\b"
+        },
+        {
+          "name": "support.function.builtin",
+          "match": "\\b(len|get_func_ptr|call|rt_panic)\\b"
         }
       ]
     },
@@ -241,6 +272,7 @@
     "punctuation": {
       "patterns": [
         { "name": "keyword.operator", "match": "->" },
+        { "name": "punctuation.separator.dot", "match": "\\." },
         { "name": "punctuation.definition.group.begin", "match": "\\(" },
         { "name": "punctuation.definition.group.end", "match": "\\)" },
         { "name": "punctuation.definition.block.begin", "match": "\\{" },
