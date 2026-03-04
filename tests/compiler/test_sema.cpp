@@ -771,6 +771,40 @@ TEST(SemaTests, AcceptsPtrCharReturn) {
   EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
 }
 
+TEST(SemaTests, AcceptsPtrI8Return) {
+  /* ptr[i8] return type (primitive element) must pass array_element_struct validation */
+  auto tokens = fusion::lex(
+      "fn build_buf() -> ptr[i8] { let p = heap_array(i8, 64); return p; } "
+      "let b = build_buf(); print(1)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << "parse failed";
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, AcceptsPtrF64Return) {
+  /* ptr[f64] return type (primitive element) must pass array_element_struct validation */
+  auto tokens = fusion::lex(
+      "fn get_vec() -> ptr[f64] { let p = heap_array(f64, 4); return p; } "
+      "let v = get_vec(); print(1)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << "parse failed";
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, RejectsPtrUnknownElementReturn) {
+  /* fn returning ptr[NoSuch] must fail with unknown array element struct */
+  auto tokens = fusion::lex("fn f() -> ptr[NoSuch] { return 0; } print(1)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << "parse failed";
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_FALSE(sema_result.ok);
+  EXPECT_TRUE(sema_result.error.message.find("array element struct") != std::string::npos ||
+              sema_result.error.message.find("NoSuch") != std::string::npos)
+      << "got: " << sema_result.error.message;
+}
+
 TEST(SemaTests, AcceptsPtrCharConcat) {
   auto tokens = fusion::lex("let s = \"a\" + \"b\"; print(s)");
   auto parse_result = fusion::parse(tokens);

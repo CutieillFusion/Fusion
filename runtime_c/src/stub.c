@@ -1,4 +1,5 @@
 #include "runtime.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,7 +56,16 @@ void rt_print_f64(double value, int64_t stream) {
 }
 
 void rt_print_cstring(const char *s, int64_t stream) {
-  fprintf(stream_for(stream), "%s\n", s ? s : "(null)");
+  if (!s) {
+    fprintf(stream_for(stream), "(null)\n");
+    return;
+  }
+  /* Avoid strlen on obviously invalid pointers (e.g. small integers passed as ptr). */
+  if ((uintptr_t)s < 4096) {
+    fprintf(stream_for(stream), "(invalid)\n");
+    return;
+  }
+  fprintf(stream_for(stream), "%s\n", s);
 }
 
 const char *rt_read_line(void) {

@@ -1,28 +1,28 @@
 import lib "value" {
     struct Value;
-    fn add_forward(a: Value, b: Value) -> Value;
-    fn mul_forward(a: Value, b: Value) -> Value;
-    fn relu_forward(x: Value) -> Value;
-    fn make_leaf(data: f64) -> Value;
-    fn free_value(v: Value) -> void;
+    fn add_forward(a: ptr[Value], b: ptr[Value]) -> ptr[Value];
+    fn mul_forward(a: ptr[Value], b: ptr[Value]) -> ptr[Value];
+    fn relu_forward(x: ptr[Value]) -> ptr[Value];
+    fn make_leaf(data: f64) -> ptr[Value];
+    fn free_value(v: ptr[Value]) -> void;
 }
 
 extern lib "" {
-    fn rt_panic(msg: ptr) -> void;
+    fn rt_panic(msg: ptr[char]) -> void;
 };
 
-fn is_in_weight_set(weight_ptrs: ptr, weight_count: i64, v: ptr) -> i64 {
+fn is_in_weight_set(weight_ptrs: ptr[Value], weight_count: i64, v: ptr[Value]) -> i64 {
     for (let i = 0; i < weight_count; i = i + 1) {
-        if (weight_ptrs[i] as ptr == v) {
+        if (weight_ptrs[i] == v) {
             return 1;
         }
     }
     return 0;
 }
 
-fn already_in_topo(v: ptr, topo: ptr, topo_count: i64) -> i64 {
+fn already_in_topo(v: ptr[Value], topo: ptr[Value], topo_count: i64) -> i64 {
     for (let i = 0; i < topo_count; i = i + 1) {
-        if (topo[i] as ptr == v) {
+        if (topo[i] == v) {
             return 1;
         }
     }
@@ -30,10 +30,10 @@ fn already_in_topo(v: ptr, topo: ptr, topo_count: i64) -> i64 {
 }
 
 # Iterative DFS (post-order) to avoid stack overflow on deep graphs (e.g. long add_forward chains).
-fn build_topo(root: ptr, topo: ptr, _ignored: i64) -> i64 {
+fn build_topo(root: ptr[Value], topo: ptr[Value], _ignored: i64) -> i64 {
     let max_nodes = 100000;
     let max_iters = 300000;
-    let stack_v = heap_array(ptr, max_nodes);
+    let stack_v = heap_array(ptr[Value], max_nodes);
     let stack_j = heap_array(i64, max_nodes);
     stack_v[0] = root;
     stack_j[0] = 0;
@@ -67,7 +67,7 @@ fn build_topo(root: ptr, topo: ptr, _ignored: i64) -> i64 {
                             stack_v[stack_top] = v;
                             stack_j[stack_top] = 1;
                             stack_top = stack_top + 1;
-                            let child0 = children[0] as ptr;
+                            let child0 = children[0];
                             stack_v[stack_top] = child0;
                             stack_j[stack_top] = 0;
                             stack_top = stack_top + 1;
@@ -83,7 +83,7 @@ fn build_topo(root: ptr, topo: ptr, _ignored: i64) -> i64 {
                         stack_v[stack_top] = v;
                         stack_j[stack_top] = j + 1;
                         stack_top = stack_top + 1;
-                        let c = children[j] as ptr;
+                        let c = children[j];
                         stack_v[stack_top] = c;
                         stack_j[stack_top] = 0;
                         stack_top = stack_top + 1;
@@ -103,10 +103,10 @@ fn build_topo(root: ptr, topo: ptr, _ignored: i64) -> i64 {
     return topo_count;
 }
 
-export fn backward(root: ptr) -> void {
+export fn backward(root: ptr[Value]) -> void {
     # Must fit full graph: batch_size * (layer1 + layer2 + loss) + chain. Increase if hidden_size or batch_size is large.
     let max_nodes = 100000;
-    let topo = heap_array(ptr, max_nodes);
+    let topo = heap_array(ptr[Value], max_nodes);
 
     let total_topo_count = build_topo(root, topo, 0);
 
@@ -121,35 +121,33 @@ export fn backward(root: ptr) -> void {
 }
 
 # Free all graph nodes except weights (no backward). Use for non-loss roots e.g. running_correct.
-export fn free_graph(root: ptr, weight_ptrs: ptr, weight_count: i64) -> void {
+export fn free_graph(root: ptr[Value], weight_ptrs: ptr[Value], weight_count: i64) -> void {
     let max_nodes = 100000;
-    let topo = heap_array(ptr, max_nodes);
+    let topo = heap_array(ptr[Value], max_nodes);
     let total_topo_count = build_topo(root, topo, 0);
     for (let i = 0; i < total_topo_count; i = i + 1) {
-        let v = topo[i] as Value;
-        if (is_in_weight_set(weight_ptrs, weight_count, v) == 0) {
-            free_value(v);
+        if (is_in_weight_set(weight_ptrs, weight_count, topo[i]) == 0) {
+            free_value(topo[i]);
         }
     }
     free_array(topo);
 }
 
 # Backward then free all graph nodes except weights (avoids leak when training many epochs).
-export fn backward_with_free(root: ptr, weight_ptrs: ptr, weight_count: i64) -> void {
+export fn backward_with_free(root: ptr[Value], weight_ptrs: ptr[Value], weight_count: i64) -> void {
     let max_nodes = 100000;
-    let topo = heap_array(ptr, max_nodes);
+    let topo = heap_array(ptr[Value], max_nodes);
     let total_topo_count = build_topo(root, topo, 0);
-    (root as Value).grad = 1.0;
+    root.grad = 1.0;
     for (let i = 0; i < total_topo_count; i = i + 1) {
         let idx = total_topo_count - 1 - i;
-        let v = topo[idx] as Value;
+        let v = topo[idx];
         let backward = v.backward;
         call(backward, v);
     }
     for (let i = 0; i < total_topo_count; i = i + 1) {
-        let v = topo[i] as Value;
-        if (is_in_weight_set(weight_ptrs, weight_count, v) == 0) {
-            free_value(v);
+        if (is_in_weight_set(weight_ptrs, weight_count, topo[i]) == 0) {
+            free_value(topo[i]);
         }
     }
     free_array(topo);

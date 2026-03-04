@@ -42,7 +42,8 @@ StructLayout compute_layout(const StructDef& def, const LayoutMap& known_layouts
         if (rem != 0) offset += align - rem;
         FieldLayout fl;
         fl.offset = offset;
-        fl.type = ty;
+        fl.type = FfiType::Ptr;  /* pointer slot so sema/codegen see Ptr */
+        fl.struct_name = struct_type;  /* e.g. Value for ptr[Value], so array element struct is known */
         out.fields.push_back({fname, fl});
         offset += size;
       }

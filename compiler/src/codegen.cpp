@@ -318,6 +318,18 @@ static FfiType array_element_type_from_expr(Expr* expr, CodegenEnv& env) {
   return FfiType::Void;
 }
 
+/* If expr is a Call to a user fn that returns ptr[T], return T (struct name); else "". */
+static std::string get_call_array_element_struct_name(Expr* expr, Program* program) {
+  if (!expr || expr->kind != Expr::Kind::Call || !program) return "";
+  for (const FnDef& def : program->user_fns) {
+    if (def.name == expr->callee &&
+        def.return_type == FfiType::Ptr &&
+        !def.array_element_struct.empty())
+      return def.array_element_struct;
+  }
+  return "";
+}
+
 /* Lookup which struct a pointer variable points to in codegen. */
 static std::string var_struct_lookup_cg(CodegenEnv& env, const std::string& name) {
   for (auto it = env.var_struct_scope_stack.rbegin(); it != env.var_struct_scope_stack.rend(); ++it) {
@@ -458,14 +470,22 @@ static std::string array_elem_type_name(Expr* expr, CodegenEnv& env) {
   if (expr->kind == Expr::Kind::StackArray || expr->kind == Expr::Kind::HeapArray)
     return expr->var_name;
   if (expr->kind == Expr::Kind::VarRef) {
-    /* VarRef: we don't store type name in env; use FfiType to infer. For structs we can't. */
+    /* VarRef: we don't store type name in env; use FfiType to infer. For structs use array_struct_scope. */
     FfiType t = array_elem_lookup(env, expr->var_name);
     if (t == FfiType::I8) return "i8";
     if (t == FfiType::I32) return "i32";
     if (t == FfiType::I64) return "i64";
     if (t == FfiType::F32) return "f32";
     if (t == FfiType::F64) return "f64";
-    if (t == FfiType::Ptr) return "ptr";
+    if (t == FfiType::Ptr) {
+      for (auto it = env.array_struct_scope_stack.rbegin(); it != env.array_struct_scope_stack.rend(); ++it) {
+        auto fit = it->find(expr->var_name);
+        if (fit != it->end() && !fit->second.empty() &&
+            env.layout_map && env.layout_map->count(fit->second))
+          return fit->second;
+      }
+      return "ptr";
+    }
   }
   return "i64";  /* fallback */
 }
@@ -533,13 +553,20 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
     case Expr::Kind::FloatLiteral:
       return llvm::ConstantFP::get(B.getDoubleTy(), expr->float_value);
     case Expr::Kind::StringLiteral: {
-      /* String on stack to avoid GlobalVariable (JIT/relocation issues with globals). */
+      /* Stack buffer for content, then rt_str_dup so the returned pointer outlives this function
+         (e.g. when stored in a struct and used after the callee returns). */
       std::string s = expr->str_value + '\0';
       Constant* str_const = ConstantDataArray::getString(ctx, s, false);
       Type* str_ty = str_const->getType();
       Value* str_buf = B.CreateAlloca(str_ty, nullptr, "str");
       B.CreateStore(str_const, str_buf);
-      return B.CreatePointerCast(str_buf, PointerType::get(Type::getInt8Ty(ctx), 0));
+      Value* str_i8 = B.CreatePointerCast(str_buf, PointerType::get(Type::getInt8Ty(ctx), 0));
+      Function* dup_fn = M->getFunction("rt_str_dup");
+      if (!dup_fn) {
+        s_codegen_error = "rt_str_dup not found for string literal";
+        return nullptr;
+      }
+      return B.CreateCall(dup_fn, {str_i8}, "str_lit");
     }
     case Expr::Kind::BinaryOp: {
       FfiType tyL = expr_type_proper(expr->left.get(), prog, env.var_types, env);
@@ -585,10 +612,16 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         if (L->getType() != B.getDoubleTy()) L = B.CreateSIToFP(L, B.getDoubleTy());
         if (R->getType() != B.getDoubleTy()) R = B.CreateSIToFP(R, B.getDoubleTy());
       } else {
-        if (L->getType() == B.getInt32Ty()) L = B.CreateSExt(L, B.getInt64Ty());
-        else if (L->getType() != B.getInt64Ty()) L = B.CreateFPToSI(L, B.getInt64Ty());
-        if (R->getType() == B.getInt32Ty()) R = B.CreateSExt(R, B.getInt64Ty());
-        else if (R->getType() != B.getInt64Ty()) R = B.CreateFPToSI(R, B.getInt64Ty());
+        if (L->getType() != B.getInt64Ty()) {
+          Value* c = coerce_value_to_type(env, L, tyL, B.getInt64Ty());
+          if (!c) { s_codegen_error = "binary op: cannot coerce left to i64"; return nullptr; }
+          L = c;
+        }
+        if (R->getType() != B.getInt64Ty()) {
+          Value* c = coerce_value_to_type(env, R, tyR, B.getInt64Ty());
+          if (!c) { s_codegen_error = "binary op: cannot coerce right to i64"; return nullptr; }
+          R = c;
+        }
       }
       switch (expr->bin_op) {
         case BinOp::Add:
@@ -1336,6 +1369,8 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       B.SetInsertPoint(cont_bb);
       Value* offset = B.CreateMul(index_val, B.getInt64(elem_size), "elem.offset");
       Value* elem_ptr = B.CreateGEP(B.getInt8Ty(), elem_base, offset);
+      if (env.layout_map && env.layout_map->count(elem_name))
+        return B.CreatePointerCast(elem_ptr, i8ptr);
       if (elem_ty == FfiType::F64) {
         elem_ptr = B.CreatePointerCast(elem_ptr, B.getDoubleTy()->getPointerTo());
         return B.CreateLoad(B.getDoubleTy(), elem_ptr, "index.load");
@@ -1432,8 +1467,16 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         }
         return B.CreateFCmp(pred, L, R, "cmp");
       }
-      if (L->getType() != B.getInt64Ty()) L = B.CreateFPToSI(L, B.getInt64Ty());
-      if (R->getType() != B.getInt64Ty()) R = B.CreateFPToSI(R, B.getInt64Ty());
+      if (L->getType() != B.getInt64Ty()) {
+        Value* c = coerce_value_to_type(env, L, tyL, B.getInt64Ty());
+        if (!c) { s_codegen_error = "comparison: cannot coerce left to i64"; return nullptr; }
+        L = c;
+      }
+      if (R->getType() != B.getInt64Ty()) {
+        Value* c = coerce_value_to_type(env, R, tyR, B.getInt64Ty());
+        if (!c) { s_codegen_error = "comparison: cannot coerce right to i64"; return nullptr; }
+        R = c;
+      }
       CmpInst::Predicate pred;
       switch (expr->compare_op) {
         case CompareOp::Eq: pred = CmpInst::ICMP_EQ; break;
@@ -1593,6 +1636,9 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
         }
       } else if (let_ty == FfiType::Ptr && stmt->init->kind == Expr::Kind::Call)
         env.array_element_scope_stack.back()[stmt->name] = FfiType::Ptr;
+      if (let_ty == FfiType::Ptr && (stmt->init->kind == Expr::Kind::HeapArray || stmt->init->kind == Expr::Kind::StackArray) &&
+          env.layout_map && !stmt->init->var_name.empty() && env.layout_map->count(stmt->init->var_name))
+        env.array_struct_scope_stack.back()[stmt->name] = stmt->init->var_name;
       return true;
     }
     case Stmt::Kind::Expr: {
@@ -1619,12 +1665,14 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
       B.SetInsertPoint(then_bb);
       env.vars_scope_stack.push_back({});
       env.array_element_scope_stack.push_back({});
+      env.array_struct_scope_stack.push_back({});
       env.fnptr_scope_stack.push_back({});
       for (StmtPtr& s : stmt->then_body) {
         if (!emit_stmt(env, def, fn, s.get())) return false;
       }
       env.vars_scope_stack.pop_back();
       env.array_element_scope_stack.pop_back();
+      env.array_struct_scope_stack.pop_back();
       env.fnptr_scope_stack.pop_back();
       if (!B.GetInsertBlock()->getTerminator())
         B.CreateBr(merge_bb);
@@ -1635,12 +1683,14 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
       } else {
         env.vars_scope_stack.push_back({});
         env.array_element_scope_stack.push_back({});
+        env.array_struct_scope_stack.push_back({});
         env.fnptr_scope_stack.push_back({});
         for (StmtPtr& s : stmt->else_body) {
           if (!emit_stmt(env, def, fn, s.get())) return false;
         }
         env.vars_scope_stack.pop_back();
         env.array_element_scope_stack.pop_back();
+        env.array_struct_scope_stack.pop_back();
         env.fnptr_scope_stack.pop_back();
         if (!B.GetInsertBlock()->getTerminator())
           B.CreateBr(merge_bb);
@@ -1733,7 +1783,52 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
         if (elem_name == "i8") {
           if (val->getType() != B.getInt8Ty()) val = B.CreateTrunc(B.CreateIntCast(val, B.getInt64Ty(), true), B.getInt8Ty());
           B.CreateStore(val, elem_ptr);
-        } else if (elem_ty == FfiType::F64) {
+        } else if (env.layout_map && env.layout_map->count(elem_name) && val->getType()->isPointerTy()) {
+          /* Array of struct: RHS is pointer to struct; copy struct by bytes. */
+          Value* src = (val->getType() != i8ptr) ? B.CreatePointerCast(val, i8ptr) : val;
+          Type* i64_ptr = B.getInt64Ty()->getPointerTo();
+          for (size_t off = 0; off + 8 <= elem_size; off += 8) {
+            Value* d = (off == 0) ? elem_ptr : B.CreateGEP(B.getInt8Ty(), elem_ptr, B.getInt64(off));
+            Value* s = (off == 0) ? src : B.CreateGEP(B.getInt8Ty(), src, B.getInt64(off));
+            d = B.CreatePointerCast(d, i64_ptr);
+            s = B.CreatePointerCast(s, i64_ptr);
+            B.CreateStore(B.CreateLoad(B.getInt64Ty(), s), d);
+          }
+        } else if (val->getType()->isPointerTy() && stmt->init->kind == Expr::Kind::Call && env.program && env.layout_map) {
+          /* RHS is Call to user fn returning struct: copy struct by value so element gets full struct, not just ptr. */
+          std::string struct_name;
+          for (const FnDef& d : env.program->user_fns)
+            if (d.name == stmt->init->callee && d.return_type == FfiType::Ptr && !d.return_type_name.empty() &&
+                env.layout_map->count(d.return_type_name)) {
+              struct_name = d.return_type_name;
+              break;
+            }
+          if (!struct_name.empty()) {
+            size_t sz = elem_size_from_type(struct_name, env.layout_map);
+            if (sz > 0) {
+              Value* src = (val->getType() != i8ptr) ? B.CreatePointerCast(val, i8ptr) : val;
+              /* Use struct size for destination stride (elem_size from LHS may be wrong if scope wasn't set). */
+              Value* offset_bytes = B.CreateMul(index_val, B.getInt64(sz), "struct.elem.offset");
+              Value* dst_ptr = B.CreateGEP(B.getInt8Ty(), elem_base, offset_bytes);
+              Type* i64_ptr = B.getInt64Ty()->getPointerTo();
+              for (size_t off = 0; off + 8 <= sz; off += 8) {
+                Value* d = (off == 0) ? dst_ptr : B.CreateGEP(B.getInt8Ty(), dst_ptr, B.getInt64(off));
+                Value* s = (off == 0) ? src : B.CreateGEP(B.getInt8Ty(), src, B.getInt64(off));
+                d = B.CreatePointerCast(d, i64_ptr);
+                s = B.CreatePointerCast(s, i64_ptr);
+                B.CreateStore(B.CreateLoad(B.getInt64Ty(), s), d);
+              }
+              Function* free_fn = env.module->getFunction("free");
+              if (!free_fn) {
+                FunctionType* free_ty = FunctionType::get(B.getVoidTy(), {i8ptr}, false);
+                free_fn = Function::Create(free_ty, GlobalValue::ExternalLinkage, "free", env.module);
+              }
+              B.CreateCall(free_fn, src);
+              return true;
+            }
+          }
+        }
+        if (elem_ty == FfiType::F64) {
           elem_ptr = B.CreatePointerCast(elem_ptr, B.getDoubleTy()->getPointerTo());
           if (val->getType() != B.getDoubleTy()) val = B.CreateSIToFP(val, B.getDoubleTy());
           B.CreateStore(val, elem_ptr);
@@ -1780,6 +1875,7 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
       if (!stmt->cond) return false;
       env.vars_scope_stack.push_back({});
       env.array_element_scope_stack.push_back({});
+      env.array_struct_scope_stack.push_back({});
       env.fnptr_scope_stack.push_back({});
       if (stmt->for_init) {
         if (!emit_stmt(env, def, fn, stmt->for_init.get())) {
@@ -1787,6 +1883,7 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
             s_codegen_error = "for loop: init statement failed";
           env.vars_scope_stack.pop_back();
           env.array_element_scope_stack.pop_back();
+          env.array_struct_scope_stack.pop_back();
           env.fnptr_scope_stack.pop_back();
           return false;
         }
@@ -1815,6 +1912,7 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
           s_codegen_error = "for loop: condition expression failed";
         env.vars_scope_stack.pop_back();
         env.array_element_scope_stack.pop_back();
+        env.array_struct_scope_stack.pop_back();
         env.fnptr_scope_stack.pop_back();
         return false;
       }
@@ -1828,6 +1926,7 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
             s_codegen_error = "for loop: condition must be i64, f64, or bool";
           env.vars_scope_stack.pop_back();
           env.array_element_scope_stack.pop_back();
+          env.array_struct_scope_stack.pop_back();
           env.fnptr_scope_stack.pop_back();
           return false;
         }
@@ -1854,6 +1953,7 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
             s_codegen_error = "inside for loop, body statement at index " + std::to_string(bi) + ": " + s_codegen_error;
           env.vars_scope_stack.pop_back();
           env.array_element_scope_stack.pop_back();
+          env.array_struct_scope_stack.pop_back();
           env.fnptr_scope_stack.pop_back();
           return false;
         }
@@ -1862,6 +1962,7 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
         if (!emit_stmt(env, def, fn, stmt->for_update.get())) {
           env.vars_scope_stack.pop_back();
           env.array_element_scope_stack.pop_back();
+          env.array_struct_scope_stack.pop_back();
           env.fnptr_scope_stack.pop_back();
           return false;
         }
@@ -1870,6 +1971,7 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
       B.SetInsertPoint(exit_bb);
       env.vars_scope_stack.pop_back();
       env.array_element_scope_stack.pop_back();
+      env.array_struct_scope_stack.pop_back();
       env.fnptr_scope_stack.pop_back();
       return true;
     }
@@ -1887,9 +1989,11 @@ static bool emit_user_fn_body(CodegenEnv& env, FnDef& def, Function* fn) {
   B.SetInsertPoint(entry);
   std::vector<std::unordered_map<std::string, Value*>> saved_vars_stack = std::move(env.vars_scope_stack);
   std::vector<std::unordered_map<std::string, FfiType>> saved_array_stack = std::move(env.array_element_scope_stack);
+  std::vector<std::unordered_map<std::string, std::string>> saved_array_struct_stack = std::move(env.array_struct_scope_stack);
   std::vector<std::unordered_map<std::string, FnPtrSig>> saved_fnptr_stack = std::move(env.fnptr_scope_stack);
   env.vars_scope_stack.push_back({});
   env.array_element_scope_stack.push_back({});
+  env.array_struct_scope_stack.push_back({});
   env.fnptr_scope_stack.push_back({});
   std::unordered_map<std::string, FfiType> fn_var_types;
   for (const auto& p : def.params)
@@ -1920,6 +2024,7 @@ static bool emit_user_fn_body(CodegenEnv& env, FnDef& def, Function* fn) {
   env.fn_var_types = saved_fn_var_types;
   env.vars_scope_stack = std::move(saved_vars_stack);
   env.array_element_scope_stack = std::move(saved_array_stack);
+  env.array_struct_scope_stack = std::move(saved_array_struct_stack);
   env.fnptr_scope_stack = std::move(saved_fnptr_stack);
   return true;
 }
@@ -2080,6 +2185,7 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
     env.fn_var_types = &top_var_types;
     env.vars_scope_stack.push_back({});
     env.array_element_scope_stack.push_back({});
+    env.array_struct_scope_stack.push_back({});
     env.fnptr_scope_stack.push_back({});
     FnDef dummy_main;
     dummy_main.return_type = FfiType::Void;
@@ -2119,6 +2225,11 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
           env.array_element_scope_stack.back()[binding->name] = elem_ty;
         else if (ty == FfiType::Ptr && binding->init->kind == Expr::Kind::Call)
           env.array_element_scope_stack.back()[binding->name] = FfiType::Ptr;
+        if (ty == FfiType::Ptr && binding->init->kind == Expr::Kind::Call) {
+          std::string elem_struct = get_call_array_element_struct_name(binding->init.get(), program);
+          if (!elem_struct.empty())
+            env.array_struct_scope_stack.back()[binding->name] = elem_struct;
+        }
       } else if (const StmtPtr* stmt = std::get_if<StmtPtr>(&item)) {
         if (!emit_stmt(env, dummy_main, main_fn, stmt->get())) {
           if (s_codegen_error.empty()) {

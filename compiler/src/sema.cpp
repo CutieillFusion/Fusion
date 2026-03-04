@@ -151,6 +151,7 @@ static std::string get_call_array_element_struct(Expr* expr, SemaContext* ctx) {
 
 /* Get the struct name that an expression points to (for field access). */
 static std::string expr_struct_name(Expr* expr, SemaContext* ctx);
+static bool is_named_type_known(const std::string& name, Program* program);
 
 static bool may_outlive_function(PtrBase b) {
   return b != PtrBase::StackLocal;
@@ -183,8 +184,15 @@ static FfiType expr_type(Expr* expr, SemaContext* ctx);  // forward
 static std::string expr_struct_name(Expr* expr, SemaContext* ctx) {
   if (!expr || !ctx) return "";
   switch (expr->kind) {
-    case Expr::Kind::VarRef:
-      return var_struct_lookup(ctx, expr->var_name);
+    case Expr::Kind::VarRef: {
+      std::string s = var_struct_lookup(ctx, expr->var_name);
+      if (!s.empty()) return s;
+      // Fallback: param ptr[Value] etc. may be in var_ptr_element_scope but not in var_struct_scope
+      s = var_ptr_element_lookup(ctx, expr->var_name);
+      if (!s.empty() && ctx->program && is_named_type_known(s, ctx->program))
+        return s;
+      return "";
+    }
     case Expr::Kind::HeapAlloc:
     case Expr::Kind::StackAlloc:
       // Only struct names (not primitive type names)
@@ -196,6 +204,23 @@ static std::string expr_struct_name(Expr* expr, SemaContext* ctx) {
     case Expr::Kind::Index:
       if (expr->left && expr->left->kind == Expr::Kind::VarRef)
         return array_struct_lookup(ctx, expr->left->var_name);
+      if (expr->left && expr->left->kind == Expr::Kind::FieldAccess && ctx->layout_map) {
+        Expr* fa = expr->left.get();
+        std::string cur = expr_struct_name(fa->left.get(), ctx);
+        if (cur.empty()) return "";
+        for (const std::string& fname : fa->field_chain) {
+          auto it = ctx->layout_map->find(cur);
+          if (it == ctx->layout_map->end()) return "";
+          for (const auto& f : it->second.fields) {
+            if (f.first == fname) {
+              cur = f.second.struct_name;
+              if (cur.empty()) return "";
+              break;
+            }
+          }
+        }
+        return cur;
+      }
       if (expr->left && (expr->left->kind == Expr::Kind::HeapArray ||
                           expr->left->kind == Expr::Kind::StackArray)) {
         const std::string& tn = expr->left->var_name;
@@ -239,12 +264,29 @@ static std::string expr_struct_name(Expr* expr, SemaContext* ctx) {
       return "";
     case Expr::Kind::Call: {
       if (!ctx) return "";
+      auto is_known_struct = [&](const std::string& name) -> bool {
+        if (!ctx->program || name.empty()) return false;
+        for (const auto& s : ctx->program->struct_defs)
+          if (s.name == name) return true;
+        return false;
+      };
       auto user_it = ctx->user_fn_by_name.find(expr->callee);
-      if (user_it != ctx->user_fn_by_name.end() && !user_it->second->return_type_name.empty())
-        return user_it->second->return_type_name;
+      if (user_it != ctx->user_fn_by_name.end()) {
+        if (!user_it->second->return_type_name.empty())
+          return user_it->second->return_type_name;
+        // -> ptr[T] return type: T is in array_element_struct; use it for struct field tracking
+        if (user_it->second->return_type == FfiType::Ptr &&
+            is_known_struct(user_it->second->array_element_struct))
+          return user_it->second->array_element_struct;
+      }
       auto ext_it = ctx->extern_fn_by_name.find(expr->callee);
-      if (ext_it != ctx->extern_fn_by_name.end() && !ext_it->second.return_type_name.empty())
-        return ext_it->second.return_type_name;
+      if (ext_it != ctx->extern_fn_by_name.end()) {
+        if (!ext_it->second.return_type_name.empty())
+          return ext_it->second.return_type_name;
+        if (ext_it->second.return_type == FfiType::Ptr &&
+            is_known_struct(ext_it->second.array_element_struct))
+          return ext_it->second.array_element_struct;
+      }
       return "";
     }
     default:
@@ -302,6 +344,17 @@ static FfiType get_array_element_type(Expr* expr, SemaContext* ctx) {
   if (!expr || !ctx) return FfiType::Void;
   if (expr->kind == Expr::Kind::VarRef) {
     return array_elem_lookup(ctx, expr->var_name);
+  }
+  if (expr->kind == Expr::Kind::FieldAccess && expr->field_chain.size() == 1 && ctx->layout_map) {
+    std::string cur = expr_struct_name(expr->left.get(), ctx);
+    if (cur.empty()) return FfiType::Void;
+    auto it = ctx->layout_map->find(cur);
+    if (it == ctx->layout_map->end()) return FfiType::Void;
+    for (const auto& f : it->second.fields) {
+      if (f.first == expr->field_chain[0])
+        return f.second.type;
+    }
+    return FfiType::Void;
   }
   if (expr->kind == Expr::Kind::StackArray || expr->kind == Expr::Kind::HeapArray) {
     const std::string& t = expr->var_name;
@@ -865,6 +918,11 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
       }
       if (!ctx.layout_map) return false;
       std::string struct_name = expr_struct_name(expr->left.get(), &ctx);
+      if (struct_name.empty() && expr->left->kind == Expr::Kind::VarRef) {
+        std::string pe = var_ptr_element_lookup(&ctx, expr->left->var_name);
+        if (!pe.empty() && ctx.program && is_named_type_known(pe, ctx.program))
+          struct_name = pe;
+      }
       if (struct_name.empty()) {
         ctx.err->message = "field access: cannot determine struct type of base expression";
         return false;
@@ -1104,6 +1162,13 @@ static bool is_named_type_known(const std::string& name, Program* program) {
   return false;
 }
 
+/* Valid for ptr[T] return / array element: primitives (i8, i32, i64, f32, f64, char) or known struct/opaque. */
+static bool is_valid_array_element_type(const std::string& name, Program* program) {
+  if (name == "char" || name == "i8" || name == "i32" || name == "i64" || name == "f32" || name == "f64")
+    return true;
+  return program && is_named_type_known(name, program);
+}
+
 static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt);
 
 static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
@@ -1154,8 +1219,31 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
       // Track ptr-to-struct
       if (let_ty == FfiType::Ptr && !ctx.var_struct_scope_stack.empty()) {
         std::string sname = expr_struct_name(stmt->init.get(), &ctx);
-        if (!sname.empty())
+        if (sname.empty() && stmt->init->kind == Expr::Kind::Index && stmt->init->left &&
+            stmt->init->left->kind == Expr::Kind::VarRef)
+          sname = array_struct_lookup(&ctx, stmt->init->left->var_name);
+        if (sname.empty() && stmt->init->kind == Expr::Kind::Index && stmt->init->left &&
+            stmt->init->left->kind == Expr::Kind::FieldAccess && ctx.layout_map) {
+          Expr* fa = stmt->init->left.get();
+          std::string base_struct = expr_struct_name(fa->left.get(), &ctx);
+          if (base_struct.empty() && fa->left->kind == Expr::Kind::VarRef)
+            base_struct = var_ptr_element_lookup(&ctx, fa->left->var_name);
+          if (!base_struct.empty() && ctx.program && is_named_type_known(base_struct, ctx.program)) {
+            for (const std::string& fname : fa->field_chain) {
+              auto it = ctx.layout_map->find(base_struct);
+              if (it == ctx.layout_map->end()) break;
+              for (const auto& f : it->second.fields) {
+                if (f.first == fname) { base_struct = f.second.struct_name; break; }
+              }
+            }
+            if (!base_struct.empty()) sname = base_struct;
+          }
+        }
+        if (!sname.empty()) {
           ctx.var_struct_scope_stack.back()[stmt->name] = sname;
+          if (stmt->init->kind == Expr::Kind::FieldAccess && !ctx.array_struct_scope_stack.empty())
+            ctx.array_struct_scope_stack.back()[stmt->name] = sname;
+        }
       }
       FfiType elem_ty = get_array_element_type(stmt->init.get(), &ctx);
       if (elem_ty != FfiType::Void) {
@@ -1172,6 +1260,8 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
               if (f.first == e->field_chain[fi]) {
                 if (fi + 1 == e->field_chain.size() && f.second.type == FfiType::Ptr) {
                   ctx.array_element_scope_stack.back()[stmt->name] = FfiType::Ptr;
+                  if (!f.second.struct_name.empty() && !ctx.array_struct_scope_stack.empty())
+                    ctx.array_struct_scope_stack.back()[stmt->name] = f.second.struct_name;
                 }
                 cur = f.second.struct_name.empty() ? cur : f.second.struct_name;
                 found = true;
@@ -1448,8 +1538,7 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
 }
 
 static bool check_fn_def(SemaContext& ctx, FnDef& def) {
-  if (!def.array_element_struct.empty() && ctx.program &&
-      !is_named_type_known(def.array_element_struct, ctx.program)) {
+  if (!def.array_element_struct.empty() && !is_valid_array_element_type(def.array_element_struct, ctx.program)) {
     ctx.err->message = "unknown array element struct '" + def.array_element_struct + "' in fn '" + def.name + "'";
     return false;
   }
@@ -1534,7 +1623,7 @@ SemaResult check(Program* program) {
       r.errors.push_back(r.error);
       return r;
     }
-    if (!ext.array_element_struct.empty() && !is_named_type_known(ext.array_element_struct, program)) {
+    if (!ext.array_element_struct.empty() && !is_valid_array_element_type(ext.array_element_struct, program)) {
       r.error.message = "unknown array element struct '" + ext.array_element_struct + "' in extern fn '" + ext.name + "'";
       r.errors.push_back(r.error);
       return r;
@@ -1616,6 +1705,8 @@ SemaResult check(Program* program) {
               if (f.first == e->field_chain[fi]) {
                 if (fi + 1 == e->field_chain.size() && f.second.type == FfiType::Ptr) {
                   ctx.array_element_scope_stack.back()[binding->name] = FfiType::Ptr;
+                  if (!f.second.struct_name.empty() && !ctx.array_struct_scope_stack.empty())
+                    ctx.array_struct_scope_stack.back()[binding->name] = f.second.struct_name;
                 }
                 cur = f.second.struct_name.empty() ? cur : f.second.struct_name;
                 found = true;
@@ -1629,6 +1720,9 @@ SemaResult check(Program* program) {
       // Track ptr-to-struct for top-level bindings
       if (ty == FfiType::Ptr) {
         std::string sname = expr_struct_name(binding->init.get(), &ctx);
+        if (sname.empty() && binding->init->kind == Expr::Kind::Index && binding->init->left &&
+            binding->init->left->kind == Expr::Kind::VarRef)
+          sname = array_struct_lookup(&ctx, binding->init->left->var_name);
         if (!sname.empty())
           ctx.var_struct_scope_stack.back()[binding->name] = sname;
       }

@@ -1,18 +1,17 @@
 export struct Value {
   data: f64;
   grad: f64;
-  prev: ptr;
+  prev: ptr[Value];
   children_count: i64;
-  backward: ptr;
+  backward: ptr[void];
 };
 
-export fn free_value(v: Value) -> void {
-    let prev = v.prev;
-    free_array(as_array(prev, ptr));
+export fn free_value(v: ptr[Value]) -> void {
+    free_array(as_array(v.prev, ptr));
     free(as_heap(v));
 }
 
-export fn alloc_value(data: f64, prev: ptr, children_count: i64, backward: ptr) -> Value {
+export fn alloc_value(data: f64, prev: ptr[Value], children_count: i64, backward: ptr[void]) -> ptr[Value] {
   let value = heap(Value);
   value.data = data;
   value.grad = 0.0;
@@ -22,21 +21,20 @@ export fn alloc_value(data: f64, prev: ptr, children_count: i64, backward: ptr) 
   return value;
 }
 
-export fn add_forward(a: Value, b: Value) -> Value {
+export fn add_forward(a: ptr[Value], b: ptr[Value]) -> ptr[Value] {
     let data = a.data + b.data;
 
-    let prev = heap_array(ptr, 2);
+    let prev = heap_array(ptr[Value], 2);
     prev[0] = a;
     prev[1] = b;
-    
+
     let value = alloc_value(data, prev, 2, get_func_ptr(add_backward));
     return value;
 }
 
-fn add_backward(out: Value) -> void {
-    let prev = out.prev;
-    let a = prev[0] as Value;
-    let b = prev[1] as Value;
+fn add_backward(out: ptr[Value]) -> void {
+    let a = out.prev[0];
+    let b = out.prev[1];
     let grad = out.grad;
     let a_grad = a.grad;
     let b_grad = b.grad;
@@ -46,19 +44,18 @@ fn add_backward(out: Value) -> void {
     b.grad = new_b_grad;
 }
 
-export fn mul_forward(a: Value, b: Value) -> Value {
+export fn mul_forward(a: ptr[Value], b: ptr[Value]) -> ptr[Value] {
     let data = a.data * b.data;
-    let prev = heap_array(ptr, 2);
+    let prev = heap_array(ptr[Value], 2);
     prev[0] = a;
     prev[1] = b;
     let value = alloc_value(data, prev, 2, get_func_ptr(mul_backward));
     return value;
 }
 
-fn mul_backward(out: Value) -> void {
-    let prev = out.prev;
-    let a = prev[0] as Value;
-    let b = prev[1] as Value;
+fn mul_backward(out: ptr[Value]) -> void {
+    let a = out.prev[0];
+    let b = out.prev[1];
     let grad = out.grad;
     let a_data = a.data;
     let b_data = b.data;
@@ -70,21 +67,20 @@ fn mul_backward(out: Value) -> void {
     b.grad = new_b_grad;
 }
 
-export fn relu_forward(x: Value) -> Value {
+export fn relu_forward(x: ptr[Value]) -> ptr[Value] {
     let data = x.data;
     if (data <= 0.0) {
         data = 0.0;
     }
-    let prev = heap_array(ptr, 1);
+    let prev = heap_array(ptr[Value], 1);
     prev[0] = x;
     let value = alloc_value(data, prev, 1, get_func_ptr(relu_backward));
     return value;
 }
 
 # Vanilla ReLU backward (micrograd): pass grad when output > 0, else 0.
-fn relu_backward(out: Value) -> void {
-    let prev = out.prev;
-    let x = prev[0] as Value;
+fn relu_backward(out: ptr[Value]) -> void {
+    let x = out.prev[0];
     let v = 0.0;
     let data = out.data;
     if (data > 0.0) {
@@ -96,12 +92,12 @@ fn relu_backward(out: Value) -> void {
     x.grad = new_grad;
 }
 
-fn leaf_backward(v: Value) -> void {
+fn leaf_backward(v: ptr[Value]) -> void {
 	# Leaf nodes do not propagate gradients further.
 }
 
-export fn make_leaf(data: f64) -> Value {
-	let prev = heap_array(ptr, 0);
+export fn make_leaf(data: f64) -> ptr[Value] {
+	let prev = heap_array(ptr[Value], 0);
 	return alloc_value(data, prev, 0, get_func_ptr(leaf_backward));
 }
 

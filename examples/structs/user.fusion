@@ -27,15 +27,13 @@ fn create_users(count: i64) -> ptr[User] {
 }
 
 fn free_users(users: ptr[User]) -> void {
-    for (let i = 0; i < len(users); i = i + 1) {
-        free_user(users[i]);
-    }
     free_array(as_array(users, User));
 }
 
 let users = create_users(10);
+
 for (let i = 0; i < len(users); i = i + 1) {
-    print(to_str(users[i].age) + " " + users[i].name);
+    print(users[i].name);
 }
 
 free_users(users);

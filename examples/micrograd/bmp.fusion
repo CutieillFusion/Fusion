@@ -4,10 +4,10 @@
 import lib "moons" {
 	struct Point;
 	fn create_moons(n: i64, sigma: f64) -> ptr[Point];
-	fn free_moons(moons: ptr, n: i64) -> void;
+	fn free_moons(moons: ptr[Point], n: i64) -> void;
 };
 
-export fn build_bmp_header(w: i64, h: i64) -> ptr {
+export fn build_bmp_header(w: i64, h: i64) -> ptr[i8] {
 	let s = ((w * 3 + 3) / 4) * 4;
 	let psize = s * h;
 	let fsize = 54 + psize;

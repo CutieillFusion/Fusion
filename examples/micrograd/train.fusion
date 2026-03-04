@@ -8,22 +8,22 @@
 import lib "moons" {
 	struct Point;
 	fn create_moons(n: i64, sigma: f64) -> ptr[Point];
-	fn free_moons(moons: ptr, n: i64) -> void;
+	fn free_moons(moons: ptr[Point], n: i64) -> void;
 }
 
 import lib "value" {
 	struct Value;
-	fn alloc_value(data: f64, prev: ptr, children_count: i64, backward: ptr) -> Value;
-	fn add_forward(a: Value, b: Value) -> Value;
-	fn mul_forward(a: Value, b: Value) -> Value;
-	fn relu_forward(x: Value) -> Value;
-	fn make_leaf(data: f64) -> Value;
-	fn free_value(v: Value) -> void;
+	fn alloc_value(data: f64, prev: ptr[Value], children_count: i64, backward: ptr[void]) -> ptr[Value];
+	fn add_forward(a: ptr[Value], b: ptr[Value]) -> ptr[Value];
+	fn mul_forward(a: ptr[Value], b: ptr[Value]) -> ptr[Value];
+	fn relu_forward(x: ptr[Value]) -> ptr[Value];
+	fn make_leaf(data: f64) -> ptr[Value];
+	fn free_value(v: ptr[Value]) -> void;
 }
 
 import lib "autograd" {
-	fn backward_with_free(root: ptr, weight_ptrs: ptr, weight_count: i64) -> void;
-	fn free_graph(root: ptr, weight_ptrs: ptr, weight_count: i64) -> void;
+	fn backward_with_free(root: ptr[Value], weight_ptrs: ptr[Value], weight_count: i64) -> void;
+	fn free_graph(root: ptr[Value], weight_ptrs: ptr[Value], weight_count: i64) -> void;
 }
 
 import lib "rand" {
@@ -31,7 +31,7 @@ import lib "rand" {
 }
 
 import lib "bmp" {
-	fn build_bmp_header(w: i64, h: i64) -> ptr;
+	fn build_bmp_header(w: i64, h: i64) -> ptr[i8];
 }
 
 let init_scale = 0.5;
@@ -72,7 +72,7 @@ for (let i = 0; i < output_size; i = i + 1) {
 }
 
 let num_weights = input_size * hidden_size + hidden_size * output_size + hidden_size + output_size;
-let weight_ptrs = heap_array(ptr, num_weights);
+let weight_ptrs = heap_array(ptr[Value], num_weights);
 let k = 0;
 for (let i = 0; i < input_size; i = i + 1) {
 	for (let j = 0; j < hidden_size; j = j + 1) {

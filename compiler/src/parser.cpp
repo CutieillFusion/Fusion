@@ -584,6 +584,14 @@ static bool parse_fn_decl(const std::vector<Token>& tokens, size_t& i, ExternFn&
       out.return_type = FfiType::Ptr; out.return_type_name = "char"; i++;
     } else if (tokens[i].kind == TokenKind::KwVoid) {
       out.return_type = FfiType::Ptr; out.return_type_name.clear(); i++;
+    } else if (tokens[i].kind == TokenKind::KwI32) {
+      out.return_type = FfiType::Ptr; out.array_element_struct = "i32"; i++;
+    } else if (tokens[i].kind == TokenKind::KwI64) {
+      out.return_type = FfiType::Ptr; out.array_element_struct = "i64"; i++;
+    } else if (tokens[i].kind == TokenKind::KwF32) {
+      out.return_type = FfiType::Ptr; out.array_element_struct = "f32"; i++;
+    } else if (tokens[i].kind == TokenKind::KwF64) {
+      out.return_type = FfiType::Ptr; out.array_element_struct = "f64"; i++;
     } else if (tokens[i].kind == TokenKind::Ident) {
       out.return_type = FfiType::Ptr; out.array_element_struct = tokens[i].ident; i++;
     } else { return false; }
@@ -957,6 +965,14 @@ static bool parse_fn_def(const std::vector<Token>& tokens, size_t& i, Program& p
       def.return_type = FfiType::Ptr; def.return_type_name = "char"; i++;
     } else if (tokens[i].kind == TokenKind::KwVoid) {
       def.return_type = FfiType::Ptr; def.return_type_name.clear(); i++;
+    } else if (tokens[i].kind == TokenKind::KwI32) {
+      def.return_type = FfiType::Ptr; def.array_element_struct = "i32"; i++;
+    } else if (tokens[i].kind == TokenKind::KwI64) {
+      def.return_type = FfiType::Ptr; def.array_element_struct = "i64"; i++;
+    } else if (tokens[i].kind == TokenKind::KwF32) {
+      def.return_type = FfiType::Ptr; def.array_element_struct = "f32"; i++;
+    } else if (tokens[i].kind == TokenKind::KwF64) {
+      def.return_type = FfiType::Ptr; def.array_element_struct = "f64"; i++;
     } else if (tokens[i].kind == TokenKind::Ident) {
       def.return_type = FfiType::Ptr; def.array_element_struct = tokens[i].ident; i++;
     } else { return false; }
