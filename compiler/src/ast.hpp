@@ -1,6 +1,7 @@
 #ifndef FUSION_AST_HPP
 #define FUSION_AST_HPP
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -88,6 +89,13 @@ struct Expr {
   /* When non-empty, sema inferred the call signature for call(ptr, ...); codegen uses this. */
   std::vector<FfiType> inferred_call_param_types;
   FfiType inferred_call_result_type = FfiType::Void;
+
+  /* Ptr element type inferred by sema: "" = unknown/void, "char" = string, struct name = typed ptr. */
+  std::string inferred_ptr_element;
+
+  /* Source position for error reporting; 0 = unknown. */
+  size_t line = 0;
+  size_t column = 0;
 
   static ExprPtr make_int(int64_t value);
   static ExprPtr make_float(double value);

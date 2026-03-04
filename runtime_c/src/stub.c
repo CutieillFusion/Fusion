@@ -10,11 +10,41 @@ static char line_buf[LINE_BUF_SIZE];
 static char to_str_buf[PRINT_BUF_SIZE];
 static char file_line_buf[LINE_BUF_SIZE];
 
+/* Simple string arena for rt_str_dup / rt_str_concat.
+ * Not thread-safe (matches rest of stub.c). Strings are reclaimed by rt_shutdown().
+ */
+typedef struct RtStrNode {
+  char *ptr;
+  struct RtStrNode *next;
+} RtStrNode;
+
+static RtStrNode *rt_str_head = NULL;
+
+static void rt_track_string(char *p) {
+  if (!p) return;
+  RtStrNode *node = (RtStrNode *)malloc(sizeof(RtStrNode));
+  if (!node) return;  /* Leak p rather than crashing on OOM. */
+  node->ptr = p;
+  node->next = rt_str_head;
+  rt_str_head = node;
+}
+
 static FILE *stream_for(int64_t s) {
   return (s == 1) ? stderr : stdout;
 }
 
 void rt_init(void) {}
+
+void rt_shutdown(void) {
+  RtStrNode *node = rt_str_head;
+  while (node) {
+    RtStrNode *next = node->next;
+    free(node->ptr);
+    free(node);
+    node = next;
+  }
+  rt_str_head = NULL;
+}
 
 void rt_print_i64(int64_t value, int64_t stream) {
   fprintf(stream_for(stream), "%lld\n", (long long)value);
@@ -65,6 +95,7 @@ const char *rt_str_concat(const char *a, const char *b) {
   if (la) memcpy(out, a, la);
   if (lb) memcpy(out + la, b, lb);
   out[la + lb] = '\0';
+  rt_track_string(out);
   return out;
 }
 
@@ -74,6 +105,7 @@ const char *rt_str_dup(const char *s) {
   char *out = (char *)malloc(n);
   if (!out) return NULL;
   memcpy(out, s, n);
+   rt_track_string(out);
   return out;
 }
 

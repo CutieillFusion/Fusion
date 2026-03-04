@@ -585,8 +585,10 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         if (L->getType() != B.getDoubleTy()) L = B.CreateSIToFP(L, B.getDoubleTy());
         if (R->getType() != B.getDoubleTy()) R = B.CreateSIToFP(R, B.getDoubleTy());
       } else {
-        if (L->getType() != B.getInt64Ty()) L = B.CreateFPToSI(L, B.getInt64Ty());
-        if (R->getType() != B.getInt64Ty()) R = B.CreateFPToSI(R, B.getInt64Ty());
+        if (L->getType() == B.getInt32Ty()) L = B.CreateSExt(L, B.getInt64Ty());
+        else if (L->getType() != B.getInt64Ty()) L = B.CreateFPToSI(L, B.getInt64Ty());
+        if (R->getType() == B.getInt32Ty()) R = B.CreateSExt(R, B.getInt64Ty());
+        else if (R->getType() != B.getInt64Ty()) R = B.CreateFPToSI(R, B.getInt64Ty());
       }
       switch (expr->bin_op) {
         case BinOp::Add:
@@ -1360,7 +1362,7 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       if (!v) return nullptr;
       const std::string& to = expr->var_name;
       Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
-      if (to == "ptr") {
+      if (to == "ptr" || to == "char") {
         if (v->getType()->isPointerTy()) return v;
         return nullptr;
       }

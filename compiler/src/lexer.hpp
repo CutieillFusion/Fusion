@@ -43,6 +43,7 @@ enum class TokenKind {
   KwU32,
   KwVoid,
   KwPtr,
+  KwChar,   // only valid inside ptr[char]
   KwAs,
   KwLet,
   KwReturn,

@@ -6,6 +6,7 @@
 
 TEST(RuntimeBasicTests, Init) {
   rt_init();
+  rt_shutdown();
 }
 
 TEST(RuntimeBasicTests, PrintI64) {

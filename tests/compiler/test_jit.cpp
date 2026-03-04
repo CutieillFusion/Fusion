@@ -176,7 +176,7 @@ TEST(JitTests, ExecutesOutParam) {
   const char* so_path = "./fusion_phase6.so";
   std::string src = "extern lib \"";
   src += so_path;
-  src += "\"; extern fn set_int_out(out: ptr, v: i64) -> void; let p = heap(i64); store(p, 0); set_int_out(p, 42); print(load(p)); free(as_heap(p))";
+  src += "\"; extern fn set_int_out(out: ptr[void], v: i64) -> void; let p = heap(i64); store(p, 0); set_int_out(p, 42); print(load(p)); free(as_heap(p))";
   auto tokens = fusion::lex(src);
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << "parse failed: " << parse_result.error.message << " at " << parse_result.error.line << ":" << parse_result.error.column << " src=" << src;
@@ -230,7 +230,7 @@ TEST(JitTests, ExecutesCallThroughStructField) {
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
   auto tokens = fusion::lex(
-      "struct Operation { func: ptr; x: f64; y: f64; }; "
+      "struct Operation { func: ptr[void]; x: f64; y: f64; }; "
       "fn add(x: f64, y: f64) -> f64 { return x + y; } "
       "fn mul(x: f64, y: f64) -> f64 { return x * y; } "
       "fn perform_operation(op: Operation) -> f64 { "
@@ -282,8 +282,8 @@ TEST(JitTests, AllocArrayHeapEscapesFunction) {
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
   auto tokens = fusion::lex(
-      "struct Value { data: f64; grad: f64; prev: ptr; children_count: i64; backward: ptr; }; "
-      "fn alloc_value(data: f64, prev: ptr, children_count: i64, backward: ptr) -> ptr { "
+      "struct Value { data: f64; grad: f64; prev: ptr[void]; children_count: i64; backward: ptr[void]; }; "
+      "fn alloc_value(data: f64, prev: ptr[void], children_count: i64, backward: ptr[void]) -> ptr[void] { "
       "  let value = heap(Value); "
       "  value.data = data; "
       "  value.grad = 0.0; "
@@ -292,8 +292,8 @@ TEST(JitTests, AllocArrayHeapEscapesFunction) {
       "  value.backward = backward; "
       "  return value; "
       "} "
-      "fn leaf_backward(v: ptr) -> void { } "
-      "fn add_backward(out: ptr) -> void { "
+      "fn leaf_backward(v: ptr[void]) -> void { } "
+      "fn add_backward(out: ptr[void]) -> void { "
       "  let prev = (out as Value).prev; "
       "  let a = prev[0] as Value; "
       "  let b = prev[1] as Value; "
@@ -303,15 +303,15 @@ TEST(JitTests, AllocArrayHeapEscapesFunction) {
       "  a.grad = a_grad + grad; "
       "  b.grad = b_grad + grad; "
       "} "
-      "fn add_forward(a: ptr, b: ptr) -> ptr { "
+      "fn add_forward(a: ptr[void], b: ptr[void]) -> ptr[void] { "
       "  let data = (a as Value).data + (b as Value).data; "
-      "  let prev = heap_array(ptr, 2); "
+      "  let prev = heap_array(ptr[void], 2); "
       "  prev[0] = a; "
       "  prev[1] = b; "
       "  return alloc_value(data, prev, 2, get_func_ptr(add_backward)); "
       "} "
-      "let a = alloc_value(1.0, heap_array(ptr, 0), 0, get_func_ptr(leaf_backward)); "
-      "let b = alloc_value(2.0, heap_array(ptr, 0), 0, get_func_ptr(leaf_backward)); "
+      "let a = alloc_value(1.0, heap_array(ptr[void], 0), 0, get_func_ptr(leaf_backward)); "
+      "let b = alloc_value(2.0, heap_array(ptr[void], 0), 0, get_func_ptr(leaf_backward)); "
       "(a as Value).grad = 1.0; "
       "(b as Value).grad = 2.0; "
       "let c = add_forward(a, b); "
@@ -846,13 +846,13 @@ TEST(JitTests, ExecutesFreeValueStyle) {
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
   auto tokens = fusion::lex(
-      "struct Value { data: f64; grad: f64; prev: ptr; children_count: i64; backward: ptr; }; "
-      "fn free_value(v: ptr) -> void { "
+      "struct Value { data: f64; grad: f64; prev: ptr[void]; children_count: i64; backward: ptr[void]; }; "
+      "fn free_value(v: ptr[void]) -> void { "
       "  let prev = (v as Value).prev; "
       "  free_array(as_array(prev, ptr)); "
       "  free(as_heap(v)); "
       "} "
-      "fn alloc_value(data: f64, prev: ptr, children_count: i64, backward: ptr) -> ptr { "
+      "fn alloc_value(data: f64, prev: ptr[void], children_count: i64, backward: ptr[void]) -> ptr[void] { "
       "  let value = heap(Value); "
       "  value.data = data; "
       "  value.grad = 0.0; "
@@ -861,8 +861,8 @@ TEST(JitTests, ExecutesFreeValueStyle) {
       "  value.backward = backward; "
       "  return value; "
       "} "
-      "fn leaf_backward(v: ptr) -> void { } "
-      "let a = alloc_value(1.0, heap_array(ptr, 0), 0, get_func_ptr(leaf_backward)); "
+      "fn leaf_backward(v: ptr[void]) -> void { } "
+      "let a = alloc_value(1.0, heap_array(ptr[void], 0), 0, get_func_ptr(leaf_backward)); "
       "(a as Value).grad = 7.0; "
       "print((a as Value).grad); "
       "free_value(a)");
@@ -890,7 +890,7 @@ TEST(JitTests, ExecutesFreeValueStyle) {
 
 TEST(JitTests, ExecutesAsHeapForParam) {
   auto tokens = fusion::lex(
-      "fn f(p: ptr) -> void { free(as_heap(p)); } "
+      "fn f(p: ptr[void]) -> void { free(as_heap(p)); } "
       "let x = heap(i64); f(x)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
@@ -905,12 +905,12 @@ TEST(JitTests, ExecutesAsHeapForParam) {
 
 TEST(JitTests, ExecutesAsArrayForLoadField) {
   auto tokens = fusion::lex(
-      "struct V { prev: ptr; }; "
-      "fn free_v(v: ptr) -> void { "
+      "struct V { prev: ptr[void]; }; "
+      "fn free_v(v: ptr[void]) -> void { "
       "  free_array(as_array((v as V).prev, ptr)); "
       "  free(as_heap(v)); "
       "} "
-      "let p = heap_array(ptr, 0); "
+      "let p = heap_array(ptr[void], 0); "
       "let v = heap(V); "
       "v.prev = p; "
       "free_v(v)");
@@ -1274,7 +1274,7 @@ TEST(JitTests, ExecutesStringConcat) {
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("print(\"a\" + \"b\")");
+  auto tokens = fusion::lex("let s = \"a\" + \"b\"; print(s); free(as_heap(s))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1303,7 +1303,7 @@ TEST(JitTests, ExecutesToStrConcat) {
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("print(to_str(100) + to_str(2))");
+  auto tokens = fusion::lex("let s = to_str(100) + to_str(2); print(s); free(as_heap(s))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1393,7 +1393,7 @@ TEST(JitTests, ExecutesLoadPtr) {
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
   auto tokens = fusion::lex(
-      "let p = heap(ptr); "
+      "let p = heap(ptr[void]); "
       "let q = heap(i64); "
       "store(p, q); "
       "let r = load_ptr(p); "
@@ -1768,7 +1768,7 @@ TEST(JitTests, TypedPtrArrayFieldRead) {
   ASSERT_TRUE(freopen(path, "w", stdout));
   auto tokens = fusion::lex(
       "struct S { x: i64; y: f64; }; "
-      "fn make_s(v: i64) -> ptr { "
+      "fn make_s(v: i64) -> ptr[void] { "
       "  let s = heap(S); "
       "  s.x = v; "
       "  s.y = 0.0; "
@@ -1855,7 +1855,7 @@ TEST(JitTests, CastIndexIntoBarePtrArrayThenFieldAccess) {
   ASSERT_TRUE(freopen(path, "w", stdout));
   auto tokens = fusion::lex(
       "struct Value { data: f64; grad: f64; }; "
-      "let arr = heap_array(ptr, 2); "
+      "let arr = heap_array(ptr[void], 2); "
       "let v0 = heap(Value); "
       "v0.data = 7.5; "
       "v0.grad = 0.0; "
@@ -1903,7 +1903,7 @@ TEST(JitTests, LetBindingFromCastFieldAccess) {
   ASSERT_TRUE(freopen(path, "w", stdout));
   auto tokens = fusion::lex(
       "struct Value { data: f64; grad: f64; }; "
-      "let arr = heap_array(ptr, 1); "
+      "let arr = heap_array(ptr[void], 1); "
       "let v = heap(Value); "
       "v.data = 3.0; "
       "v.grad = 9.0; "

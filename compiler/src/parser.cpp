@@ -37,13 +37,15 @@ static bool is_type_keyword(TokenKind k) {
          k == TokenKind::KwF32 || k == TokenKind::KwF64 || k == TokenKind::KwPtr;
 }
 
-/* Consume optional "[T]" or "[void]" after ptr keyword.
- * Returns the struct name, or "" for ptr[void]/bare ptr. */
+/* Consume "[T]" after ptr keyword.
+ * Returns "" for ptr[void], "char" for ptr[char], struct name for ptr[StructName].
+ * Returns "" without advancing if the bracket form is absent or unrecognized. */
 static std::string consume_ptr_bracket(const std::vector<Token>& tokens, size_t& i) {
   if (at_eof(tokens, i) || tokens[i].kind != TokenKind::LBracket) return "";
   if (i + 2 >= tokens.size() || tokens[i+2].kind != TokenKind::RBracket) return "";
   const Token& inner = tokens[i+1];
   if (inner.kind == TokenKind::KwVoid) { i += 3; return ""; }
+  if (inner.kind == TokenKind::KwChar) { i += 3; return "char"; }
   if (inner.kind == TokenKind::Ident)  { std::string n = inner.ident; i += 3; return n; }
   return "";
 }
@@ -86,10 +88,13 @@ static bool parse_struct_def(const std::vector<Token>& tokens, size_t& i, Progra
       FfiType ft = token_to_ffi_type(tokens[i].kind);
       std::string tname;
       i++;
-      // ptr[T]: typed pointer field — same representation as bare struct-name field
+      // ptr[T]: typed pointer field — bare ptr is a parse error; must have [T]
       if (ft == FfiType::Ptr) {
+        size_t pre = i;
         tname = consume_ptr_bracket(tokens, i);
-        if (!tname.empty()) ft = FfiType::Void;
+        if (i == pre) return false;  // bare ptr: require [T]
+        // Only change ft to Void for struct pointer fields, not char (string ptr)
+        if (!tname.empty() && tname != "char") ft = FfiType::Void;
       }
       def.fields.push_back({std::move(fname), ft});
       def.field_type_names.push_back(tname);
@@ -185,12 +190,19 @@ static ExprPtr parse_primary(const std::vector<Token>& tokens, size_t& i) {
           case TokenKind::KwI64: type_name = "i64"; i++; break;
           case TokenKind::KwF32: type_name = "f32"; i++; break;
           case TokenKind::KwF64: type_name = "f64"; i++; break;
-          case TokenKind::KwPtr:
+          case TokenKind::KwPtr: {
             i++;
-            // ptr[T]: allocate a T struct — same as heap(T)/stack(T)
-            type_name = consume_ptr_bracket(tokens, i);
-            if (type_name.empty()) type_name = "ptr";
+            if (at_eof(tokens, i) || tokens[i].kind != TokenKind::LBracket) return nullptr;
+            if (i + 2 >= tokens.size() || tokens[i+2].kind != TokenKind::RBracket) return nullptr;
+            if (tokens[i+1].kind == TokenKind::KwVoid || tokens[i+1].kind == TokenKind::KwChar) {
+              type_name = "ptr";  // both void and char allocate a pointer-sized slot
+              i += 3;
+            } else if (tokens[i+1].kind == TokenKind::Ident) {
+              type_name = tokens[i+1].ident;  // ptr[StructName] → allocate StructName
+              i += 3;
+            } else { return nullptr; }
             break;
+          }
           default: return nullptr;
         }
       } else {
@@ -212,18 +224,22 @@ static ExprPtr parse_primary(const std::vector<Token>& tokens, size_t& i) {
           case TokenKind::KwI64: elem_type = "i64"; i++; break;
           case TokenKind::KwF32: elem_type = "f32"; i++; break;
           case TokenKind::KwF64: elem_type = "f64"; i++; break;
-          case TokenKind::KwPtr:
-            elem_type = "ptr";
+          case TokenKind::KwPtr: {
             i++;
-            // Optional element struct annotation: ptr[StructName]
-            if (!at_eof(tokens, i) && tokens[i].kind == TokenKind::LBracket &&
-                i + 2 < tokens.size() &&
-                tokens[i+1].kind == TokenKind::Ident &&
-                tokens[i+2].kind == TokenKind::RBracket) {
+            if (at_eof(tokens, i) || tokens[i].kind != TokenKind::LBracket) return nullptr;
+            if (i + 2 >= tokens.size() || tokens[i+2].kind != TokenKind::RBracket) return nullptr;
+            if (tokens[i+1].kind == TokenKind::KwVoid) {
+              elem_type = "ptr";  // ptr[void] → array of opaque pointers
+              i += 3;
+            } else if (tokens[i+1].kind == TokenKind::KwChar) {
+              elem_type = "ptr[char]";  // array of string pointers
+              i += 3;
+            } else if (tokens[i+1].kind == TokenKind::Ident) {
               elem_type = "ptr[" + tokens[i+1].ident + "]";
-              i += 3;  // consume '[', Ident, ']'
-            }
+              i += 3;
+            } else { return nullptr; }
             break;
+          }
           default: return nullptr;
         }
       } else {
@@ -422,12 +438,16 @@ static ExprPtr parse_multiplicative(const std::vector<Token>& tokens, size_t& i)
 
   while (!at_eof(tokens, i) && (tokens[i].kind == TokenKind::Star || tokens[i].kind == TokenKind::Slash)) {
     BinOp op = (tokens[i].kind == TokenKind::Star) ? BinOp::Mul : BinOp::Div;
+    size_t op_line = tokens[i].line;
+    size_t op_col = tokens[i].column;
     i++;
     ExprPtr right = parse_primary(tokens, i);
     if (!right) return nullptr;
     right = parse_postfix(tokens, i, std::move(right));
     if (!right) return nullptr;
     left = Expr::make_binop(op, std::move(left), std::move(right));
+    left->line = op_line;
+    left->column = op_col;
   }
   return left;
 }
@@ -439,10 +459,14 @@ static ExprPtr parse_additive(const std::vector<Token>& tokens, size_t& i) {
 
   while (!at_eof(tokens, i) && (tokens[i].kind == TokenKind::Plus || tokens[i].kind == TokenKind::Minus)) {
     BinOp op = (tokens[i].kind == TokenKind::Plus) ? BinOp::Add : BinOp::Sub;
+    size_t op_line = tokens[i].line;
+    size_t op_col = tokens[i].column;
     i++;
     ExprPtr right = parse_multiplicative(tokens, i);
     if (!right) return nullptr;
     left = Expr::make_binop(op, std::move(left), std::move(right));
+    left->line = op_line;
+    left->column = op_col;
   }
 
   if (!at_eof(tokens, i) && tokens[i].kind == TokenKind::KwAs) {
@@ -451,8 +475,12 @@ static ExprPtr parse_additive(const std::vector<Token>& tokens, size_t& i) {
     std::string type_name;
     if (tokens[i].kind == TokenKind::KwPtr) {
       i++;
+      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::LBracket) return nullptr;  // REQUIRE [T]
+      size_t pre = i;
       type_name = consume_ptr_bracket(tokens, i);
-      if (type_name.empty()) type_name = "ptr";  // bare as ptr or as ptr[void]
+      if (i == pre) return nullptr;  // unrecognized inner type
+      if (type_name.empty()) type_name = "ptr";  // ptr[void] → "ptr"
+      // "char" stays as "char" for Cast var_name
     } else if (tokens[i].kind == TokenKind::KwI64) { type_name = "i64"; i++; }
     else if (tokens[i].kind == TokenKind::KwI32) { type_name = "i32"; i++; }
     else if (tokens[i].kind == TokenKind::KwF64) { type_name = "f64"; i++; }
@@ -496,7 +524,10 @@ static bool parse_fn_decl(const std::vector<Token>& tokens, size_t& i, ExternFn&
     if (at_eof(tokens, i)) return false;
     if (tokens[i].kind == TokenKind::KwPtr) {
       i++;
+      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::LBracket) return false;  // REQUIRE [T]
+      size_t pre = i;
       std::string tname = consume_ptr_bracket(tokens, i);
+      if (i == pre) return false;
       out.params.push_back({std::move(pname), FfiType::Ptr});
       out.param_type_names.push_back(tname);
     } else if (is_type_keyword(tokens[i].kind)) {
@@ -520,7 +551,10 @@ static bool parse_fn_decl(const std::vector<Token>& tokens, size_t& i, ExternFn&
       if (at_eof(tokens, i)) return false;
       if (tokens[i].kind == TokenKind::KwPtr) {
         i++;
+        if (at_eof(tokens, i) || tokens[i].kind != TokenKind::LBracket) return false;  // REQUIRE [T]
+        size_t pre2 = i;
         std::string tname = consume_ptr_bracket(tokens, i);
+        if (i == pre2) return false;
         out.params.push_back({std::move(pname2), FfiType::Ptr});
         out.param_type_names.push_back(tname);
       } else if (is_type_keyword(tokens[i].kind)) {
@@ -541,25 +575,30 @@ static bool parse_fn_decl(const std::vector<Token>& tokens, size_t& i, ExternFn&
   if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Arrow) return false;
   i++;
   if (at_eof(tokens, i)) return false;
-  if (is_type_keyword(tokens[i].kind)) {
+  if (tokens[i].kind == TokenKind::KwPtr) {
+    i++;  // consume 'ptr'
+    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::LBracket) return false;
+    i++;  // consume '['
+    if (at_eof(tokens, i)) return false;
+    if (tokens[i].kind == TokenKind::KwChar) {
+      out.return_type = FfiType::Ptr; out.return_type_name = "char"; i++;
+    } else if (tokens[i].kind == TokenKind::KwVoid) {
+      out.return_type = FfiType::Ptr; out.return_type_name.clear(); i++;
+    } else if (tokens[i].kind == TokenKind::Ident) {
+      out.return_type = FfiType::Ptr; out.array_element_struct = tokens[i].ident; i++;
+    } else { return false; }
+    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::RBracket) return false;
+    i++;  // consume ']'
+  } else if (is_type_keyword(tokens[i].kind)) {
     out.return_type = token_to_ffi_type(tokens[i].kind);
     out.return_type_name.clear();
+    i++;
   } else if (tokens[i].kind == TokenKind::Ident) {
     out.return_type = FfiType::Ptr;
     out.return_type_name = tokens[i].ident;
+    i++;
   } else {
     return false;
-  }
-  i++;
-  /* ptr[Point]: array of ptr to struct. Parse whenever return type is ptr and next token is [. */
-  if (out.return_type == FfiType::Ptr && !at_eof(tokens, i) && tokens[i].kind == TokenKind::LBracket) {
-    out.return_type_name.clear();
-    i++;
-    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return false;
-    out.array_element_struct = tokens[i].ident;
-    i++;
-    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::RBracket) return false;
-    i++;
   }
   if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Semicolon) return false;
   i++;
@@ -850,7 +889,10 @@ static bool parse_fn_def(const std::vector<Token>& tokens, size_t& i, Program& p
     if (at_eof(tokens, i)) return false;
     if (tokens[i].kind == TokenKind::KwPtr) {
       i++;
+      if (at_eof(tokens, i) || tokens[i].kind != TokenKind::LBracket) return false;  // REQUIRE [T]
+      size_t pre = i;
       std::string tname = consume_ptr_bracket(tokens, i);
+      if (i == pre) return false;
       def.params.push_back({std::move(pname), FfiType::Ptr});
       def.param_type_names.push_back(tname);
       def.param_noescape.push_back(noescape);
@@ -879,7 +921,10 @@ static bool parse_fn_def(const std::vector<Token>& tokens, size_t& i, Program& p
       if (at_eof(tokens, i)) return false;
       if (tokens[i].kind == TokenKind::KwPtr) {
         i++;
+        if (at_eof(tokens, i) || tokens[i].kind != TokenKind::LBracket) return false;  // REQUIRE [T]
+        size_t pre2 = i;
         std::string tname = consume_ptr_bracket(tokens, i);
+        if (i == pre2) return false;
         def.params.push_back({std::move(pname2), FfiType::Ptr});
         def.param_type_names.push_back(tname);
         def.param_noescape.push_back(noescape);
@@ -903,24 +948,30 @@ static bool parse_fn_def(const std::vector<Token>& tokens, size_t& i, Program& p
   if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Arrow) return false;
   i++;
   if (at_eof(tokens, i)) return false;
-  if (is_type_keyword(tokens[i].kind)) {
+  if (tokens[i].kind == TokenKind::KwPtr) {
+    i++;  // consume 'ptr'
+    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::LBracket) return false;
+    i++;  // consume '['
+    if (at_eof(tokens, i)) return false;
+    if (tokens[i].kind == TokenKind::KwChar) {
+      def.return_type = FfiType::Ptr; def.return_type_name = "char"; i++;
+    } else if (tokens[i].kind == TokenKind::KwVoid) {
+      def.return_type = FfiType::Ptr; def.return_type_name.clear(); i++;
+    } else if (tokens[i].kind == TokenKind::Ident) {
+      def.return_type = FfiType::Ptr; def.array_element_struct = tokens[i].ident; i++;
+    } else { return false; }
+    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::RBracket) return false;
+    i++;  // consume ']'
+  } else if (is_type_keyword(tokens[i].kind)) {
     def.return_type = token_to_ffi_type(tokens[i].kind);
     def.return_type_name.clear();
+    i++;
   } else if (tokens[i].kind == TokenKind::Ident) {
     def.return_type = FfiType::Ptr;
     def.return_type_name = tokens[i].ident;
+    i++;
   } else {
     return false;
-  }
-  i++;
-  if (def.return_type == FfiType::Ptr && def.return_type_name.empty() &&
-      !at_eof(tokens, i) && tokens[i].kind == TokenKind::LBracket) {
-    i++;
-    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::Ident) return false;
-    def.array_element_struct = tokens[i].ident;
-    i++;
-    if (at_eof(tokens, i) || tokens[i].kind != TokenKind::RBracket) return false;
-    i++;
   }
   if (!parse_block(tokens, i, def.body)) return false;
   prog.user_fns.push_back(std::move(def));

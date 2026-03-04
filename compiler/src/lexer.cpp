@@ -18,6 +18,7 @@ static TokenKind keyword_from_ident(const std::string& ident) {
   if (ident == "u32") return TokenKind::KwU32;
   if (ident == "void") return TokenKind::KwVoid;
   if (ident == "ptr") return TokenKind::KwPtr;
+  if (ident == "char") return TokenKind::KwChar;
   if (ident == "as") return TokenKind::KwAs;
   if (ident == "let") return TokenKind::KwLet;
   if (ident == "return") return TokenKind::KwReturn;

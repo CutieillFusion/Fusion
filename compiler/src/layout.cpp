@@ -15,21 +15,37 @@ StructLayout compute_layout(const StructDef& def, const LayoutMap& known_layouts
     std::string struct_type = (i < def.field_type_names.size()) ? def.field_type_names[i] : "";
 
     if (!struct_type.empty()) {
-      // Embedded struct field
+      // Embedded struct field only when the type is a known struct with layout
       auto it = known_layouts.find(struct_type);
-      if (it == known_layouts.end() || it->second.size == 0) continue;
-      size_t align = it->second.alignment;
-      size_t size = it->second.size;
-      if (align == 0 || size == 0) continue;
-      if (alignment < align) alignment = align;
-      size_t rem = offset % align;
-      if (rem != 0) offset += align - rem;
-      FieldLayout fl;
-      fl.offset = offset;
-      fl.type = FfiType::Void;
-      fl.struct_name = struct_type;
-      out.fields.push_back({fname, fl});
-      offset += size;
+      bool is_embedded = (it != known_layouts.end() && it->second.size > 0 &&
+                          it->second.alignment != 0);
+      if (is_embedded) {
+        size_t align = it->second.alignment;
+        size_t size = it->second.size;
+        if (alignment < align) alignment = align;
+        size_t rem = offset % align;
+        if (rem != 0) offset += align - rem;
+        FieldLayout fl;
+        fl.offset = offset;
+        fl.type = FfiType::Void;
+        fl.struct_name = struct_type;
+        out.fields.push_back({fname, fl});
+        offset += size;
+      } else {
+        // ptr[T] where T is not a known struct (e.g. char) or not yet in map
+        FfiType layout_ty = (ty == FfiType::Void) ? FfiType::Ptr : ty;
+        size_t align = ffi_type_align(layout_ty);
+        size_t size = ffi_type_size(layout_ty);
+        if (align == 0 || size == 0) continue;
+        if (alignment < align) alignment = align;
+        size_t rem = offset % align;
+        if (rem != 0) offset += align - rem;
+        FieldLayout fl;
+        fl.offset = offset;
+        fl.type = ty;
+        out.fields.push_back({fname, fl});
+        offset += size;
+      }
     } else {
       size_t align = ffi_type_align(ty);
       size_t size = ffi_type_size(ty);

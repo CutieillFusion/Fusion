@@ -173,7 +173,7 @@ TEST(SemaTests, RejectsFreeArrayStackAlloc) {
 }
 
 TEST(SemaTests, RejectsFreeUnknownWithoutAsHeap) {
-  auto tokens = fusion::lex("fn f(p: ptr) -> void { free(p); } print(1)");
+  auto tokens = fusion::lex("fn f(p: ptr[void]) -> void { free(p); } print(1)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -183,7 +183,7 @@ TEST(SemaTests, RejectsFreeUnknownWithoutAsHeap) {
 }
 
 TEST(SemaTests, RejectsFreeArrayUnknownWithoutAsArray) {
-  auto tokens = fusion::lex("fn f(p: ptr) -> void { free_array(p); } print(1)");
+  auto tokens = fusion::lex("fn f(p: ptr[void]) -> void { free_array(p); } print(1)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -193,7 +193,7 @@ TEST(SemaTests, RejectsFreeArrayUnknownWithoutAsArray) {
 }
 
 TEST(SemaTests, AcceptsFreeAsHeap) {
-  auto tokens = fusion::lex("fn f(p: ptr) -> void { free(as_heap(p)); } print(1)");
+  auto tokens = fusion::lex("fn f(p: ptr[void]) -> void { free(as_heap(p)); } print(1)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -201,7 +201,7 @@ TEST(SemaTests, AcceptsFreeAsHeap) {
 }
 
 TEST(SemaTests, AcceptsFreeArrayAsArray) {
-  auto tokens = fusion::lex("fn f(p: ptr) -> void { free_array(as_array(p, ptr)); } print(1)");
+  auto tokens = fusion::lex("fn f(p: ptr[void]) -> void { free_array(as_array(p, ptr)); } print(1)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -209,7 +209,7 @@ TEST(SemaTests, AcceptsFreeArrayAsArray) {
 }
 
 TEST(SemaTests, RejectsReturnStackPointer) {
-  auto tokens = fusion::lex("fn bad() -> ptr { let x = stack(i64); return x; } print(1)");
+  auto tokens = fusion::lex("fn bad() -> ptr[void] { let x = stack(i64); return x; } print(1)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -221,7 +221,7 @@ TEST(SemaTests, RejectsReturnStackPointer) {
 
 TEST(SemaTests, RejectsStoreStackIntoHeap) {
   auto tokens = fusion::lex(
-      "struct Node { next: ptr; }; let obj = heap(Node); let x = stack(i64); obj.next = x; print(1)");
+      "struct Node { next: ptr[void]; }; let obj = heap(Node); let x = stack(i64); obj.next = x; print(1)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -232,7 +232,7 @@ TEST(SemaTests, RejectsStoreStackIntoHeap) {
 }
 
 TEST(SemaTests, RejectsStoreStackIntoHeapArray) {
-  auto tokens = fusion::lex("let arr = heap_array(ptr, 4); let x = stack(i64); arr[0] = x; print(1)");
+  auto tokens = fusion::lex("let arr = heap_array(ptr[void], 4); let x = stack(i64); arr[0] = x; print(1)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -240,7 +240,7 @@ TEST(SemaTests, RejectsStoreStackIntoHeapArray) {
 }
 
 TEST(SemaTests, AcceptsStoreStackIntoStack) {
-  auto tokens = fusion::lex("let a = stack(ptr); let x = stack(i64); store(a, x); print(1)");
+  auto tokens = fusion::lex("let a = stack(ptr[void]); let x = stack(i64); store(a, x); print(1)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -249,7 +249,7 @@ TEST(SemaTests, AcceptsStoreStackIntoStack) {
 
 TEST(SemaTests, RejectsStackPtrToExtern) {
   auto tokens = fusion::lex(
-      "extern lib \"libc.so.6\"; extern fn take(p: ptr) -> void; let x = stack(i64); take(x); print(1)");
+      "extern lib \"libc.so.6\"; extern fn take(p: ptr[void]) -> void; let x = stack(i64); take(x); print(1)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -260,7 +260,7 @@ TEST(SemaTests, RejectsStackPtrToExtern) {
 }
 
 TEST(SemaTests, RejectsStackPtrToInternalWithoutNoescape) {
-  auto tokens = fusion::lex("fn f(p: ptr) -> void { } let x = stack(i64); f(x); print(1)");
+  auto tokens = fusion::lex("fn f(p: ptr[void]) -> void { } let x = stack(i64); f(x); print(1)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -272,7 +272,7 @@ TEST(SemaTests, RejectsStackPtrToInternalWithoutNoescape) {
 
 TEST(SemaTests, AcceptsStackPtrToNoescapeParam) {
   auto tokens = fusion::lex(
-      "fn sum(noescape buf: ptr, n: i64) -> i64 { return 0; } let x = stack_array(i64, 10); sum(x, 10); print(1)");
+      "fn sum(noescape buf: ptr[void], n: i64) -> i64 { return 0; } let x = stack_array(i64, 10); sum(x, 10); print(1)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -281,7 +281,7 @@ TEST(SemaTests, AcceptsStackPtrToNoescapeParam) {
 
 TEST(SemaTests, RejectsStackPtrToIndirectCall) {
   auto tokens = fusion::lex(
-      "fn id(noescape p: ptr) -> ptr { return p; } let x = stack(i64); let fp = get_func_ptr(id); call(fp, x); print(1)");
+      "fn id(noescape p: ptr[void]) -> ptr[void] { return p; } let x = stack(i64); let fp = get_func_ptr(id); call(fp, x); print(1)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -348,13 +348,25 @@ TEST(SemaTests, TypedPtrArrayFieldAccess) {
   /* heap_array(ptr[S], n) + arr[0].x should pass sema cleanly */
   auto tokens = fusion::lex(
       "struct S { x: i64; y: f64; }; "
-      "fn make_s() -> ptr { return heap(S); } "
+      "fn make_s() -> ptr[void] { return heap(S); } "
       "let arr = heap_array(ptr[S], 3); "
       "arr[0] = make_s(); "
       "let v = arr[0].x; "
       "print(v)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, AcceptsStructWithPtrCharFieldAccess) {
+  /* struct User { name: ptr[char]; age: i64; } — field access on .name and .age must pass sema */
+  auto tokens = fusion::lex(
+      "struct User { name: ptr[char]; age: i64; }; "
+      "let u = heap(User); u.age = 42; u.name = \"alice\"; "
+      "print(u.age); print(u.name)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
   EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
 }
@@ -439,7 +451,7 @@ TEST(SemaTests, RejectsCallWrongArgTypes) {
 TEST(SemaTests, AcceptsCallThroughStructField) {
   /* call(op.func, op.x, op.y) with inferred signature (f64, f64) -> f64. */
   auto tokens = fusion::lex(
-      "struct Operation { func: ptr; x: f64; y: f64; }; "
+      "struct Operation { func: ptr[void]; x: f64; y: f64; }; "
       "fn add(x: f64, y: f64) -> f64 { return x + y; } "
       "fn perform_operation(op: Operation) -> f64 { "
       "  let func = op.func; "
@@ -491,7 +503,7 @@ TEST(SemaTests, AcceptsCastToI32) {
 
 TEST(SemaTests, AcceptsCastToPtr) {
   /* ptr -> ptr cast is accepted (identity) */
-  auto tokens = fusion::lex("let p = heap(i64); let q = p as ptr; print(1)");
+  auto tokens = fusion::lex("let p = heap(i64); let q = p as ptr[void]; print(1)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -508,7 +520,7 @@ TEST(SemaTests, AcceptsCastToI64) {
 
 TEST(SemaTests, RejectsCastPtrFromNonPtr) {
   /* i64 -> ptr cast is rejected; only ptr -> ptr is valid */
-  auto tokens = fusion::lex("let x = 5; let y = x as ptr; print(1)");
+  auto tokens = fusion::lex("let x = 5; let y = x as ptr[void]; print(1)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -538,7 +550,7 @@ TEST(SemaTests, RejectsAddrOfNonVar) {
 
 TEST(SemaTests, AcceptsLoadPtr) {
   /* load_ptr on a ptr argument is accepted */
-  auto tokens = fusion::lex("fn f(p: ptr) -> void { let q = load_ptr(p); } print(1)");
+  auto tokens = fusion::lex("fn f(p: ptr[void]) -> void { let q = load_ptr(p); } print(1)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -632,7 +644,7 @@ TEST(SemaTests, AcceptsMixedFnStructNoTopLevel) {
   // fn + struct definitions without any top-level statements.
   auto tokens = fusion::lex(
     "struct Vec2 { x: f64; y: f64; } "
-    "fn dot(a: ptr, b: ptr) -> f64 { "
+    "fn dot(a: ptr[void], b: ptr[void]) -> f64 { "
     "  let ax = load_f64(a); "
     "  let bx = load_f64(b); "
     "  return ax + bx; "
@@ -724,7 +736,7 @@ TEST(SemaTests, TypedPtrCastSyntax) {
   // (x as ptr[Value]).data passes sema — identical to (x as Value).data
   auto tokens = fusion::lex(
     "struct Value { data: f64; }; "
-    "fn f(x: ptr) -> f64 { return (x as ptr[Value]).data; }"
+    "fn f(x: ptr[void]) -> f64 { return (x as ptr[Value]).data; }"
   );
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
@@ -741,4 +753,34 @@ TEST(SemaTests, TypedPtrParamVoidIsOpaque) {
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
   EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, AcceptsPtrCharParam) {
+  auto tokens = fusion::lex("fn f(s: ptr[char]) -> void { } f(\"hello\"); print(1)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << "parse failed";
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, AcceptsPtrCharReturn) {
+  auto tokens = fusion::lex("fn f() -> ptr[char] { return \"hello\"; } print(1)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << "parse failed";
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, AcceptsPtrCharConcat) {
+  auto tokens = fusion::lex("let s = \"a\" + \"b\"; print(s)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << "parse failed";
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, RejectsBarePtr) {
+  auto tokens = fusion::lex("fn f(p: ptr) -> void { } print(1)");
+  auto parse_result = fusion::parse(tokens);
+  EXPECT_FALSE(parse_result.ok()) << "expected parse failure for bare ptr param";
 }

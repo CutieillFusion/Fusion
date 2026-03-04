@@ -285,7 +285,7 @@ TEST(ParserTests, ParsesImportLibPtrArrayElementStructExactTrainFormat) {
       "import lib \"moons\" {\n"
       "\tstruct Point;\n"
       "\tfn create_moons(n: i64, sigma: f64) -> ptr[Point];\n"
-      "\tfn free_moons(moons: ptr, n: i64) -> void;\n"
+      "\tfn free_moons(moons: ptr[void], n: i64) -> void;\n"
       "}\n"
       "import lib \"value\" { struct Value; }; print(1)");
   auto result = fusion::parse(tokens);
@@ -488,7 +488,7 @@ TEST(ParserTests, ParsesFreeArray) {
 }
 
 TEST(ParserTests, ParsesAsHeap) {
-  auto tokens = fusion::lex("fn f(p: ptr) -> void { free(as_heap(p)); } print(1)");
+  auto tokens = fusion::lex("fn f(p: ptr[void]) -> void { free(as_heap(p)); } print(1)");
   auto result = fusion::parse(tokens);
   ASSERT_TRUE(result.ok()) << result.error.message;
   ASSERT_TRUE(result.program);
@@ -505,7 +505,7 @@ TEST(ParserTests, ParsesAsHeap) {
 }
 
 TEST(ParserTests, ParsesAsArray) {
-  auto tokens = fusion::lex("fn f(p: ptr) -> void { free_array(as_array(p, ptr)); } print(1)");
+  auto tokens = fusion::lex("fn f(p: ptr[void]) -> void { free_array(as_array(p, ptr)); } print(1)");
   auto result = fusion::parse(tokens);
   ASSERT_TRUE(result.ok()) << result.error.message;
   ASSERT_TRUE(result.program);
@@ -523,7 +523,7 @@ TEST(ParserTests, ParsesAsArray) {
 }
 
 TEST(ParserTests, ParsesNoescapeParam) {
-  auto tokens = fusion::lex("fn sum(noescape buf: ptr, n: i64) -> i64 { return 0; } print(1)");
+  auto tokens = fusion::lex("fn sum(noescape buf: ptr[void], n: i64) -> i64 { return 0; } print(1)");
   auto result = fusion::parse(tokens);
   ASSERT_TRUE(result.ok()) << result.error.message;
   ASSERT_TRUE(result.program);
@@ -652,4 +652,18 @@ TEST(ParserTests, ParsesAssignmentToIndex) {
   ASSERT_TRUE((*assign)->init);
   EXPECT_EQ((*assign)->init->kind, fusion::Expr::Kind::IntLiteral);
   EXPECT_EQ((*assign)->init->int_value, 42);
+}
+
+TEST(ParserTests, ParsesPtrCharParam) {
+  auto tokens = fusion::lex("fn f(s: ptr[char]) -> ptr[char] { return s; } print(1)");
+  auto result = fusion::parse(tokens);
+  EXPECT_TRUE(result.ok()) << result.error.message;
+  ASSERT_EQ(result.program->user_fns.size(), 1u);
+  EXPECT_EQ(result.program->user_fns[0].param_type_names[0], "char");
+}
+
+TEST(ParserTests, RejectsBarePtr) {
+  auto tokens = fusion::lex("fn f(x: ptr) -> void { } print(1)");
+  auto result = fusion::parse(tokens);
+  EXPECT_FALSE(result.ok()) << "expected parse failure for bare ptr param";
 }

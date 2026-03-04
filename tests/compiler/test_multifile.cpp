@@ -292,10 +292,10 @@ export fn public_fn() -> i64 { return helper_mid(); })";
 }
 
 TEST(MultifileTests, ImportFnWithGetFuncPtrHelperIsMerged) {
-  std::string main_src = R"(import lib "mylib" { fn make() -> ptr; };
+  std::string main_src = R"(import lib "mylib" { fn make() -> ptr[void]; };
 print(0))";
   std::string lib_src = R"(fn target(x: i64) -> i64 { return x; }
-export fn make() -> ptr {
+export fn make() -> ptr[void] {
   let fp = get_func_ptr(target);
   return fp;
 })";
@@ -318,7 +318,7 @@ let moons = create_moons(10, 0.1);
 print(moons[0].x))";
   std::string lib_src = R"(export struct Point { x: f64; y: f64; class: f64; }
 export fn create_moons(n: i64, sigma: f64) -> ptr[Point] {
-  let arr = heap_array(ptr, n);
+  let arr = heap_array(ptr[void], n);
   for (let i = 0; i < n; i = i + 1) {
     let p = heap(Point);
     p.x = 0.0;

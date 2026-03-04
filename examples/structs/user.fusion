@@ -1,0 +1,41 @@
+struct User {
+    name: ptr[char];
+    age: i64;
+};
+
+fn create_user(age: i64, name: ptr[char]) -> User {
+    let user = heap(User);
+    user.age = age;
+    user.name = name;
+    return user;
+}
+
+fn free_user(user: User) -> void {
+    free(as_heap(user));
+}
+
+fn get_user_age(user: User) -> i64 {
+    return user.age;
+}
+
+fn create_users(count: i64) -> ptr[User] {
+    let users = heap_array(User, count);
+    for (let i = 0; i < count; i = i + 1) {
+        users[i] = create_user(i, "John Doe");
+    }
+    return users;
+}
+
+fn free_users(users: ptr[User]) -> void {
+    for (let i = 0; i < len(users); i = i + 1) {
+        free_user(users[i]);
+    }
+    free_array(as_array(users, User));
+}
+
+let users = create_users(10);
+for (let i = 0; i < len(users); i = i + 1) {
+    print(to_str(users[i].age) + " " + users[i].name);
+}
+
+free_users(users);

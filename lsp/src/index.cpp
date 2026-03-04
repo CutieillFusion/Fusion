@@ -10,7 +10,7 @@ namespace lsp {
 // ---- Type name helpers ----
 
 static std::string ffi_str(FfiType t, const std::string& named = "") {
-    if (!named.empty()) return named;
+    if (!named.empty()) return "ptr[" + named + "]";
     switch (t) {
         case FfiType::Void: return "void";
         case FfiType::I8:   return "i8";

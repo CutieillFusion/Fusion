@@ -101,3 +101,44 @@ TEST(LayoutTests, LayoutMultipleStructsIndependent) {
   EXPECT_EQ(l2.fields[1].second.offset, 8u);
   EXPECT_EQ(l2.fields[2].second.offset, 16u);
 }
+
+TEST(LayoutTests, LayoutStructWithPtrCharField) {
+  // As produced by parser for: struct User { name: ptr[char]; age: i64; }
+  fusion::StructDef def;
+  def.name = "User";
+  def.fields = {{"name", fusion::FfiType::Ptr}, {"age", fusion::FfiType::I64}};
+  def.field_type_names = {"char", ""};
+
+  fusion::StructLayout layout = fusion::compute_layout(def, {});
+
+  EXPECT_EQ(layout.size, 16u);
+  EXPECT_EQ(layout.alignment, 8u);
+  ASSERT_EQ(layout.fields.size(), 2u);
+  EXPECT_EQ(layout.fields[0].first, "name");
+  EXPECT_EQ(layout.fields[0].second.offset, 0u);
+  EXPECT_EQ(layout.fields[0].second.type, fusion::FfiType::Ptr);
+  EXPECT_EQ(layout.fields[1].first, "age");
+  EXPECT_EQ(layout.fields[1].second.offset, 8u);
+  EXPECT_EQ(layout.fields[1].second.type, fusion::FfiType::I64);
+}
+
+TEST(LayoutTests, BuildLayoutMapStructWithPtrChar) {
+  fusion::StructDef def;
+  def.name = "User";
+  def.fields = {{"name", fusion::FfiType::Ptr}, {"age", fusion::FfiType::I64}};
+  def.field_type_names = {"char", ""};
+
+  fusion::LayoutMap map = fusion::build_layout_map({def});
+
+  ASSERT_EQ(map.count("User"), 1u);
+  const fusion::StructLayout& layout = map.at("User");
+  EXPECT_EQ(layout.size, 16u);
+  EXPECT_EQ(layout.alignment, 8u);
+  ASSERT_EQ(layout.fields.size(), 2u);
+  EXPECT_EQ(layout.fields[0].first, "name");
+  EXPECT_EQ(layout.fields[0].second.offset, 0u);
+  EXPECT_EQ(layout.fields[0].second.type, fusion::FfiType::Ptr);
+  EXPECT_EQ(layout.fields[1].first, "age");
+  EXPECT_EQ(layout.fields[1].second.offset, 8u);
+  EXPECT_EQ(layout.fields[1].second.type, fusion::FfiType::I64);
+}

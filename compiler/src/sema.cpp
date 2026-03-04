@@ -51,6 +51,8 @@ struct SemaContext {
   std::vector<std::unordered_map<std::string, std::string>> var_struct_scope_stack;
   /* Array element struct tracking: variable name -> struct name of elements */
   std::vector<std::unordered_map<std::string, std::string>> array_struct_scope_stack;
+  /* Ptr element type tracking: variable name -> "char", struct name, or "" */
+  std::vector<std::unordered_map<std::string, std::string>> var_ptr_element_scope_stack;
   LayoutMap* layout_map = nullptr;  // from Program::struct_defs
   Program* program = nullptr;
   SemaError* err = nullptr;
@@ -103,6 +105,16 @@ static PtrBase var_base_lookup(SemaContext* ctx, const std::string& name) {
 static std::string var_struct_lookup(SemaContext* ctx, const std::string& name) {
   if (!ctx || ctx->var_struct_scope_stack.empty()) return "";
   for (auto it = ctx->var_struct_scope_stack.rbegin(); it != ctx->var_struct_scope_stack.rend(); ++it) {
+    auto fit = it->find(name);
+    if (fit != it->end()) return fit->second;
+  }
+  return "";
+}
+
+/* Lookup ptr element type for a pointer variable. Returns "" if unknown. */
+static std::string var_ptr_element_lookup(SemaContext* ctx, const std::string& name) {
+  if (!ctx || ctx->var_ptr_element_scope_stack.empty()) return "";
+  for (auto it = ctx->var_ptr_element_scope_stack.rbegin(); it != ctx->var_ptr_element_scope_stack.rend(); ++it) {
     auto fit = it->find(name);
     if (fit != it->end()) return fit->second;
   }
@@ -273,6 +285,7 @@ static bool is_alloc_type(const std::string& name, Program* program) {
     return true;
   if (name.size() > 5 && name.substr(0,4) == "ptr[" && name.back() == ']') {
     const std::string inner = name.substr(4, name.size()-5);
+    if (inner == "char") return true;  // ptr[char] = array of string pointers
     if (program)
       for (const auto& s : program->struct_defs)
         if (s.name == inner) return true;
@@ -346,21 +359,32 @@ static bool lookup_fnptr_sig(SemaContext* ctx, Expr* expr, FnPtrSig* out) {
 
 static bool check_expr(Expr* expr, SemaContext& ctx) {
   if (!expr) return false;
+  if (expr->line > 0) {
+    ctx.err->line = expr->line;
+    ctx.err->column = expr->column;
+  }
   switch (expr->kind) {
     case Expr::Kind::IntLiteral:
       return true;
     case Expr::Kind::FloatLiteral:
+      return true;
     case Expr::Kind::StringLiteral:
+      expr->inferred_ptr_element = "char";
       return true;
     case Expr::Kind::BinaryOp: {
       if (!check_expr(expr->left.get(), ctx)) return false;
       if (!check_expr(expr->right.get(), ctx)) return false;
       FfiType l = expr_type(expr->left.get(), &ctx);
       FfiType r = expr_type(expr->right.get(), &ctx);
-      bool both_numeric = (l == FfiType::I64 || l == FfiType::F64) && (r == FfiType::I64 || r == FfiType::F64);
+      bool both_numeric = (l == FfiType::I64 || l == FfiType::I32 || l == FfiType::F64) && (r == FfiType::I64 || r == FfiType::I32 || r == FfiType::F64);
       bool both_ptr = (l == FfiType::Ptr && r == FfiType::Ptr);
       if (expr->bin_op == BinOp::Add) {
-        if (both_ptr) return true;
+        if (both_ptr) {
+          if (!expr->left->inferred_ptr_element.empty() &&
+              expr->left->inferred_ptr_element == expr->right->inferred_ptr_element)
+            expr->inferred_ptr_element = expr->left->inferred_ptr_element;
+          return true;
+        }
         if (both_numeric) return true;
         if (l == FfiType::Ptr || r == FfiType::Ptr) {
           ctx.err->message = "operator +: strings (pointers) can only be added to strings";
@@ -467,6 +491,7 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
           ctx.err->message = "read_line expects no arguments";
           return false;
         }
+        expr->inferred_ptr_element = "char";
         return true;
       }
       if (expr->callee == "to_str") {
@@ -480,6 +505,7 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
           ctx.err->message = "to_str expects i64 or f64 argument";
           return false;
         }
+        expr->inferred_ptr_element = "char";
         return true;
       }
       if (expr->callee == "from_str") {
@@ -532,6 +558,7 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
           ctx.err->message = "read_line_file expects pointer argument";
           return false;
         }
+        expr->inferred_ptr_element = "char";
         return true;
       }
       if (expr->callee == "write_file") {
@@ -658,6 +685,10 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
       if (!var_type_lookup(&ctx, expr->var_name, &ty)) {
         ctx.err->message = "undefined variable '" + expr->var_name + "'";
         return false;
+      }
+      if (ty == FfiType::Ptr) {
+        std::string pe = var_ptr_element_lookup(&ctx, expr->var_name);
+        if (!pe.empty()) expr->inferred_ptr_element = pe;
       }
       return true;
     }
@@ -874,11 +905,12 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
       if (!expr->left || expr->var_name.empty()) return false;
       if (!check_expr(expr->left.get(), ctx)) return false;
       FfiType from = expr_type(expr->left.get(), &ctx);
-      if (expr->var_name == "ptr") {
+      if (expr->var_name == "ptr" || expr->var_name == "char") {
         if (from != FfiType::Ptr) {
           ctx.err->message = "cast to ptr: operand must be a pointer";
           return false;
         }
+        if (expr->var_name == "char") expr->inferred_ptr_element = "char";
         return true;
       }
       if (expr->var_name == "i64" || expr->var_name == "i32" || expr->var_name == "f64" || expr->var_name == "f32") {
@@ -901,7 +933,7 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
           }
         }
       }
-      ctx.err->message = "cast: target type must be ptr, i64, i32, f64, f32, or a struct name";
+      ctx.err->message = "cast: target type must be ptr[void], ptr[char], i64, i32, f64, f32, or a struct name";
       return false;
     }
     case Expr::Kind::Compare: {
@@ -1043,7 +1075,7 @@ static FfiType expr_type(Expr* expr, SemaContext* ctx) {
       return FfiType::Void;
     }
     case Expr::Kind::Cast:
-      if (expr->var_name == "ptr") return FfiType::Ptr;
+      if (expr->var_name == "ptr" || expr->var_name == "char") return FfiType::Ptr;
       if (expr->var_name == "i64") return FfiType::I64;
       if (expr->var_name == "i32") return FfiType::I32;
       if (expr->var_name == "f64") return FfiType::F64;
@@ -1064,6 +1096,7 @@ static FfiType expr_type(Expr* expr, SemaContext* ctx) {
 }
 
 static bool is_named_type_known(const std::string& name, Program* program) {
+  if (name == "char") return true;  // char is valid as ptr element type
   for (const std::string& o : program->opaque_types)
     if (o == name) return true;
   for (const auto& s : program->struct_defs)
@@ -1169,6 +1202,12 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
             ctx.array_struct_scope_stack.back()[stmt->name] = elem_struct;
         }
       }
+      // Track ptr element type for this let binding
+      if (let_ty == FfiType::Ptr && !ctx.var_ptr_element_scope_stack.empty()) {
+        Expr* init = stmt->init.get();
+        if (init && !init->inferred_ptr_element.empty())
+          ctx.var_ptr_element_scope_stack.back()[stmt->name] = init->inferred_ptr_element;
+      }
       return true;
     }
     case Stmt::Kind::Expr:
@@ -1182,6 +1221,7 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
       ctx.var_base_scope_stack.push_back({});
       ctx.var_struct_scope_stack.push_back({});
       ctx.array_struct_scope_stack.push_back({});
+      ctx.var_ptr_element_scope_stack.push_back({});
       for (StmtPtr& s : stmt->then_body)
         if (!check_stmt(ctx, def, s.get())) {
           ctx.var_scope_stack.pop_back();
@@ -1191,6 +1231,7 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
           ctx.var_base_scope_stack.pop_back();
           ctx.var_struct_scope_stack.pop_back();
           ctx.array_struct_scope_stack.pop_back();
+          ctx.var_ptr_element_scope_stack.pop_back();
           return false;
         }
       ctx.var_scope_stack.pop_back();
@@ -1200,6 +1241,7 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
       ctx.var_base_scope_stack.pop_back();
       ctx.var_struct_scope_stack.pop_back();
       ctx.array_struct_scope_stack.pop_back();
+      ctx.var_ptr_element_scope_stack.pop_back();
       if (stmt->else_body.empty()) return true;
       ctx.var_scope_stack.push_back({});
       ctx.array_element_scope_stack.push_back({});
@@ -1208,6 +1250,7 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
       ctx.var_base_scope_stack.push_back({});
       ctx.var_struct_scope_stack.push_back({});
       ctx.array_struct_scope_stack.push_back({});
+      ctx.var_ptr_element_scope_stack.push_back({});
       for (StmtPtr& s : stmt->else_body)
         if (!check_stmt(ctx, def, s.get())) {
           ctx.var_scope_stack.pop_back();
@@ -1217,6 +1260,7 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
           ctx.var_base_scope_stack.pop_back();
           ctx.var_struct_scope_stack.pop_back();
           ctx.array_struct_scope_stack.pop_back();
+          ctx.var_ptr_element_scope_stack.pop_back();
           return false;
         }
       ctx.var_scope_stack.pop_back();
@@ -1226,6 +1270,7 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
       ctx.var_base_scope_stack.pop_back();
       ctx.var_struct_scope_stack.pop_back();
       ctx.array_struct_scope_stack.pop_back();
+      ctx.var_ptr_element_scope_stack.pop_back();
       return true;
     case Stmt::Kind::For: {
       if (!stmt->cond) return false;
@@ -1236,6 +1281,7 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
       ctx.var_base_scope_stack.push_back({});
       ctx.var_struct_scope_stack.push_back({});
       ctx.array_struct_scope_stack.push_back({});
+      ctx.var_ptr_element_scope_stack.push_back({});
       if (stmt->for_init) {
         if (stmt->for_init->kind == Stmt::Kind::Let) {
           if (!check_expr(stmt->for_init->init.get(), ctx)) {
@@ -1246,6 +1292,7 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
             ctx.var_base_scope_stack.pop_back();
             ctx.var_struct_scope_stack.pop_back();
             ctx.array_struct_scope_stack.pop_back();
+            ctx.var_ptr_element_scope_stack.pop_back();
             return false;
           }
           if (ctx.var_scope_stack.back().count(stmt->for_init->name)) {
@@ -1259,6 +1306,7 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
             ctx.var_base_scope_stack.pop_back();
             ctx.var_struct_scope_stack.pop_back();
             ctx.array_struct_scope_stack.pop_back();
+            ctx.var_ptr_element_scope_stack.pop_back();
             return false;
           }
           ctx.var_scope_stack.back()[stmt->for_init->name] = expr_type(stmt->for_init->init.get(), &ctx);
@@ -1276,6 +1324,7 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
             ctx.var_base_scope_stack.pop_back();
             ctx.var_struct_scope_stack.pop_back();
             ctx.array_struct_scope_stack.pop_back();
+            ctx.var_ptr_element_scope_stack.pop_back();
             return false;
           }
         }
@@ -1288,6 +1337,7 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
         ctx.var_base_scope_stack.pop_back();
         ctx.var_struct_scope_stack.pop_back();
         ctx.array_struct_scope_stack.pop_back();
+        ctx.var_ptr_element_scope_stack.pop_back();
         return false;
       }
       if (stmt->for_update) {
@@ -1299,6 +1349,7 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
           ctx.var_base_scope_stack.pop_back();
           ctx.var_struct_scope_stack.pop_back();
           ctx.array_struct_scope_stack.pop_back();
+          ctx.var_ptr_element_scope_stack.pop_back();
           return false;
         }
       }
@@ -1311,6 +1362,7 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
           ctx.var_base_scope_stack.pop_back();
           ctx.var_struct_scope_stack.pop_back();
           ctx.array_struct_scope_stack.pop_back();
+          ctx.var_ptr_element_scope_stack.pop_back();
           return false;
         }
       ctx.var_scope_stack.pop_back();
@@ -1320,6 +1372,7 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
       ctx.var_base_scope_stack.pop_back();
       ctx.var_struct_scope_stack.pop_back();
       ctx.array_struct_scope_stack.pop_back();
+      ctx.var_ptr_element_scope_stack.pop_back();
       return true;
     }
     case Stmt::Kind::Assign: {
@@ -1433,6 +1486,12 @@ static bool check_fn_def(SemaContext& ctx, FnDef& def) {
   }
   fn_ctx.var_struct_scope_stack.push_back(std::move(param_struct));
   fn_ctx.array_struct_scope_stack.push_back({});
+  std::unordered_map<std::string, std::string> param_ptr_element;
+  for (size_t j = 0; j < def.params.size() && j < def.param_type_names.size(); ++j) {
+    if (!def.param_type_names[j].empty())
+      param_ptr_element[def.params[j].first] = def.param_type_names[j];
+  }
+  fn_ctx.var_ptr_element_scope_stack.push_back(std::move(param_ptr_element));
   for (StmtPtr& stmt : def.body) {
     if (!check_stmt(fn_ctx, &def, stmt.get())) return false;
   }
@@ -1515,6 +1574,7 @@ SemaResult check(Program* program) {
   ctx.var_base_scope_stack.push_back({});
   ctx.var_struct_scope_stack.push_back({});
   ctx.array_struct_scope_stack.push_back({});
+  ctx.var_ptr_element_scope_stack.push_back({});
   for (const TopLevelItem& item : program->top_level) {
     if (const LetBinding* binding = std::get_if<LetBinding>(&item)) {
       if (!check_expr(binding->init.get(), ctx)) {
@@ -1571,6 +1631,12 @@ SemaResult check(Program* program) {
         std::string sname = expr_struct_name(binding->init.get(), &ctx);
         if (!sname.empty())
           ctx.var_struct_scope_stack.back()[binding->name] = sname;
+      }
+      // Track ptr element type for top-level bindings
+      if (ty == FfiType::Ptr && !ctx.var_ptr_element_scope_stack.empty()) {
+        Expr* init = binding->init.get();
+        if (init && !init->inferred_ptr_element.empty())
+          ctx.var_ptr_element_scope_stack.back()[binding->name] = init->inferred_ptr_element;
       }
       // Track array element struct name
       {

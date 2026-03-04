@@ -468,6 +468,7 @@ static int semantic_type_of(const fusion::Token& tok, const FileIndex& idx) {
         // Primitive type keywords.
         case K::KwI32: case K::KwI64: case K::KwF32: case K::KwF64:
         case K::KwPtr: case K::KwVoid: case K::KwU32: case K::KwU64:
+        case K::KwChar:
             return STT_Type;
         // Named identifiers: look up semantic role.
         case K::Ident: {

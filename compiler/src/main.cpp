@@ -4,6 +4,7 @@
 #include <memory>
 #include <sstream>
 
+#include "runtime.h"
 #ifdef FUSION_HAVE_LLVM
 #include <llvm/IR/LLVMContext.h>
 #endif
@@ -50,6 +51,7 @@ static int run_file(const std::string& path) {
   }
 
 #ifdef FUSION_HAVE_LLVM
+  rt_init();
   auto ctx = std::make_unique<llvm::LLVMContext>();
   auto module = fusion::codegen(*ctx, parse_result.program.get());
   if (!module) {
@@ -57,13 +59,16 @@ static int run_file(const std::string& path) {
     const std::string& err = fusion::codegen_last_error();
     if (!err.empty()) std::cerr << ": " << err;
     std::cerr << "\n";
+    rt_shutdown();
     return 1;
   }
   auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
   if (!jit_result.ok) {
     std::cerr << "fusion: " << jit_result.error << "\n";
+    rt_shutdown();
     return 1;
   }
+  rt_shutdown();
 #else
   std::cerr << "fusion: LLVM not available, cannot run\n";
   return 1;
