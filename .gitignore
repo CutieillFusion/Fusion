@@ -4,3 +4,4 @@ deps/
 _deps/
 *.so*
 *.a
+node_modules/

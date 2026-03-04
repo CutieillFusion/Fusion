@@ -80,7 +80,7 @@ struct Expr {
   std::string callee;
   std::vector<ExprPtr> args;
   std::string call_type_arg;  // optional type arg for Call: e.g. range elem type, from_str result type; "" = none
-  std::string var_name;  // for VarRef, or alloc type name for Alloc
+  std::string var_name;  // for VarRef, or heap_array type name for HeapArray
   std::string load_field_struct;  // for LoadField / FieldAccess (base struct name, filled by sema)
   std::string load_field_field;   // for LoadField
   std::vector<std::string> field_chain;  // for FieldAccess: ordered list of field names

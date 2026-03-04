@@ -22,17 +22,31 @@ include(cmake/FusionLLVMExtraLibs.cmake)
 
 include(CTest)
 enable_testing()
+
+# nlohmann/json — header-only, fetched from GitHub (no system install required)
+include(FetchContent)
+FetchContent_Declare(
+  nlohmann_json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG        v3.11.3
+  GIT_SHALLOW    TRUE
+)
+set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+set(JSON_Install   OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(nlohmann_json)
+
 # runtime_c first so FUSION_LIBFFI_FOUND and LibFFI::LibFFI exist for compiler/tests
 add_subdirectory(runtime_c)
 add_subdirectory(compiler)
 add_subdirectory(tests)
+add_subdirectory(lsp)
 # Ensure runtime_static is built before targets that link it via --whole-archive path.
 add_dependencies(fusion runtime_static)
 add_dependencies(fusion_test_compiler_lexer fusion_test_compiler_parser fusion_test_compiler_layout fusion_test_compiler_sema fusion_test_compiler_multifile fusion_test_compiler_codegen fusion_test_compiler_jit runtime_static)
 # Build all test executables and run CTest (so "make check" works without a prior "make")
 add_custom_target(check
   COMMAND "${CMAKE_CTEST_COMMAND}" --output-on-failure
-  DEPENDS fusion_test_compiler_lexer fusion_test_compiler_parser fusion_test_compiler_layout fusion_test_compiler_sema fusion_test_compiler_multifile fusion_test_compiler_codegen fusion_test_compiler_jit fusion_test_runtime
+  DEPENDS fusion_test_compiler_lexer fusion_test_compiler_parser fusion_test_compiler_layout fusion_test_compiler_sema fusion_test_compiler_multifile fusion_test_compiler_codegen fusion_test_compiler_jit fusion_test_runtime fusion_test_lsp_server
   WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
   COMMENT "Running tests..."
 )
@@ -53,6 +67,12 @@ add_custom_target(check-cli
   DEPENDS fusion
   WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
   COMMENT "Running CLI smoke tests..."
+)
+add_custom_target(check-lsp
+  COMMAND "${CMAKE_CTEST_COMMAND}" -L lsp --output-on-failure
+  DEPENDS fusion_test_lsp_server
+  WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+  COMMENT "Running LSP tests..."
 )
 if(FUSION_LIBFFI_FOUND)
   target_link_libraries(fusion PRIVATE LibFFI::LibFFI)

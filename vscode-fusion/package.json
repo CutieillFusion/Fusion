@@ -1,10 +1,11 @@
 {
   "name": "fusion-language",
   "displayName": "Fusion",
-  "description": "Syntax highlighting for the Fusion language",
-  "version": "0.1.0",
-  "engines": { "vscode": "^1.60.0" },
+  "description": "Language support for the Fusion language (syntax highlighting + LSP diagnostics)",
+  "version": "0.5.0",
+  "engines": { "vscode": "^1.74.0" },
   "categories": ["Programming Languages"],
+  "main": "./out/extension.js",
   "contributes": {
     "languages": [
       {
@@ -20,6 +21,42 @@
         "scopeName": "source.fusion",
         "path": "./syntaxes/fusion.tmLanguage.json"
       }
-    ]
+    ],
+    "configurationDefaults": {
+      "editor.semanticTokenColorCustomizations": {
+        "rules": {
+          "keyword":      { "foreground": "#569CD6" },
+          "type":         { "foreground": "#569CD6" },
+          "function":     { "foreground": "#DCDCAA" },
+          "variable":     { "foreground": "#9CDCFE" },
+          "parameter":    { "foreground": "#9CDCFE" },
+          "struct":       { "foreground": "#4EC9B0" },
+          "comment":      { "foreground": "#6A9955" },
+          "module":       { "foreground": "#C586C0" }
+        }
+      }
+    },
+    "configuration": {
+      "title": "Fusion",
+      "properties": {
+        "fusion.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the fusion_lsp binary. Leave empty to auto-detect from build/fusion_lsp in the workspace root."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch":   "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node":   "^18.0.0",
+    "@types/vscode": "^1.74.0",
+    "typescript":    "^5.0.0"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0"
   }
 }

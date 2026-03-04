@@ -4,9 +4,16 @@
 #include "ast.hpp"
 #include "lexer.hpp"
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace fusion {
+
+/** (line, col) 1-based; first token of each argument at a call site. */
+struct CallSiteArgSpans {
+  std::string callee;
+  std::vector<std::pair<size_t, size_t>> arg_positions;
+};
 
 struct ParseError {
   std::string message;
@@ -17,6 +24,8 @@ struct ParseError {
 struct ParseResult {
   ProgramPtr program;
   ParseError error;
+  /** Filled only when parse succeeds; used by LSP for call-site-only inlay hints. */
+  std::vector<CallSiteArgSpans> call_sites;
   bool ok() const { return program != nullptr; }
   Expr* root_expr() const {
     if (!program || program->top_level.empty()) return nullptr;

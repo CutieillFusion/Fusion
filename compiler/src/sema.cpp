@@ -1408,12 +1408,14 @@ static bool check_fn_def(SemaContext& ctx, FnDef& def) {
 
 SemaResult check(Program* program) {
   SemaResult r;
-  if (!program || program->top_level.empty()) {
-    r.error.message = "no program or no statements";
+  if (!program) {
+    r.error.message = "null program";
+    r.errors.push_back(r.error);
     return r;
   }
   if (!program->extern_fns.empty() && program->libs.empty()) {
     r.error.message = "at least one extern lib required when declaring extern fn";
+    r.errors.push_back(r.error);
     return r;
   }
   std::unordered_set<std::string> lib_names;
@@ -1422,6 +1424,7 @@ SemaResult check(Program* program) {
   for (const ExternFn& ext : program->extern_fns) {
     if (lib_names.find(ext.lib_name) == lib_names.end()) {
       r.error.message = "extern fn '" + ext.name + "' references unknown lib '" + ext.lib_name + "'";
+      r.errors.push_back(r.error);
       return r;
     }
     bool param_names_ok = (ext.param_type_names.size() == ext.params.size());
@@ -1429,16 +1432,19 @@ SemaResult check(Program* program) {
       for (size_t j = 0; j < ext.param_type_names.size(); ++j) {
         if (!ext.param_type_names[j].empty() && !is_named_type_known(ext.param_type_names[j], program)) {
           r.error.message = "unknown type '" + ext.param_type_names[j] + "' in extern fn '" + ext.name + "'";
+          r.errors.push_back(r.error);
           return r;
         }
       }
     }
     if (!ext.return_type_name.empty() && !is_named_type_known(ext.return_type_name, program)) {
       r.error.message = "unknown return type '" + ext.return_type_name + "' in extern fn '" + ext.name + "'";
+      r.errors.push_back(r.error);
       return r;
     }
     if (!ext.array_element_struct.empty() && !is_named_type_known(ext.array_element_struct, program)) {
       r.error.message = "unknown array element struct '" + ext.array_element_struct + "' in extern fn '" + ext.name + "'";
+      r.errors.push_back(r.error);
       return r;
     }
   }
@@ -1453,16 +1459,21 @@ SemaResult check(Program* program) {
   for (FnDef& def : program->user_fns) {
     if (ctx.extern_fn_by_name.count(def.name)) {
       r.error.message = "function '" + def.name + "' conflicts with extern function";
+      r.errors.push_back(r.error);
       return r;
     }
     if (ctx.user_fn_by_name.count(def.name)) {
       r.error.message = "duplicate function definition '" + def.name + "'";
+      r.errors.push_back(r.error);
       return r;
     }
     ctx.user_fn_by_name[def.name] = &def;
   }
   for (FnDef& def : program->user_fns) {
-    if (!check_fn_def(ctx, def)) return r;
+    if (!check_fn_def(ctx, def)) {
+      r.errors.push_back(r.error);
+      r.error = {};
+    }
   }
   ctx.var_scope_stack.push_back({});
   ctx.array_element_scope_stack.push_back({});
@@ -1473,10 +1484,16 @@ SemaResult check(Program* program) {
   ctx.array_struct_scope_stack.push_back({});
   for (const TopLevelItem& item : program->top_level) {
     if (const LetBinding* binding = std::get_if<LetBinding>(&item)) {
-      if (!check_expr(binding->init.get(), ctx)) return r;
+      if (!check_expr(binding->init.get(), ctx)) {
+        r.errors.push_back(r.error);
+        r.error = r.errors[0];
+        return r;
+      }
       FfiType ty = expr_type(binding->init.get(), &ctx);
       if (ctx.var_scope_stack.back().count(binding->name)) {
         ctx.err->message = "duplicate variable '" + binding->name + "'";
+        r.errors.push_back(r.error);
+        r.error = r.errors[0];
         return r;
       }
       ctx.var_scope_stack.back()[binding->name] = ty;
@@ -1538,13 +1555,20 @@ SemaResult check(Program* program) {
         }
       }
     } else if (const ExprPtr* expr = std::get_if<ExprPtr>(&item)) {
-      if (!check_expr(expr->get(), ctx)) return r;
+      if (!check_expr(expr->get(), ctx)) {
+        r.errors.push_back(r.error);
+        r.error = {};
+      }
     } else {
       const StmtPtr& stmt = std::get<StmtPtr>(item);
-      if (!check_stmt(ctx, nullptr, stmt.get())) return r;
+      if (!check_stmt(ctx, nullptr, stmt.get())) {
+        r.errors.push_back(r.error);
+        r.error = {};
+      }
     }
   }
-  r.ok = true;
+  r.ok = r.errors.empty();
+  if (!r.ok) r.error = r.errors[0];
   return r;
 }
 

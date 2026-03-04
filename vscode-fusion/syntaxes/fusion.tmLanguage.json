@@ -4,19 +4,9 @@
   "patterns": [
     { "include": "#comments" },
     { "include": "#strings" },
-    { "include": "#function-decl" },
     { "include": "#extern-lib" },
     { "include": "#import-lib" },
-    { "include": "#struct-decl" },
     { "include": "#field-access" },
-    { "include": "#variable" },
-    { "include": "#builtin-calls" },
-    { "include": "#function-call" },
-    { "include": "#keywords" },
-    { "include": "#types" },
-    { "include": "#builtins" },
-    { "include": "#struct-use" },
-    { "include": "#identifiers" },
     { "include": "#numbers" },
     { "include": "#punctuation" }
   ],
@@ -35,36 +25,6 @@
           "patterns": [
             { "name": "constant.character.escape", "match": "\\\\." }
           ]
-        }
-      ]
-    },
-    "function-decl": {
-      "patterns": [
-        {
-          "name": "meta.function.declaration.fusion",
-          "match": "\\b(extern)\\s+(fn)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
-          "captures": {
-            "1": { "name": "keyword.control" },
-            "2": { "name": "storage.type" },
-            "3": { "name": "entity.name.function" }
-          }
-        },
-        {
-          "name": "meta.function.definition.export.fusion",
-          "match": "\\b(export)\\s+(fn)\\s+([a-zA-Z_][a-zA-Z0-9_]*)(?=\\s*\\()",
-          "captures": {
-            "1": { "name": "keyword.control" },
-            "2": { "name": "storage.type" },
-            "3": { "name": "entity.name.function" }
-          }
-        },
-        {
-          "name": "meta.function.definition.fusion",
-          "match": "\\b(fn)\\s+([a-zA-Z_][a-zA-Z0-9_]*)(?=\\s*\\()",
-          "captures": {
-            "1": { "name": "storage.type" },
-            "2": { "name": "entity.name.function" }
-          }
         }
       ]
     },
@@ -100,166 +60,6 @@
           "captures": {
             "1": { "name": "variable.other.member" }
           }
-        }
-      ]
-    },
-    "struct-decl": {
-      "patterns": [
-        {
-          "name": "meta.struct.fusion",
-          "match": "\\b(struct)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
-          "captures": {
-            "1": { "name": "storage.type" },
-            "2": { "name": "entity.name.type" }
-          }
-        },
-        {
-          "name": "meta.struct.export.fusion",
-          "match": "\\b(export)\\s+(struct)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
-          "captures": {
-            "1": { "name": "keyword.control" },
-            "2": { "name": "storage.type" },
-            "3": { "name": "entity.name.type" }
-          }
-        }
-      ]
-    },
-    "struct-use": {
-      "patterns": [
-        {
-          "name": "meta.struct.use.heap.fusion",
-          "match": "\\b(heap|stack)\\s*\\(\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\)",
-          "captures": {
-            "1": { "name": "support.function.builtin.alloc" },
-            "2": { "name": "entity.name.type" }
-          }
-        },
-        {
-          "name": "meta.struct.use.heap_array.fusion",
-          "match": "\\b(heap_array|stack_array)\\s*\\(\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*,",
-          "captures": {
-            "1": { "name": "support.function.builtin.alloc" },
-            "2": { "name": "entity.name.type" }
-          }
-        },
-        {
-          "name": "meta.struct.use.return.fusion",
-          "match": "->\\s+(?!(?:i8|i32|i64|u32|u64|f32|f64|void|ptr)\\b)([a-zA-Z_][a-zA-Z0-9_]*)",
-          "captures": { "1": { "name": "entity.name.type" } }
-        },
-        {
-          "name": "meta.struct.use.param.fusion",
-          "match": ":\\s*(?!(?:i8|i32|i64|u32|u64|f32|f64|void|ptr)\\b)([a-zA-Z_][a-zA-Z0-9_]*)\\s*[,)]",
-          "captures": { "1": { "name": "entity.name.type" } }
-        },
-        {
-          "name": "meta.struct.use.load_field.fusion",
-          "match": "load_field\\s*\\([^)]*,\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*,",
-          "captures": { "1": { "name": "entity.name.type" } }
-        },
-        {
-          "name": "meta.struct.use.store_field.fusion",
-          "match": "store_field\\s*\\([^)]*,\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*,",
-          "captures": { "1": { "name": "entity.name.type" } }
-        },
-        {
-          "name": "meta.struct.use.import.fusion",
-          "match": "\\bstruct\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*;",
-          "captures": { "1": { "name": "entity.name.type" } }
-        }
-      ]
-    },
-    "variable": {
-      "patterns": [
-        {
-          "name": "meta.definition.variable.fusion",
-          "match": "\\b(let)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
-          "captures": {
-            "1": { "name": "storage.type" },
-            "2": { "name": "variable.other.readwrite" }
-          }
-        }
-      ]
-    },
-    "function-call": {
-      "patterns": [
-        {
-          "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)(?=\\s*\\()",
-          "captures": {
-            "1": { "name": "entity.name.function" }
-          }
-        }
-      ]
-    },
-    "builtin-calls": {
-      "patterns": [
-        {
-          "name": "support.function.builtin.io.fusion",
-          "match": "\\b(print|read_line|open|close|read_line_file|write_file|eof_file|line_count_file|write_bytes|read_bytes|to_str|from_str)\\s*\\(",
-          "captures": { "1": { "name": "support.function.builtin.io" } }
-        },
-        {
-          "name": "support.function.builtin.alloc.fusion",
-          "match": "\\b(heap|stack|heap_array|stack_array)\\s*\\(",
-          "captures": { "1": { "name": "support.function.builtin.alloc" } }
-        },
-        {
-          "name": "support.function.builtin.memory.fusion",
-          "match": "\\b(load|store|load_field|store_field|load_f64|load_i32|load_ptr|addr_of|free|free_array|as_heap|as_array)\\s*\\(",
-          "captures": { "1": { "name": "support.function.builtin.memory" } }
-        },
-        {
-          "name": "support.function.builtin.other.fusion",
-          "match": "\\b(len|get_func_ptr|call|rt_panic)\\s*\\(",
-          "captures": { "1": { "name": "support.function.builtin" } }
-        }
-      ]
-    },
-    "keywords": {
-      "patterns": [
-        {
-          "name": "storage.type",
-          "match": "\\b(let|fn|lib)\\b"
-        },
-        {
-          "name": "keyword.control",
-          "match": "\\b(import|export|extern|struct|opaque|as|return|if|else|elif|for|in)\\b"
-        }
-      ]
-    },
-    "types": {
-      "patterns": [
-        {
-          "name": "storage.type",
-          "match": "\\b(i8|i32|i64|u32|u64|f32|f64|void|ptr)\\b"
-        }
-      ]
-    },
-    "builtins": {
-      "patterns": [
-        {
-          "name": "support.function.builtin.io",
-          "match": "\\b(print|read_line|open|close|read_line_file|write_file|eof_file|line_count_file|write_bytes|read_bytes|to_str|from_str)\\b"
-        },
-        {
-          "name": "support.function.builtin.alloc",
-          "match": "\\b(heap|stack|heap_array|stack_array)\\b"
-        },
-        {
-          "name": "support.function.builtin.memory",
-          "match": "\\b(load|store|load_field|store_field|load_f64|load_i32|load_ptr|addr_of|free|free_array|as_heap|as_array)\\b"
-        },
-        {
-          "name": "support.function.builtin",
-          "match": "\\b(len|get_func_ptr|call|rt_panic)\\b"
-        }
-      ]
-    },
-    "identifiers": {
-      "patterns": [
-        {
-          "name": "variable.other",
-          "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b"
         }
       ]
     },

@@ -21,7 +21,8 @@ struct SemaError {
 
 struct SemaResult {
   bool ok = false;
-  SemaError error;
+  SemaError error;               // first error (backward-compat; always set when !ok)
+  std::vector<SemaError> errors; // all errors; may have more than one entry
 };
 
 SemaResult check(Program* program);

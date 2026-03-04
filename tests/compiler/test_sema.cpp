@@ -571,3 +571,100 @@ TEST(SemaTests, RejectsExternFnUnknownReturnType) {
               sema_result.error.message.find("unknown") != std::string::npos)
     << "expected unknown return type error, got: " << sema_result.error.message;
 }
+
+// ---- Library-style files (no top-level statements) ----
+
+TEST(SemaTests, AcceptsFnOnlyProgram) {
+  // A file with only fn definitions and no top-level statements is valid
+  // (it's a library file). Sema should accept it and validate the bodies.
+  auto tokens = fusion::lex(
+    "fn add(x: i64, y: i64) -> i64 { return x + y; } "
+    "fn mul(x: i64, y: i64) -> i64 { return x * y; }"
+  );
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  ASSERT_TRUE(parse_result.program->top_level.empty());
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, AcceptsStructOnlyProgram) {
+  // A file with only struct definitions is valid.
+  auto tokens = fusion::lex(
+    "struct Point { x: f64; y: f64; } "
+    "struct Rect { w: f64; h: f64; }"
+  );
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  ASSERT_TRUE(parse_result.program->top_level.empty());
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, AcceptsMixedFnStructNoTopLevel) {
+  // fn + struct definitions without any top-level statements.
+  auto tokens = fusion::lex(
+    "struct Vec2 { x: f64; y: f64; } "
+    "fn dot(a: ptr, b: ptr) -> f64 { "
+    "  let ax = load_f64(a); "
+    "  let bx = load_f64(b); "
+    "  return ax + bx; "
+    "}"
+  );
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  ASSERT_TRUE(parse_result.program->top_level.empty());
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, StillChecksFnBodyWithNoTopLevel) {
+  // Even when there are no top-level statements, sema must validate fn bodies.
+  auto tokens = fusion::lex(
+    "fn broken() -> i64 { return undefined_var; }"
+  );
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  ASSERT_TRUE(parse_result.program->top_level.empty());
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_FALSE(sema_result.ok);
+}
+
+TEST(SemaTests, MultiErrorTwoFnsWithErrors) {
+  // Two functions both containing errors — sema should report both.
+  auto tokens = fusion::lex(
+    "fn a() -> i64 { return no_such_var; } "
+    "fn b() -> i64 { return also_missing; }"
+  );
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_FALSE(sema_result.ok);
+  EXPECT_GE(sema_result.errors.size(), 2u)
+    << "expected at least 2 errors, got " << sema_result.errors.size();
+  // Backward-compat: .error must still be set to the first error.
+  EXPECT_FALSE(sema_result.error.message.empty());
+  EXPECT_EQ(sema_result.error.message, sema_result.errors[0].message);
+}
+
+TEST(SemaTests, MultiErrorTopLevelStmts) {
+  // Two top-level calls each referencing an undefined function.
+  auto tokens = fusion::lex("no_fn_a(); no_fn_b()");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_FALSE(sema_result.ok);
+  EXPECT_GE(sema_result.errors.size(), 2u)
+    << "expected at least 2 errors, got " << sema_result.errors.size();
+}
+
+TEST(SemaTests, SingleErrorStillPopulatesErrorsVec) {
+  // Even a single error must appear in the errors vector.
+  auto tokens = fusion::lex("print(undefined_var)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_FALSE(sema_result.ok);
+  ASSERT_EQ(sema_result.errors.size(), 1u);
+  EXPECT_EQ(sema_result.error.message, sema_result.errors[0].message);
+}

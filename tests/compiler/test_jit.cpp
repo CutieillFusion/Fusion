@@ -276,7 +276,7 @@ TEST(JitTests, ExecutesCallThroughStructField) {
 
 TEST(JitTests, AllocArrayHeapEscapesFunction) {
   /* value.fusion-style: array allocated in add_forward is stored in Value.prev and read in add_backward.
-     Requires alloc_array to be heap-allocated; with stack allocation the pointer would be dangling. */
+     Requires heap_array to be heap-allocated; with stack allocation the pointer would be dangling. */
   const char* path = "/tmp/fusion_jit_array_escape_test.txt";
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
@@ -431,7 +431,7 @@ TEST(JitTests, ExecutesTopLevelIf) {
 }
 
 TEST(JitTests, ExecutesAllocArrayAndIndex) {
-  /* alloc_array(i64, n), store via a[i]=v, load via a[i] and print */
+  /* heap_array(i64, n), store via a[i]=v, load via a[i] and print */
   const char* path = "/tmp/fusion_jit_array_index_test.txt";
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
@@ -567,7 +567,7 @@ TEST(JitTests, ExecutesCStyleFor) {
 }
 
 TEST(JitTests, ExecutesForOverArrayWithLen) {
-  /* let arr = alloc_array(i64, 3); arr[0]=1; ... for (let i = 0; i < len(arr); i = i + 1) { print(arr[i]); } print(0) => 1,2,3,0 */
+  /* let arr = heap_array(i64, 3); arr[0]=1; ... for (let i = 0; i < len(arr); i = i + 1) { print(arr[i]); } print(0) => 1,2,3,0 */
   const char* path = "/tmp/fusion_jit_for_arr_test.txt";
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);

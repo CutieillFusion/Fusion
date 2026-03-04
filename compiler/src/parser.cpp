@@ -4,6 +4,10 @@
 
 namespace fusion {
 
+namespace {
+thread_local std::vector<CallSiteArgSpans> g_call_sites;
+}
+
 static bool at_eof(const std::vector<Token>& tokens, size_t i) {
   return i >= tokens.size() || tokens[i].kind == TokenKind::Eof;
 }
@@ -313,12 +317,15 @@ static ExprPtr parse_primary(const std::vector<Token>& tokens, size_t& i) {
       return Expr::make_call("from_str", std::move(args), std::move(call_type_arg));
     }
     std::vector<ExprPtr> args;
+    std::vector<std::pair<size_t, size_t>> arg_positions;
     if (!at_eof(tokens, i) && tokens[i].kind != TokenKind::RParen) {
+      arg_positions.push_back({tokens[i].line, tokens[i].column});
       ExprPtr arg = parse_expr(tokens, i);
       if (!arg) return nullptr;
       args.push_back(std::move(arg));
       while (!at_eof(tokens, i) && tokens[i].kind == TokenKind::Comma) {
         i++;
+        arg_positions.push_back({tokens[i].line, tokens[i].column});
         ExprPtr arg2 = parse_expr(tokens, i);
         if (!arg2) return nullptr;
         args.push_back(std::move(arg2));
@@ -326,6 +333,8 @@ static ExprPtr parse_primary(const std::vector<Token>& tokens, size_t& i) {
     }
     if (at_eof(tokens, i) || tokens[i].kind != TokenKind::RParen) return nullptr;
     i++;
+    if (!arg_positions.empty())
+      g_call_sites.push_back({name, std::move(arg_positions)});
     return Expr::make_call(std::move(name), std::move(args));
   }
 
@@ -856,6 +865,7 @@ static bool parse_fn_def(const std::vector<Token>& tokens, size_t& i, Program& p
 }
 
 ParseResult parse(const std::vector<Token>& tokens) {
+  g_call_sites.clear();
   size_t i = 0;
   auto prog = std::make_unique<Program>();
 
@@ -963,6 +973,8 @@ ParseResult parse(const std::vector<Token>& tokens) {
   }
   ParseResult r;
   r.program = std::move(prog);
+  r.call_sites = std::move(g_call_sites);
+  g_call_sites.clear();
   return r;
 }
 
