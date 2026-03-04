@@ -344,6 +344,33 @@ TEST(SemaTests, AcceptsHeapArrayOfStructs) {
   }
 }
 
+TEST(SemaTests, TypedPtrArrayFieldAccess) {
+  /* heap_array(ptr[S], n) + arr[0].x should pass sema cleanly */
+  auto tokens = fusion::lex(
+      "struct S { x: i64; y: f64; }; "
+      "fn make_s() -> ptr { return heap(S); } "
+      "let arr = heap_array(ptr[S], 3); "
+      "arr[0] = make_s(); "
+      "let v = arr[0].x; "
+      "print(v)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, TypedPtrArrayInvalidStruct) {
+  /* heap_array(ptr[NoSuch], n) should fail sema with unknown type */
+  auto tokens = fusion::lex("let arr = heap_array(ptr[NoSuch], 3); print(1)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_FALSE(sema_result.ok);
+  EXPECT_TRUE(sema_result.error.message.find("NoSuch") != std::string::npos ||
+              sema_result.error.message.find("unknown") != std::string::npos)
+      << "got: " << sema_result.error.message;
+}
+
 TEST(SemaTests, AcceptsGetFuncPtrAndCall) {
   auto tokens = fusion::lex("fn add(x: f64, y: f64) -> f64 { return x + y; } let fp = get_func_ptr(add); print(call(fp, 1.0, 2.0))");
   auto parse_result = fusion::parse(tokens);
@@ -667,4 +694,51 @@ TEST(SemaTests, SingleErrorStillPopulatesErrorsVec) {
   EXPECT_FALSE(sema_result.ok);
   ASSERT_EQ(sema_result.errors.size(), 1u);
   EXPECT_EQ(sema_result.error.message, sema_result.errors[0].message);
+}
+
+TEST(SemaTests, TypedPtrParamFieldAccess) {
+  // fn f(p: ptr[Value]) -> void { let x = p.data; } passes sema
+  auto tokens = fusion::lex(
+    "struct Value { data: f64; }; "
+    "fn f(p: ptr[Value]) -> void { let x = p.data; }"
+  );
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, TypedPtrFieldInStruct) {
+  // struct Node { next: ptr[Node]; } — self-referential typed pointer field
+  auto tokens = fusion::lex(
+    "struct Node { val: i64; next: ptr[Node]; }; "
+    "fn f(n: Node) -> i64 { return n.val; }"
+  );
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, TypedPtrCastSyntax) {
+  // (x as ptr[Value]).data passes sema — identical to (x as Value).data
+  auto tokens = fusion::lex(
+    "struct Value { data: f64; }; "
+    "fn f(x: ptr) -> f64 { return (x as ptr[Value]).data; }"
+  );
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, TypedPtrParamVoidIsOpaque) {
+  // fn f(p: ptr[void]) -> void { } — ptr[void] treated as bare ptr
+  auto tokens = fusion::lex(
+    "fn f(p: ptr[void]) -> void { }"
+  );
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
 }

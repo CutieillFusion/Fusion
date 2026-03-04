@@ -83,6 +83,8 @@ static FfiType expr_type(Expr* expr, Program* program,
     case Expr::Kind::BinaryOp: {
       FfiType l = expr_type(expr->left.get(), program, local_types);
       FfiType r = expr_type(expr->right.get(), program, local_types);
+      if (l == FfiType::Ptr && r == FfiType::Ptr && expr->bin_op == BinOp::Add)
+        return FfiType::Ptr;
       return (l == FfiType::F64 || r == FfiType::F64) ? FfiType::F64 : FfiType::I64;
     }
     case Expr::Kind::VarRef: {
@@ -286,7 +288,8 @@ static FfiType array_element_type_from_expr(Expr* expr, CodegenEnv& env) {
     return array_elem_lookup(env, expr->var_name);
   }
   if (expr->kind == Expr::Kind::StackArray || expr->kind == Expr::Kind::HeapArray) {
-    const std::string& t = expr->var_name;
+    const std::string& raw = expr->var_name;
+    const std::string& t = (raw.size() > 4 && raw.substr(0,4) == "ptr[") ? std::string("ptr") : raw;
     if (t == "i8") return FfiType::I8;
     if (t == "i32") return FfiType::I32;
     if (t == "i64") return FfiType::I64;
@@ -418,6 +421,8 @@ static FfiType expr_type_proper(Expr* expr, Program* program,
   if (expr->kind == Expr::Kind::BinaryOp) {
     FfiType l = expr_type_proper(expr->left.get(), program, local_types, env);
     FfiType r = expr_type_proper(expr->right.get(), program, local_types, env);
+    if (l == FfiType::Ptr && r == FfiType::Ptr && expr->bin_op == BinOp::Add)
+      return FfiType::Ptr;
     return (l == FfiType::F64 || r == FfiType::F64) ? FfiType::F64 : FfiType::I64;
   }
   return expr_type(expr, program, local_types);
@@ -537,6 +542,37 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       return B.CreatePointerCast(str_buf, PointerType::get(Type::getInt8Ty(ctx), 0));
     }
     case Expr::Kind::BinaryOp: {
+      FfiType tyL = expr_type_proper(expr->left.get(), prog, env.var_types, env);
+      FfiType tyR = expr_type_proper(expr->right.get(), prog, env.var_types, env);
+      Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+      if (tyL == FfiType::Ptr && tyR == FfiType::Ptr && expr->bin_op == BinOp::Add) {
+        Value* L = emit_expr(env, expr->left.get());
+        if (!L) {
+          if (s_codegen_error.empty())
+            s_codegen_error = "binary op: left expression failed";
+          return nullptr;
+        }
+        if (L->getType() != i8ptr) L = B.CreatePointerCast(L, i8ptr);
+        Function* dup_fn = M->getFunction("rt_str_dup");
+        if (!dup_fn) {
+          s_codegen_error = "rt_str_dup not found";
+          return nullptr;
+        }
+        Value* L_copy = B.CreateCall(dup_fn, {L}, "str_dup");
+        Value* R = emit_expr(env, expr->right.get());
+        if (!R) {
+          if (s_codegen_error.empty())
+            s_codegen_error = "binary op: right expression failed";
+          return nullptr;
+        }
+        if (R->getType() != i8ptr) R = B.CreatePointerCast(R, i8ptr);
+        Function* fn = M->getFunction("rt_str_concat");
+        if (!fn) {
+          s_codegen_error = "rt_str_concat not found";
+          return nullptr;
+        }
+        return B.CreateCall(fn, {L_copy, R}, "str_concat");
+      }
       Value* L = emit_expr(env, expr->left.get());
       Value* R = emit_expr(env, expr->right.get());
       if (!L || !R) {
@@ -544,8 +580,6 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
           s_codegen_error = "binary op: left or right expression failed";
         return nullptr;
       }
-      FfiType tyL = expr_type_proper(expr->left.get(), prog, env.var_types, env);
-      FfiType tyR = expr_type_proper(expr->right.get(), prog, env.var_types, env);
       bool is_f64 = (tyL == FfiType::F64 || tyR == FfiType::F64);
       if (is_f64) {
         if (L->getType() != B.getDoubleTy()) L = B.CreateSIToFP(L, B.getDoubleTy());
@@ -1019,7 +1053,8 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       if (!count_val) return nullptr;
       if (count_val->getType() != B.getInt64Ty())
         count_val = B.CreateIntCast(count_val, B.getInt64Ty(), true);
-      const std::string& elem_name = expr->var_name;
+      std::string elem_name = expr->var_name;
+      if (elem_name.size() > 4 && elem_name.substr(0,4) == "ptr[") elem_name = "ptr";
       size_t H = array_header_size(elem_name, env.layout_map);
       size_t elem_size = elem_size_from_type(elem_name, env.layout_map);
       Value* total_bytes = B.CreateAdd(B.getInt64(H), B.CreateMul(count_val, B.getInt64(elem_size)), "stack_arr.total");
@@ -1035,7 +1070,8 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       if (!count_val) return nullptr;
       if (count_val->getType() != B.getInt64Ty())
         count_val = B.CreateIntCast(count_val, B.getInt64Ty(), true);
-      const std::string& elem_name = expr->var_name;
+      std::string elem_name = expr->var_name;
+      if (elem_name.size() > 4 && elem_name.substr(0,4) == "ptr[") elem_name = "ptr";
       size_t H = array_header_size(elem_name, env.layout_map);
       size_t elem_size = elem_size_from_type(elem_name, env.layout_map);
       Value* total_bytes = B.CreateAdd(B.getInt64(H), B.CreateMul(count_val, B.getInt64(elem_size)), "heap_arr.total");
@@ -1945,6 +1981,8 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
   Function::Create(FunctionType::get(i8ptr, builder.getDoubleTy(), false), GlobalValue::ExternalLinkage, "rt_to_str_f64", module.get());
   Function::Create(FunctionType::get(builder.getInt64Ty(), i8ptr, false), GlobalValue::ExternalLinkage, "rt_from_str_i64", module.get());
   Function::Create(FunctionType::get(builder.getDoubleTy(), i8ptr, false), GlobalValue::ExternalLinkage, "rt_from_str_f64", module.get());
+  Function::Create(FunctionType::get(i8ptr, {i8ptr, i8ptr}, false), GlobalValue::ExternalLinkage, "rt_str_concat", module.get());
+  Function::Create(FunctionType::get(i8ptr, {i8ptr}, false), GlobalValue::ExternalLinkage, "rt_str_dup", module.get());
   Function::Create(FunctionType::get(i8ptr, {i8ptr, i8ptr}, false), GlobalValue::ExternalLinkage, "rt_open", module.get());
   Function::Create(FunctionType::get(builder.getVoidTy(), i8ptr, false), GlobalValue::ExternalLinkage, "rt_close", module.get());
   Function::Create(FunctionType::get(i8ptr, i8ptr, false), GlobalValue::ExternalLinkage, "rt_read_line_file", module.get());
@@ -2203,7 +2241,7 @@ CodegenResult run_jit(std::unique_ptr<llvm::Module> module,
   };
   if (!add_sym("rt_print_i64") || !add_sym("rt_print_f64") || !add_sym("rt_print_cstring") || !add_sym("rt_panic") ||
       !add_sym("rt_read_line") || !add_sym("rt_to_str_i64") || !add_sym("rt_to_str_f64") ||
-      !add_sym("rt_from_str_i64") || !add_sym("rt_from_str_f64") ||
+      !add_sym("rt_from_str_i64") || !add_sym("rt_from_str_f64") || !add_sym("rt_str_concat") || !add_sym("rt_str_dup") ||
       !add_sym("rt_open") || !add_sym("rt_close") || !add_sym("rt_read_line_file") ||
       !add_sym("rt_write_file_i64") || !add_sym("rt_write_file_f64") || !add_sym("rt_write_file_ptr") ||
       !add_sym("rt_write_bytes") || !add_sym("rt_read_bytes") ||

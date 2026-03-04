@@ -38,7 +38,7 @@ let init_scale = 0.5;
 
 let n_moons = 500;
 let moons = create_moons(n_moons, 0.1);
-let batch_size = 500;
+let batch_size = 500.0;
 
 let input_size = 2;
 let hidden_size = 16;
@@ -46,10 +46,10 @@ let output_size = 1;
 let num_epochs = 100;
 let learning_rate = 0.005;
 
-let W1 = heap_array(ptr, input_size * hidden_size);
-let W2 = heap_array(ptr, hidden_size * output_size);
-let b1 = heap_array(ptr, hidden_size);
-let b2 = heap_array(ptr, output_size);
+let W1 = heap_array(ptr[Value], input_size * hidden_size);
+let W2 = heap_array(ptr[Value], hidden_size * output_size);
+let b1 = heap_array(ptr[Value], hidden_size);
+let b2 = heap_array(ptr[Value], output_size);
 
 for (let i = 0; i < input_size; i = i + 1) {
 	for (let j = 0; j < hidden_size; j = j + 1) {
@@ -95,12 +95,12 @@ for (let i = 0; i < output_size; i = i + 1) {
 	k = k + 1;
 }
 
-let X = heap_array(ptr, input_size);
-let y = heap_array(ptr, output_size);
+let X = heap_array(ptr[Value], input_size);
+let y = heap_array(ptr[Value], output_size);
 
-let h1 = heap_array(ptr, hidden_size);
-let h2 = heap_array(ptr, output_size);
-let losses = heap_array(ptr, output_size);
+let h1 = heap_array(ptr[Value], hidden_size);
+let h2 = heap_array(ptr[Value], output_size);
+let losses = heap_array(ptr[Value], output_size);
 
 for (let epoch = 0; epoch < num_epochs; epoch = epoch + 1) {
 	print("Epoch:");
@@ -146,16 +146,16 @@ for (let epoch = 0; epoch < num_epochs; epoch = epoch + 1) {
 		running = add_forward(running, sample_loss);
 
 		# Accuracy: labels are -1 and 1; correct if pred and label have same sign
-		let pred_val = (h2[0] as Value).data;
-		let true_val = (y[0] as Value).data;
+		let pred_val = h2[0].data;
+		let true_val = y[0].data;
 		let correct_this = make_leaf(0.0);
 		if (pred_val > 0.0) {
 			if (true_val > 0.0) {
-				(correct_this as Value).data = 1.0;
+				correct_this.data = 1.0;
 			}
 		} else {
 			if (true_val <= 0.0) {
-				(correct_this as Value).data = 1.0;
+				correct_this.data = 1.0;
 			}
 		}
 		running_correct = add_forward(running_correct, correct_this);
@@ -172,16 +172,16 @@ for (let epoch = 0; epoch < num_epochs; epoch = epoch + 1) {
 	let reg_loss_scaled = mul_forward(make_leaf(alpha), reg_loss);
 	let total_loss = add_forward(running, reg_loss_scaled);
 
-	(total_loss as Value).grad = 1.0;
+	total_loss.grad = 1.0;
 
-	let total_correct = (running_correct as Value).data;
+	let total_correct = running_correct.data;
 
 	free_graph(running_correct, weight_ptrs, num_weights);
 	backward_with_free(total_loss, weight_ptrs, num_weights);
 
 	for (let i = 0; i < input_size; i = i + 1) {
 		for (let j = 0; j < hidden_size; j = j + 1) {
-			let w = W1[i * hidden_size + j] as Value;
+			let w = W1[i * hidden_size + j];
 			let new_data = w.data - learning_rate * w.grad;
 			w.data = new_data;
 			w.grad = 0.0;
@@ -190,7 +190,7 @@ for (let epoch = 0; epoch < num_epochs; epoch = epoch + 1) {
 
 	for (let i = 0; i < hidden_size; i = i + 1) {
 		for (let j = 0; j < output_size; j = j + 1) {
-			let w = W2[i * output_size + j] as Value;
+			let w = W2[i * output_size + j];
 			let new_data = w.data - learning_rate * w.grad;
 			w.data = new_data;
 			w.grad = 0.0;
@@ -198,14 +198,14 @@ for (let epoch = 0; epoch < num_epochs; epoch = epoch + 1) {
 	}
 
 	for (let i = 0; i < hidden_size; i = i + 1) {
-		let w = b1[i] as Value;
+		let w = b1[i];
 		let new_data = w.data - learning_rate * w.grad;
 		w.data = new_data;
 		w.grad = 0.0;
 	}
 
 	for (let i = 0; i < output_size; i = i + 1) {
-		let w = b2[i] as Value;
+		let w = b2[i];
 		let new_data = w.data - learning_rate * w.grad;
 		w.data = new_data;
 		w.grad = 0.0;
@@ -230,7 +230,7 @@ print("Weights for trained model:");
 print("W1:");
 for (let i = 0; i < input_size; i = i + 1) {
 	for (let j = 0; j < hidden_size; j = j + 1) {
-		let data = (W1[i * hidden_size + j] as Value).data;
+		let data = W1[i * hidden_size + j].data;
 		print(data);
 		W1_trained[i * hidden_size + j] = 0.0 + data;
 	}
@@ -239,7 +239,7 @@ for (let i = 0; i < input_size; i = i + 1) {
 print("W2:");
 for (let i = 0; i < hidden_size; i = i + 1) {
 	for (let j = 0; j < output_size; j = j + 1) {
-		let data = (W2[i * output_size + j] as Value).data;
+		let data = W2[i * output_size + j].data;
 		print(data);
 		W2_trained[i * output_size + j] = 0.0 + data;
 	}
@@ -247,14 +247,14 @@ for (let i = 0; i < hidden_size; i = i + 1) {
 
 print("b1:");
 for (let i = 0; i < hidden_size; i = i + 1) {
-	let data = (b1[i] as Value).data;
+	let data = b1[i].data;
 	print(data);
 	b1_trained[i] = 0.0 + data;
 }
 
 print("b2:");
 for (let i = 0; i < output_size; i = i + 1) {
-	let data = (b2[i] as Value).data;
+	let data = b2[i].data;
 	print(data);
 	b2_trained[i] = 0.0 + data;
 }

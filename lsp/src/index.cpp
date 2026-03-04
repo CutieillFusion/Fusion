@@ -133,6 +133,22 @@ FileIndex build_index(const std::vector<Token>& toks, const Program& prog) {
                             struct_set.count(fit->second->return_type_name))
                             s.struct_name = fit->second->return_type_name;
                     }
+                    // Pattern: let name = heap_array(ptr[StructName], ...)
+                    // i+3=heap_array/stack_array, i+4=LParen, i+5=KwPtr, i+6=LBracket, i+7=Ident, i+8=RBracket
+                    else if (i + 8 < toks.size()) {
+                        const Token& t5 = toks[i + 5];
+                        const Token& t6 = toks[i + 6];
+                        const Token& t7 = toks[i + 7];
+                        const Token& t8 = toks[i + 8];
+                        if ((t3.ident == "heap_array" || t3.ident == "stack_array") &&
+                            t4.kind == TokenKind::LParen  &&
+                            t5.kind == TokenKind::KwPtr   &&
+                            t6.kind == TokenKind::LBracket &&
+                            t7.kind == TokenKind::Ident   &&
+                            t8.kind == TokenKind::RBracket &&
+                            struct_set.count(t7.ident))
+                            s.struct_name = t7.ident;
+                    }
                 }
             }
 

@@ -24,6 +24,12 @@ const char *rt_to_str_f64(double value);
 int64_t rt_from_str_i64(const char *s);
 double rt_from_str_f64(const char *s);
 
+/* Concatenate two strings. Returns heap-allocated NUL-terminated string (caller does not free; no rt_free in API). */
+const char *rt_str_concat(const char *a, const char *b);
+
+/* Copy a string. Returns heap-allocated NUL-terminated copy (caller does not free). Used so left operand of + is preserved before right is evaluated (e.g. to_str(x) + to_str(y)). */
+const char *rt_str_dup(const char *s);
+
 /* File I/O. Handle is opaque ptr; NULL = invalid. */
 void *rt_open(const char *path, const char *mode);
 void rt_close(void *handle);

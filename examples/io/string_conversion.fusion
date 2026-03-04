@@ -17,3 +17,6 @@ print(parsed_i);
 let float_str = "2.5";
 let parsed_f = from_str(float_str, f64);
 print(parsed_f);
+
+let combined = to_str(parsed_i) + " " + to_str(parsed_f);
+print(combined);

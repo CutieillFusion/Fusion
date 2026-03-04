@@ -57,6 +57,26 @@ double rt_from_str_f64(const char *s) {
   return strtod(s, NULL);
 }
 
+const char *rt_str_concat(const char *a, const char *b) {
+  size_t la = a ? strlen(a) : 0;
+  size_t lb = b ? strlen(b) : 0;
+  char *out = (char *)malloc(la + lb + 1);
+  if (!out) return NULL;
+  if (la) memcpy(out, a, la);
+  if (lb) memcpy(out + la, b, lb);
+  out[la + lb] = '\0';
+  return out;
+}
+
+const char *rt_str_dup(const char *s) {
+  if (!s) return NULL;
+  size_t n = strlen(s) + 1;
+  char *out = (char *)malloc(n);
+  if (!out) return NULL;
+  memcpy(out, s, n);
+  return out;
+}
+
 void *rt_open(const char *path, const char *mode) {
   if (!path || !mode) return NULL;
   return (void *)fopen(path, mode);

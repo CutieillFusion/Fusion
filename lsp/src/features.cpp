@@ -211,6 +211,25 @@ nlohmann::json completion(
                     break;
                 }
             }
+        } else if (last_idx >= 1 && toks[last_idx - 1].kind == fusion::TokenKind::RBracket) {
+            // Handle varName[index]. — walk back to find the array identifier.
+            int depth = 0;
+            for (int j = last_idx - 1; j >= 0; j--) {
+                if (toks[j].kind == fusion::TokenKind::RBracket) depth++;
+                else if (toks[j].kind == fusion::TokenKind::LBracket) {
+                    if (--depth == 0 && j > 0 &&
+                        toks[j-1].kind == fusion::TokenKind::Ident) {
+                        const std::string& arr = toks[j-1].ident;
+                        auto range = idx.by_name.equal_range(arr);
+                        for (auto it = range.first; it != range.second; ++it)
+                            if (!idx.syms[it->second].struct_name.empty()) {
+                                resolved_struct = idx.syms[it->second].struct_name;
+                                break;
+                            }
+                    }
+                    break;
+                }
+            }
         }
 
         if (!resolved_struct.empty()) {

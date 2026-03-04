@@ -271,6 +271,13 @@ static PtrBase expr_base(Expr* expr, SemaContext* ctx) {
 static bool is_alloc_type(const std::string& name, Program* program) {
   if (name == "i8" || name == "i32" || name == "i64" || name == "f32" || name == "f64" || name == "ptr")
     return true;
+  if (name.size() > 5 && name.substr(0,4) == "ptr[" && name.back() == ']') {
+    const std::string inner = name.substr(4, name.size()-5);
+    if (program)
+      for (const auto& s : program->struct_defs)
+        if (s.name == inner) return true;
+    return false;
+  }
   if (program)
     for (const auto& s : program->struct_defs)
       if (s.name == name) return true;
@@ -290,7 +297,7 @@ static FfiType get_array_element_type(Expr* expr, SemaContext* ctx) {
     if (t == "i64") return FfiType::I64;
     if (t == "f32") return FfiType::F32;
     if (t == "f64") return FfiType::F64;
-    if (t == "ptr") return FfiType::Ptr;
+    if (t == "ptr" || (t.size() > 4 && t.substr(0,4) == "ptr[")) return FfiType::Ptr;
     return FfiType::Void;
   }
   return FfiType::Void;
@@ -345,10 +352,30 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
     case Expr::Kind::FloatLiteral:
     case Expr::Kind::StringLiteral:
       return true;
-    case Expr::Kind::BinaryOp:
+    case Expr::Kind::BinaryOp: {
       if (!check_expr(expr->left.get(), ctx)) return false;
       if (!check_expr(expr->right.get(), ctx)) return false;
+      FfiType l = expr_type(expr->left.get(), &ctx);
+      FfiType r = expr_type(expr->right.get(), &ctx);
+      bool both_numeric = (l == FfiType::I64 || l == FfiType::F64) && (r == FfiType::I64 || r == FfiType::F64);
+      bool both_ptr = (l == FfiType::Ptr && r == FfiType::Ptr);
+      if (expr->bin_op == BinOp::Add) {
+        if (both_ptr) return true;
+        if (both_numeric) return true;
+        if (l == FfiType::Ptr || r == FfiType::Ptr) {
+          ctx.err->message = "operator +: strings (pointers) can only be added to strings";
+          return false;
+        }
+        ctx.err->message = "operator +: operands must be numbers or both strings";
+        return false;
+      }
+      /* Sub, Mul, Div: require numeric */
+      if (!both_numeric) {
+        ctx.err->message = "operator - (or * or /): operands must be numbers";
+        return false;
+      }
       return true;
+    }
     case Expr::Kind::Call: {
       if (expr->callee == "get_func_ptr") {
         if (expr->args.size() != 1) {
@@ -912,6 +939,8 @@ static FfiType expr_type(Expr* expr, SemaContext* ctx) {
     case Expr::Kind::BinaryOp: {
       FfiType l = expr_type(expr->left.get(), ctx);
       FfiType r = expr_type(expr->right.get(), ctx);
+      if (l == FfiType::Ptr && r == FfiType::Ptr && expr->bin_op == BinOp::Add)
+        return FfiType::Ptr;
       return (l == FfiType::F64 || r == FfiType::F64) ? FfiType::F64 : FfiType::I64;
     }
     case Expr::Kind::Call: {
@@ -1125,11 +1154,15 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
       if (!ctx.array_struct_scope_stack.empty()) {
         Expr* init = stmt->init.get();
         if (init && (init->kind == Expr::Kind::HeapArray || init->kind == Expr::Kind::StackArray) && ctx.program) {
-          for (const auto& s : ctx.program->struct_defs)
-            if (s.name == init->var_name) {
-              ctx.array_struct_scope_stack.back()[stmt->name] = init->var_name;
-              break;
-            }
+          const std::string& t = init->var_name;
+          if (t.size() > 5 && t.substr(0,4) == "ptr[" && t.back() == ']')
+            ctx.array_struct_scope_stack.back()[stmt->name] = t.substr(4, t.size()-5);
+          else
+            for (const auto& s : ctx.program->struct_defs)
+              if (s.name == t) {
+                ctx.array_struct_scope_stack.back()[stmt->name] = t;
+                break;
+              }
         } else if (init && init->kind == Expr::Kind::Call && let_ty == FfiType::Ptr) {
           std::string elem_struct = get_call_array_element_struct(init, &ctx);
           if (!elem_struct.empty())
@@ -1543,11 +1576,15 @@ SemaResult check(Program* program) {
       {
         Expr* init = binding->init.get();
         if (init && (init->kind == Expr::Kind::HeapArray || init->kind == Expr::Kind::StackArray) && ctx.program) {
-          for (const auto& s : ctx.program->struct_defs)
-            if (s.name == init->var_name) {
-              ctx.array_struct_scope_stack.back()[binding->name] = init->var_name;
-              break;
-            }
+          const std::string& t = init->var_name;
+          if (t.size() > 5 && t.substr(0,4) == "ptr[" && t.back() == ']')
+            ctx.array_struct_scope_stack.back()[binding->name] = t.substr(4, t.size()-5);
+          else
+            for (const auto& s : ctx.program->struct_defs)
+              if (s.name == t) {
+                ctx.array_struct_scope_stack.back()[binding->name] = t;
+                break;
+              }
         } else if (init && init->kind == Expr::Kind::Call && ty == FfiType::Ptr) {
           std::string elem_struct = get_call_array_element_struct(init, &ctx);
           if (!elem_struct.empty())

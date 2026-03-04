@@ -1269,6 +1269,63 @@ TEST(JitTests, ExecutesToStrF64) {
   EXPECT_NEAR(std::atof(buf), 3.14, 0.001) << "to_str(3.14) should convert to string near 3.14";
 }
 
+TEST(JitTests, ExecutesStringConcat) {
+  const char* path = "/tmp/fusion_jit_str_concat.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex("print(\"a\" + \"b\")");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[64];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(path);
+  EXPECT_STREQ(buf, "ab\n") << "string + string should concatenate";
+}
+
+TEST(JitTests, ExecutesToStrConcat) {
+  /* to_str uses a single static buffer; left must be copied before right is evaluated. */
+  const char* path = "/tmp/fusion_jit_to_str_concat.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex("print(to_str(100) + to_str(2))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[64];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(path);
+  EXPECT_STREQ(buf, "1002\n") << "to_str(100) + to_str(2) should be 1002 not 22";
+}
+
 TEST(JitTests, ExecutesFromStrI64) {
   const char* path = "/tmp/fusion_jit_from_str_i64.txt";
   int saved_fd = dup(STDOUT_FILENO);
@@ -1701,5 +1758,180 @@ TEST(JitTests, ExecutesWriteBytesReadBytes) {
   fclose(cap);
   unlink(out_path);
   EXPECT_EQ(std::atoi(buf), 54321) << "write_bytes/read_bytes roundtrip should recover 54321";
+}
+
+TEST(JitTests, TypedPtrArrayFieldRead) {
+  /* heap_array(ptr[S], n); store ptr into arr[0]; read arr[0].x without a cast */
+  const char* path = "/tmp/fusion_jit_typed_ptr_array_field_read.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex(
+      "struct S { x: i64; y: f64; }; "
+      "fn make_s(v: i64) -> ptr { "
+      "  let s = heap(S); "
+      "  s.x = v; "
+      "  s.y = 0.0; "
+      "  return s; "
+      "} "
+      "let arr = heap_array(ptr[S], 2); "
+      "arr[0] = make_s(42); "
+      "arr[1] = make_s(99); "
+      "let val0 = arr[0].x; "
+      "let val1 = arr[1].x; "
+      "print(val0); "
+      "print(val1); "
+      "free(as_heap(arr[0])); "
+      "free(as_heap(arr[1])); "
+      "free_array(as_array(arr, ptr))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char line[32];
+  ASSERT_NE(fgets(line, sizeof(line), cap), nullptr);
+  EXPECT_EQ(std::atoi(line), 42) << "arr[0].x should be 42";
+  ASSERT_NE(fgets(line, sizeof(line), cap), nullptr);
+  EXPECT_EQ(std::atoi(line), 99) << "arr[1].x should be 99";
+  fclose(cap);
+  unlink(path);
+}
+
+TEST(JitTests, TypedPtrParamFieldAccess) {
+  /* fn get_data(v: ptr[Value]) -> f64 { return v.data; } — ptr[T] param enables field access */
+  const char* path = "/tmp/fusion_jit_typed_ptr_param_field.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex(
+      "struct Value { data: f64; }; "
+      "fn get_data(v: ptr[Value]) -> f64 { return v.data; } "
+      "let val = heap(Value); "
+      "val.data = 3.14; "
+      "print(get_data(val)); "
+      "free(as_heap(val))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[64];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(path);
+  double result = std::atof(buf);
+  EXPECT_NEAR(result, 3.14, 0.001) << "get_data should return v.data = 3.14";
+}
+
+TEST(JitTests, CastIndexIntoBarePtrArrayThenFieldAccess) {
+  /* Mirrors the micrograd train.fusion pattern:
+   *   let arr = heap_array(ptr, n);   // bare ptr array
+   *   let data = (arr[0] as Value).data;
+   * Previously failed sema with "cannot determine struct type of base expression" */
+  const char* path = "/tmp/fusion_jit_cast_index_field.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex(
+      "struct Value { data: f64; grad: f64; }; "
+      "let arr = heap_array(ptr, 2); "
+      "let v0 = heap(Value); "
+      "v0.data = 7.5; "
+      "v0.grad = 0.0; "
+      "let v1 = heap(Value); "
+      "v1.data = 2.5; "
+      "v1.grad = 0.0; "
+      "arr[0] = v0; "
+      "arr[1] = v1; "
+      "let d0 = (arr[0] as Value).data; "
+      "let d1 = (arr[1] as Value).data; "
+      "print(d0); "
+      "print(d1); "
+      "free(as_heap(v0)); "
+      "free(as_heap(v1)); "
+      "free_array(as_array(arr, ptr))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char line[32];
+  ASSERT_NE(fgets(line, sizeof(line), cap), nullptr);
+  EXPECT_NEAR(std::atof(line), 7.5, 0.001) << "(arr[0] as Value).data should be 7.5";
+  ASSERT_NE(fgets(line, sizeof(line), cap), nullptr);
+  EXPECT_NEAR(std::atof(line), 2.5, 0.001) << "(arr[1] as Value).data should be 2.5";
+  fclose(cap);
+  unlink(path);
+}
+
+TEST(JitTests, LetBindingFromCastFieldAccess) {
+  /* let w = arr[i] as Value; w.data and w.grad are accessible */
+  const char* path = "/tmp/fusion_jit_let_cast_field.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(path, "w", stdout));
+  auto tokens = fusion::lex(
+      "struct Value { data: f64; grad: f64; }; "
+      "let arr = heap_array(ptr, 1); "
+      "let v = heap(Value); "
+      "v.data = 3.0; "
+      "v.grad = 9.0; "
+      "arr[0] = v; "
+      "let w = arr[0] as Value; "
+      "let sum = w.data + w.grad; "
+      "print(sum); "
+      "free(as_heap(v)); "
+      "free_array(as_array(arr, ptr))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[32];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  EXPECT_NEAR(std::atof(buf), 12.0, 0.001) << "w.data + w.grad should be 12.0";
+  fclose(cap);
+  unlink(path);
 }
 #endif
