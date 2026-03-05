@@ -2225,11 +2225,6 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
           env.array_element_scope_stack.back()[binding->name] = elem_ty;
         else if (ty == FfiType::Ptr && binding->init->kind == Expr::Kind::Call)
           env.array_element_scope_stack.back()[binding->name] = FfiType::Ptr;
-        if (ty == FfiType::Ptr && binding->init->kind == Expr::Kind::Call) {
-          std::string elem_struct = get_call_array_element_struct_name(binding->init.get(), program);
-          if (!elem_struct.empty())
-            env.array_struct_scope_stack.back()[binding->name] = elem_struct;
-        }
       } else if (const StmtPtr* stmt = std::get_if<StmtPtr>(&item)) {
         if (!emit_stmt(env, dummy_main, main_fn, stmt->get())) {
           if (s_codegen_error.empty()) {
