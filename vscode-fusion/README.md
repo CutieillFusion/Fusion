@@ -19,10 +19,11 @@ Full language support for `.fusion` files: syntax highlighting, semantic tokens,
 
 ## Install
 
-1. Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`).
-2. Run **Developer: Install Extension from Location...**
-3. Select the `vscode-fusion` folder (the one containing `package.json`).
-4. Reload the window if prompted.
+1. Run `npm install` in the `vscode-fusion` folder.
+2. Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`).
+3. Run **Developer: Install Extension from Location...**
+4. Select the `vscode-fusion` folder (the one containing `package.json`).
+5. Reload the window if prompted.
 
 `.fusion` files will use Fusion syntax highlighting and LSP features automatically.
 
