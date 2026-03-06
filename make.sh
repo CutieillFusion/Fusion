@@ -7,6 +7,9 @@
 
 set -e
 
+# Install system dependencies (idempotent)
+sudo apt install -y build-essential cmake llvm-18-dev libffi-dev libcurl4-openssl-dev nlohmann-json3-dev zlib1g-dev libncurses-dev libzstd-dev
+
 # Use system CMake/CTest when available so runtime is linked with --whole-archive/--export-dynamic.
 if [[ -x /usr/bin/cmake ]]; then
   CMAKE=/usr/bin/cmake
