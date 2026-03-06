@@ -99,7 +99,7 @@ static FfiType expr_type(Expr* expr, Program* program,
       return FfiType::Void;
     }
     case Expr::Kind::Call:
-      if (expr->callee == "get_func_ptr") return FfiType::Ptr;
+      if (auto bt = builtin_fixed_return_type(expr->callee)) return *bt;
       if (expr->callee == "call" && program && expr->args.size() >= 1) {
         if (expr->args[0]->kind == Expr::Kind::Call && expr->args[0]->callee == "get_func_ptr" &&
             expr->args[0]->args.size() == 1 && expr->args[0]->args[0]->kind == Expr::Kind::VarRef) {
@@ -111,17 +111,11 @@ static FfiType expr_type(Expr* expr, Program* program,
         }
       }
       if (expr->callee == "call") return FfiType::Void;
-      if (expr->callee == "print") return FfiType::Void;
-      if (expr->callee == "len") return FfiType::I64;
-      if (expr->callee == "read_line" || expr->callee == "read_line_file" || expr->callee == "to_str") return FfiType::Ptr;
       if (expr->callee == "from_str") {
         if (expr->call_type_arg == "i64") return FfiType::I64;
         if (expr->call_type_arg == "f64") return FfiType::F64;
         return FfiType::Void;
       }
-      if (expr->callee == "open") return FfiType::Ptr;
-      if (expr->callee == "close" || expr->callee == "write_file") return FfiType::Void;
-      if (expr->callee == "eof_file" || expr->callee == "line_count_file" || expr->callee == "write_bytes" || expr->callee == "read_bytes") return FfiType::I64;
       if (program) {
         for (const ExternFn& ext : program->extern_fns)
           if (ext.name == expr->callee) return ext.return_type;
@@ -1218,42 +1212,22 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       return B.getInt64(0);
     }
     case Expr::Kind::LoadField: {
-      if (!env.layout_map) {
-        s_codegen_error = "load_field: no struct layout map";
-        return nullptr;
-      }
-      auto it = env.layout_map->find(expr->load_field_struct);
-      if (it == env.layout_map->end()) {
-        s_codegen_error = "load_field: struct '" + expr->load_field_struct + "' not found in layout";
-        return nullptr;
-      }
-      size_t offset = 0;
-      FfiType field_ty = FfiType::Void;
-      for (const auto& f : it->second.fields) {
-        if (f.first == expr->load_field_field) {
-          offset = f.second.offset;
-          field_ty = f.second.type;
-          break;
-        }
-      }
-      if (field_ty == FfiType::Void) {
-        s_codegen_error = "load_field: field '" + expr->load_field_field + "' not found in struct '" + expr->load_field_struct + "'";
-        return nullptr;
-      }
+      if (!env.layout_map) { s_codegen_error = "load_field: no struct layout map"; return nullptr; }
       Value* base = emit_expr(env, expr->left.get());
       if (!base) {
+        if (s_codegen_error.empty()) s_codegen_error = "load_field: base expression failed";
+        return nullptr;
+      }
+      FfiType field_ty = FfiType::Void;
+      Value* field_ptr = emit_field_address(env, base, expr->load_field_struct,
+                                            {expr->load_field_field}, &field_ty);
+      if (!field_ptr || field_ty == FfiType::Void) {
         if (s_codegen_error.empty())
-          s_codegen_error = "load_field: base expression failed";
+          s_codegen_error = "load_field: struct '" + expr->load_field_struct +
+                            "' field '" + expr->load_field_field + "' not found";
         return nullptr;
       }
       Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
-      if (base->getType() != i8ptr) {
-        if (base->getType() == B.getInt64Ty())
-          base = B.CreateIntToPtr(base, i8ptr);
-        else
-          base = B.CreatePointerCast(base, i8ptr);
-      }
-      Value* field_ptr = B.CreateGEP(B.getInt8Ty(), base, B.getInt64(offset));
       if (field_ty == FfiType::F64) {
         field_ptr = B.CreatePointerCast(field_ptr, B.getDoubleTy()->getPointerTo());
         return B.CreateLoad(B.getDoubleTy(), field_ptr, "load_field");
@@ -1268,29 +1242,13 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
     }
     case Expr::Kind::StoreField: {
       if (!env.layout_map) return nullptr;
-      auto it = env.layout_map->find(expr->load_field_struct);
-      if (it == env.layout_map->end()) return nullptr;
-      size_t offset = 0;
-      FfiType field_ty = FfiType::Void;
-      for (const auto& f : it->second.fields) {
-        if (f.first == expr->load_field_field) {
-          offset = f.second.offset;
-          field_ty = f.second.type;
-          break;
-        }
-      }
-      if (field_ty == FfiType::Void) return nullptr;
       Value* base = emit_expr(env, expr->left.get());
       Value* val = emit_expr(env, expr->right.get());
       if (!base || !val) return nullptr;
-      Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
-      if (base->getType() != i8ptr) {
-        if (base->getType() == B.getInt64Ty())
-          base = B.CreateIntToPtr(base, i8ptr);
-        else
-          base = B.CreatePointerCast(base, i8ptr);
-      }
-      Value* field_ptr = B.CreateGEP(B.getInt8Ty(), base, B.getInt64(offset));
+      FfiType field_ty = FfiType::Void;
+      Value* field_ptr = emit_field_address(env, base, expr->load_field_struct,
+                                            {expr->load_field_field}, &field_ty);
+      if (!field_ptr || field_ty == FfiType::Void) return nullptr;
       if (field_ty == FfiType::F64) {
         field_ptr = B.CreatePointerCast(field_ptr, B.getDoubleTy()->getPointerTo());
         if (val->getType() != B.getDoubleTy()) val = B.CreateSIToFP(val, B.getDoubleTy());

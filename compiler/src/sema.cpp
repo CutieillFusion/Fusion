@@ -73,62 +73,50 @@ static bool var_type_lookup(SemaContext* ctx, const std::string& name, FfiType* 
   return false;
 }
 
-/* Lookup array element type from innermost to outermost scope. */
-static FfiType array_elem_lookup(SemaContext* ctx, const std::string& name) {
-  if (!ctx || ctx->array_element_scope_stack.empty()) return FfiType::Void;
-  for (auto it = ctx->array_element_scope_stack.rbegin(); it != ctx->array_element_scope_stack.rend(); ++it) {
+namespace {
+template<typename T>
+T scope_lookup(const std::vector<std::unordered_map<std::string, T>>& stack,
+               const std::string& name, const T& default_val) {
+  for (auto it = stack.rbegin(); it != stack.rend(); ++it) {
     auto fit = it->find(name);
     if (fit != it->end()) return fit->second;
   }
-  return FfiType::Void;
+  return default_val;
+}
+} // namespace
+
+/* Lookup array element type from innermost to outermost scope. */
+static FfiType array_elem_lookup(SemaContext* ctx, const std::string& name) {
+  if (!ctx) return FfiType::Void;
+  return scope_lookup(ctx->array_element_scope_stack, name, FfiType::Void);
 }
 
 static AllocFlavor var_flavor_lookup(SemaContext* ctx, const std::string& name) {
-  if (!ctx || ctx->var_flavor_scope_stack.empty()) return AllocFlavor::Unknown;
-  for (auto it = ctx->var_flavor_scope_stack.rbegin(); it != ctx->var_flavor_scope_stack.rend(); ++it) {
-    auto fit = it->find(name);
-    if (fit != it->end()) return fit->second;
-  }
-  return AllocFlavor::Unknown;
+  if (!ctx) return AllocFlavor::Unknown;
+  return scope_lookup(ctx->var_flavor_scope_stack, name, AllocFlavor::Unknown);
 }
 
 static PtrBase var_base_lookup(SemaContext* ctx, const std::string& name) {
-  if (!ctx || ctx->var_base_scope_stack.empty()) return PtrBase::Unknown;
-  for (auto it = ctx->var_base_scope_stack.rbegin(); it != ctx->var_base_scope_stack.rend(); ++it) {
-    auto fit = it->find(name);
-    if (fit != it->end()) return fit->second;
-  }
-  return PtrBase::Unknown;
+  if (!ctx) return PtrBase::Unknown;
+  return scope_lookup(ctx->var_base_scope_stack, name, PtrBase::Unknown);
 }
 
 /* Lookup which struct a pointer variable points to. Returns "" if unknown. */
 static std::string var_struct_lookup(SemaContext* ctx, const std::string& name) {
-  if (!ctx || ctx->var_struct_scope_stack.empty()) return "";
-  for (auto it = ctx->var_struct_scope_stack.rbegin(); it != ctx->var_struct_scope_stack.rend(); ++it) {
-    auto fit = it->find(name);
-    if (fit != it->end()) return fit->second;
-  }
-  return "";
+  if (!ctx) return "";
+  return scope_lookup(ctx->var_struct_scope_stack, name, std::string{});
 }
 
 /* Lookup ptr element type for a pointer variable. Returns "" if unknown. */
 static std::string var_ptr_element_lookup(SemaContext* ctx, const std::string& name) {
-  if (!ctx || ctx->var_ptr_element_scope_stack.empty()) return "";
-  for (auto it = ctx->var_ptr_element_scope_stack.rbegin(); it != ctx->var_ptr_element_scope_stack.rend(); ++it) {
-    auto fit = it->find(name);
-    if (fit != it->end()) return fit->second;
-  }
-  return "";
+  if (!ctx) return "";
+  return scope_lookup(ctx->var_ptr_element_scope_stack, name, std::string{});
 }
 
 /* Lookup struct name for elements of an array variable. Returns "" if unknown. */
 static std::string array_struct_lookup(SemaContext* ctx, const std::string& name) {
-  if (!ctx || ctx->array_struct_scope_stack.empty()) return "";
-  for (auto it = ctx->array_struct_scope_stack.rbegin(); it != ctx->array_struct_scope_stack.rend(); ++it) {
-    auto fit = it->find(name);
-    if (fit != it->end()) return fit->second;
-  }
-  return "";
+  if (!ctx) return "";
+  return scope_lookup(ctx->array_struct_scope_stack, name, std::string{});
 }
 
 /* For a Call that returns ptr, return array_element_struct if the callee declares it. */
@@ -410,6 +398,23 @@ static bool lookup_fnptr_sig(SemaContext* ctx, Expr* expr, FnPtrSig* out) {
   return false;
 }
 
+static bool check_expr(Expr* expr, SemaContext& ctx);
+
+/* Validates that a builtin call has exactly one ptr argument. Sets ctx.err on failure. */
+static bool check_one_ptr_arg(Expr* expr, const char* fname, const char* arg_desc,
+                               SemaContext& ctx) {
+  if (expr->args.size() != 1) {
+    ctx.err->message = std::string(fname) + " expects one argument (" + arg_desc + ")";
+    return false;
+  }
+  if (!check_expr(expr->args[0].get(), ctx)) return false;
+  if (expr_type(expr->args[0].get(), &ctx) != FfiType::Ptr) {
+    ctx.err->message = std::string(fname) + " expects pointer argument";
+    return false;
+  }
+  return true;
+}
+
 static bool check_expr(Expr* expr, SemaContext& ctx) {
   if (!expr) return false;
   if (expr->line > 0) {
@@ -589,28 +594,10 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
         }
         return true;
       }
-      if (expr->callee == "close") {
-        if (expr->args.size() != 1) {
-          ctx.err->message = "close expects one argument (file handle)";
-          return false;
-        }
-        if (!check_expr(expr->args[0].get(), ctx)) return false;
-        if (expr_type(expr->args[0].get(), &ctx) != FfiType::Ptr) {
-          ctx.err->message = "close expects pointer argument";
-          return false;
-        }
-        return true;
-      }
+      if (expr->callee == "close")
+        return check_one_ptr_arg(expr, "close", "file handle", ctx);
       if (expr->callee == "read_line_file") {
-        if (expr->args.size() != 1) {
-          ctx.err->message = "read_line_file expects one argument (file handle)";
-          return false;
-        }
-        if (!check_expr(expr->args[0].get(), ctx)) return false;
-        if (expr_type(expr->args[0].get(), &ctx) != FfiType::Ptr) {
-          ctx.err->message = "read_line_file expects pointer argument";
-          return false;
-        }
+        if (!check_one_ptr_arg(expr, "read_line_file", "file handle", ctx)) return false;
         expr->inferred_ptr_element = "char";
         return true;
       }
@@ -651,42 +638,12 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
         }
         return true;
       }
-      if (expr->callee == "eof_file") {
-        if (expr->args.size() != 1) {
-          ctx.err->message = "eof_file expects one argument (file handle)";
-          return false;
-        }
-        if (!check_expr(expr->args[0].get(), ctx)) return false;
-        if (expr_type(expr->args[0].get(), &ctx) != FfiType::Ptr) {
-          ctx.err->message = "eof_file expects pointer argument";
-          return false;
-        }
-        return true;
-      }
-      if (expr->callee == "line_count_file") {
-        if (expr->args.size() != 1) {
-          ctx.err->message = "line_count_file expects one argument (file handle)";
-          return false;
-        }
-        if (!check_expr(expr->args[0].get(), ctx)) return false;
-        if (expr_type(expr->args[0].get(), &ctx) != FfiType::Ptr) {
-          ctx.err->message = "line_count_file expects pointer argument";
-          return false;
-        }
-        return true;
-      }
-      if (expr->callee == "len") {
-        if (expr->args.size() != 1) {
-          ctx.err->message = "len expects 1 argument";
-          return false;
-        }
-        if (!check_expr(expr->args[0].get(), ctx)) return false;
-        if (expr_type(expr->args[0].get(), &ctx) != FfiType::Ptr) {
-          ctx.err->message = "len expects a pointer (array)";
-          return false;
-        }
-        return true;
-      }
+      if (expr->callee == "eof_file")
+        return check_one_ptr_arg(expr, "eof_file", "file handle", ctx);
+      if (expr->callee == "line_count_file")
+        return check_one_ptr_arg(expr, "line_count_file", "file handle", ctx);
+      if (expr->callee == "len")
+        return check_one_ptr_arg(expr, "len", "array", ctx);
       auto ext_it = ctx.extern_fn_by_name.find(expr->callee);
       if (ext_it != ctx.extern_fn_by_name.end()) {
         const ExternFn& ext = ext_it->second;
@@ -1034,7 +991,7 @@ static FfiType expr_type(Expr* expr, SemaContext* ctx) {
       return (l == FfiType::F64 || r == FfiType::F64) ? FfiType::F64 : FfiType::I64;
     }
     case Expr::Kind::Call: {
-      if (expr->callee == "get_func_ptr") return FfiType::Ptr;
+      if (auto bt = builtin_fixed_return_type(expr->callee)) return *bt;
       if (expr->callee == "call") {
         if (ctx) {
           FnPtrSig sig;
@@ -1045,20 +1002,11 @@ static FfiType expr_type(Expr* expr, SemaContext* ctx) {
         }
         return FfiType::Void;
       }
-      if (expr->callee == "print") return FfiType::Void;
-      if (expr->callee == "len") return FfiType::I64;
-      if (expr->callee == "read_line" || expr->callee == "read_line_file") return FfiType::Ptr;
-      if (expr->callee == "to_str") return FfiType::Ptr;
       if (expr->callee == "from_str") {
         if (expr->call_type_arg == "i64") return FfiType::I64;
         if (expr->call_type_arg == "f64") return FfiType::F64;
         return FfiType::Void;
       }
-      if (expr->callee == "open") return FfiType::Ptr;
-      if (expr->callee == "close") return FfiType::Void;
-      if (expr->callee == "write_file") return FfiType::Void;
-      if (expr->callee == "write_bytes" || expr->callee == "read_bytes") return FfiType::I64;
-      if (expr->callee == "eof_file" || expr->callee == "line_count_file") return FfiType::I64;
       if (ctx) {
         auto ext_it = ctx->extern_fn_by_name.find(expr->callee);
         if (ext_it != ctx->extern_fn_by_name.end()) return ext_it->second.return_type;
@@ -1167,6 +1115,28 @@ static bool is_valid_array_element_type(const std::string& name, Program* progra
   if (name == "char" || name == "i8" || name == "i32" || name == "i64" || name == "f32" || name == "f64")
     return true;
   return program && is_named_type_known(name, program);
+}
+
+static void scope_push(SemaContext& ctx) {
+  ctx.var_scope_stack.push_back({});
+  ctx.array_element_scope_stack.push_back({});
+  ctx.fnptr_scope_stack.push_back({});
+  ctx.var_flavor_scope_stack.push_back({});
+  ctx.var_base_scope_stack.push_back({});
+  ctx.var_struct_scope_stack.push_back({});
+  ctx.array_struct_scope_stack.push_back({});
+  ctx.var_ptr_element_scope_stack.push_back({});
+}
+
+static void scope_pop(SemaContext& ctx) {
+  ctx.var_scope_stack.pop_back();
+  ctx.array_element_scope_stack.pop_back();
+  ctx.fnptr_scope_stack.pop_back();
+  ctx.var_flavor_scope_stack.pop_back();
+  ctx.var_base_scope_stack.pop_back();
+  ctx.var_struct_scope_stack.pop_back();
+  ctx.array_struct_scope_stack.pop_back();
+  ctx.var_ptr_element_scope_stack.pop_back();
 }
 
 static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt);
@@ -1304,99 +1274,27 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
       return check_expr(stmt->expr.get(), ctx);
     case Stmt::Kind::If:
       if (!check_expr(stmt->cond.get(), ctx)) return false;
-      ctx.var_scope_stack.push_back({});
-      ctx.array_element_scope_stack.push_back({});
-      ctx.fnptr_scope_stack.push_back({});
-      ctx.var_flavor_scope_stack.push_back({});
-      ctx.var_base_scope_stack.push_back({});
-      ctx.var_struct_scope_stack.push_back({});
-      ctx.array_struct_scope_stack.push_back({});
-      ctx.var_ptr_element_scope_stack.push_back({});
+      scope_push(ctx);
       for (StmtPtr& s : stmt->then_body)
-        if (!check_stmt(ctx, def, s.get())) {
-          ctx.var_scope_stack.pop_back();
-          ctx.array_element_scope_stack.pop_back();
-          ctx.fnptr_scope_stack.pop_back();
-          ctx.var_flavor_scope_stack.pop_back();
-          ctx.var_base_scope_stack.pop_back();
-          ctx.var_struct_scope_stack.pop_back();
-          ctx.array_struct_scope_stack.pop_back();
-          ctx.var_ptr_element_scope_stack.pop_back();
-          return false;
-        }
-      ctx.var_scope_stack.pop_back();
-      ctx.array_element_scope_stack.pop_back();
-      ctx.fnptr_scope_stack.pop_back();
-      ctx.var_flavor_scope_stack.pop_back();
-      ctx.var_base_scope_stack.pop_back();
-      ctx.var_struct_scope_stack.pop_back();
-      ctx.array_struct_scope_stack.pop_back();
-      ctx.var_ptr_element_scope_stack.pop_back();
+        if (!check_stmt(ctx, def, s.get())) { scope_pop(ctx); return false; }
+      scope_pop(ctx);
       if (stmt->else_body.empty()) return true;
-      ctx.var_scope_stack.push_back({});
-      ctx.array_element_scope_stack.push_back({});
-      ctx.fnptr_scope_stack.push_back({});
-      ctx.var_flavor_scope_stack.push_back({});
-      ctx.var_base_scope_stack.push_back({});
-      ctx.var_struct_scope_stack.push_back({});
-      ctx.array_struct_scope_stack.push_back({});
-      ctx.var_ptr_element_scope_stack.push_back({});
+      scope_push(ctx);
       for (StmtPtr& s : stmt->else_body)
-        if (!check_stmt(ctx, def, s.get())) {
-          ctx.var_scope_stack.pop_back();
-          ctx.array_element_scope_stack.pop_back();
-          ctx.fnptr_scope_stack.pop_back();
-          ctx.var_flavor_scope_stack.pop_back();
-          ctx.var_base_scope_stack.pop_back();
-          ctx.var_struct_scope_stack.pop_back();
-          ctx.array_struct_scope_stack.pop_back();
-          ctx.var_ptr_element_scope_stack.pop_back();
-          return false;
-        }
-      ctx.var_scope_stack.pop_back();
-      ctx.array_element_scope_stack.pop_back();
-      ctx.fnptr_scope_stack.pop_back();
-      ctx.var_flavor_scope_stack.pop_back();
-      ctx.var_base_scope_stack.pop_back();
-      ctx.var_struct_scope_stack.pop_back();
-      ctx.array_struct_scope_stack.pop_back();
-      ctx.var_ptr_element_scope_stack.pop_back();
+        if (!check_stmt(ctx, def, s.get())) { scope_pop(ctx); return false; }
+      scope_pop(ctx);
       return true;
     case Stmt::Kind::For: {
       if (!stmt->cond) return false;
-      ctx.var_scope_stack.push_back({});
-      ctx.array_element_scope_stack.push_back({});
-      ctx.fnptr_scope_stack.push_back({});
-      ctx.var_flavor_scope_stack.push_back({});
-      ctx.var_base_scope_stack.push_back({});
-      ctx.var_struct_scope_stack.push_back({});
-      ctx.array_struct_scope_stack.push_back({});
-      ctx.var_ptr_element_scope_stack.push_back({});
+      scope_push(ctx);
       if (stmt->for_init) {
         if (stmt->for_init->kind == Stmt::Kind::Let) {
-          if (!check_expr(stmt->for_init->init.get(), ctx)) {
-            ctx.var_scope_stack.pop_back();
-            ctx.array_element_scope_stack.pop_back();
-            ctx.fnptr_scope_stack.pop_back();
-            ctx.var_flavor_scope_stack.pop_back();
-            ctx.var_base_scope_stack.pop_back();
-            ctx.var_struct_scope_stack.pop_back();
-            ctx.array_struct_scope_stack.pop_back();
-            ctx.var_ptr_element_scope_stack.pop_back();
-            return false;
-          }
+          if (!check_expr(stmt->for_init->init.get(), ctx)) { scope_pop(ctx); return false; }
           if (ctx.var_scope_stack.back().count(stmt->for_init->name)) {
             ctx.err->message = def
               ? "duplicate variable '" + stmt->for_init->name + "' in function '" + def->name + "'"
               : "duplicate variable '" + stmt->for_init->name + "'";
-            ctx.var_scope_stack.pop_back();
-            ctx.array_element_scope_stack.pop_back();
-            ctx.fnptr_scope_stack.pop_back();
-            ctx.var_flavor_scope_stack.pop_back();
-            ctx.var_base_scope_stack.pop_back();
-            ctx.var_struct_scope_stack.pop_back();
-            ctx.array_struct_scope_stack.pop_back();
-            ctx.var_ptr_element_scope_stack.pop_back();
+            scope_pop(ctx);
             return false;
           }
           ctx.var_scope_stack.back()[stmt->for_init->name] = expr_type(stmt->for_init->init.get(), &ctx);
@@ -1406,63 +1304,19 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
           ctx.var_flavor_scope_stack.back()[stmt->for_init->name] = init_flavor;
           ctx.var_base_scope_stack.back()[stmt->for_init->name] = init_base;
         } else if (stmt->for_init->kind == Stmt::Kind::Assign) {
-          if (!check_stmt(ctx, def, stmt->for_init.get())) {
-            ctx.var_scope_stack.pop_back();
-            ctx.array_element_scope_stack.pop_back();
-            ctx.fnptr_scope_stack.pop_back();
-            ctx.var_flavor_scope_stack.pop_back();
-            ctx.var_base_scope_stack.pop_back();
-            ctx.var_struct_scope_stack.pop_back();
-            ctx.array_struct_scope_stack.pop_back();
-            ctx.var_ptr_element_scope_stack.pop_back();
-            return false;
-          }
+          if (!check_stmt(ctx, def, stmt->for_init.get())) { scope_pop(ctx); return false; }
         }
       }
-      if (!check_expr(stmt->cond.get(), ctx)) {
-        ctx.var_scope_stack.pop_back();
-        ctx.array_element_scope_stack.pop_back();
-        ctx.fnptr_scope_stack.pop_back();
-        ctx.var_flavor_scope_stack.pop_back();
-        ctx.var_base_scope_stack.pop_back();
-        ctx.var_struct_scope_stack.pop_back();
-        ctx.array_struct_scope_stack.pop_back();
-        ctx.var_ptr_element_scope_stack.pop_back();
-        return false;
-      }
+      if (!check_expr(stmt->cond.get(), ctx)) { scope_pop(ctx); return false; }
       if (stmt->for_update) {
         if (stmt->for_update->kind != Stmt::Kind::Assign || !check_stmt(ctx, def, stmt->for_update.get())) {
-          ctx.var_scope_stack.pop_back();
-          ctx.array_element_scope_stack.pop_back();
-          ctx.fnptr_scope_stack.pop_back();
-          ctx.var_flavor_scope_stack.pop_back();
-          ctx.var_base_scope_stack.pop_back();
-          ctx.var_struct_scope_stack.pop_back();
-          ctx.array_struct_scope_stack.pop_back();
-          ctx.var_ptr_element_scope_stack.pop_back();
+          scope_pop(ctx);
           return false;
         }
       }
       for (StmtPtr& s : stmt->body)
-        if (!check_stmt(ctx, def, s.get())) {
-          ctx.var_scope_stack.pop_back();
-          ctx.array_element_scope_stack.pop_back();
-          ctx.fnptr_scope_stack.pop_back();
-          ctx.var_flavor_scope_stack.pop_back();
-          ctx.var_base_scope_stack.pop_back();
-          ctx.var_struct_scope_stack.pop_back();
-          ctx.array_struct_scope_stack.pop_back();
-          ctx.var_ptr_element_scope_stack.pop_back();
-          return false;
-        }
-      ctx.var_scope_stack.pop_back();
-      ctx.array_element_scope_stack.pop_back();
-      ctx.fnptr_scope_stack.pop_back();
-      ctx.var_flavor_scope_stack.pop_back();
-      ctx.var_base_scope_stack.pop_back();
-      ctx.var_struct_scope_stack.pop_back();
-      ctx.array_struct_scope_stack.pop_back();
-      ctx.var_ptr_element_scope_stack.pop_back();
+        if (!check_stmt(ctx, def, s.get())) { scope_pop(ctx); return false; }
+      scope_pop(ctx);
       return true;
     }
     case Stmt::Kind::Assign: {

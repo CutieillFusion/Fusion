@@ -26,8 +26,11 @@ Tests use **CTest** as the orchestrator with **multiple discrete tests**. Compil
 
 ## How to run tests
 
-- **All tests:**  
-  `make check`  
+- **Build + all tests (simplest):**
+  `./make.sh` (from repo root)
+
+- **All tests:**
+  `make check`
   or from build dir: `ctest --output-on-failure`
 
 - **By label:**  

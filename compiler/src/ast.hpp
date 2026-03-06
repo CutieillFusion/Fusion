@@ -4,7 +4,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -237,6 +239,29 @@ struct Program {
   std::vector<FnDef> user_fns;
   std::vector<TopLevelItem> top_level;  /* executed in order; items are let bindings, if/for statements, assignments, or expressions */
 };
+
+// Returns the FfiType for a known builtin call with a fixed return type, or std::nullopt if
+// not a simple fixed-return builtin. Callers handle "call" and "from_str" separately.
+inline std::optional<FfiType> builtin_fixed_return_type(const std::string& callee) {
+  static const std::unordered_map<std::string, FfiType> table = {
+    {"get_func_ptr",    FfiType::Ptr},
+    {"print",           FfiType::Void},
+    {"len",             FfiType::I64},
+    {"read_line",       FfiType::Ptr},
+    {"read_line_file",  FfiType::Ptr},
+    {"to_str",          FfiType::Ptr},
+    {"open",            FfiType::Ptr},
+    {"close",           FfiType::Void},
+    {"write_file",      FfiType::Void},
+    {"eof_file",        FfiType::I64},
+    {"line_count_file", FfiType::I64},
+    {"write_bytes",     FfiType::I64},
+    {"read_bytes",      FfiType::I64},
+  };
+  auto it = table.find(callee);
+  if (it != table.end()) return it->second;
+  return std::nullopt;
+}
 
 }  // namespace fusion
 

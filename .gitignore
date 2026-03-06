@@ -5,3 +5,6 @@ _deps/
 *.so*
 *.a
 node_modules/
+.cursor/
+.vscode/
+.claude/

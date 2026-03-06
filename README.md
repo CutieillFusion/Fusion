@@ -152,6 +152,7 @@ The last expression is *not* special; there is no REPL-style implicit print. All
 Fusion’s core value-level types correspond directly to FFI-level types:
 
 - `i8`, `i32`, `i64` – signed integers
+- `u32`, `u64` – unsigned integers
 - `f32`, `f64` – floating-point numbers
 - `ptr` – raw pointer (opaque at the language level; use `ptr` wherever you would pass `const char*` or `void*` in C)
 - `void` – used as a function return type
@@ -477,6 +478,41 @@ print(s);
   - `T` is `i64` or `f64`.
   - Returns a numeric value, `0` / `0.0` on invalid input.
 
+### String concatenation
+
+The `+` operator concatenates two `ptr` (string) values and returns a new `ptr`:
+
+```fusion
+let s = to_str(42) + " items";
+print(s);
+
+let combined = to_str(100) + " " + to_str(2.5);
+print(combined);
+```
+
+Both operands must be `ptr`; the result is `ptr`. String literals, `to_str` results, `read_line` results, and any other `ptr`-typed values can be combined this way.
+
+### Typed pointer syntax `ptr[T]`
+
+Parameter types, struct field types, and casts support an optional `[T]` annotation on `ptr` to communicate the pointed-to type:
+
+```fusion
+fn f(p: ptr[Point]) -> void {
+  print(p.x);
+}
+
+struct List {
+  next: ptr[List];
+  value: i64;
+};
+
+let q = some_ptr as ptr[Point];
+```
+
+`ptr[void]` is equivalent to bare `ptr` (opaque pointer). This annotation is purely syntactic — at the ABI and codegen level `ptr[T]` is lowered identically to `ptr`.
+
+**Note:** `-> ptr[T]` in a return-type position has different semantics (array-element return), which is an existing, unchanged feature.
+
 ### File I/O
 
 The C runtime provides simple file APIs surfaced through built-ins:
@@ -731,18 +767,17 @@ For much more detail on this architecture and the long-term roadmap (including C
 
 ## Build and test (Linux)
 
-Same as CI:
+The simplest way to configure, build, and run all tests:
 
 ```bash
-./ci/build_and_test.sh
+./make.sh
 ```
 
-Or use the wrapper Makefile (out-of-tree build):
+Flags:
 
-```bash
-make
-make check
-```
+- `./make.sh` — configure (if needed), build, and run all tests
+- `./make.sh -r` — clean rebuild from scratch (removes `build/` first)
+- `./make.sh -d` — debug build with AddressSanitizer (`-fsanitize=address -g`)
 
 Or manually:
 
@@ -757,6 +792,34 @@ ctest --test-dir build --output-on-failure
 - **`fusion --help`** — Run `./build/compiler/fusion --help` for usage.
 - **Runtime** — `build/runtime_c/libruntime.so` and `build/runtime_c/libruntime.a` are produced.
 - **Tests** — `ctest --test-dir build` runs the C test runner and the `fusion --help` test.
+
+---
+
+## Language server (LSP) and VS Code extension
+
+Fusion ships a Language Server Protocol implementation in the `lsp/` directory. After building, the binary is at `build/lsp/fusion_lsp`.
+
+**Build the LSP server only:**
+
+```bash
+cmake --build build --target fusion_lsp
+```
+
+**Features:**
+
+- Hover documentation
+- Go to definition
+- Document and workspace symbols
+- Completion (keywords, functions, variables)
+- Signature help
+- Document highlight and references
+- Rename symbol
+- Semantic token coloring (keywords, types, functions, variables, parameters)
+- Folding ranges
+- Inlay hints (parameter names at call sites)
+- Diagnostics (errors from the compiler, with multi-error support)
+
+**VS Code / Cursor:** See `vscode-fusion/` for the extension. Install it from the `vscode-fusion` folder (Developer: Install Extension from Location...). The extension auto-detects `build/fusion_lsp` relative to the workspace root, or you can set `fusion.serverPath` in VS Code settings.
 
 ---
 
