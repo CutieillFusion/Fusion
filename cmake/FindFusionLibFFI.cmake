@@ -1,16 +1,34 @@
 # FindFusionLibFFI.cmake
-# Find or optionally fetch libffi. Sets FUSION_LIBFFI_FOUND, FUSION_LIBFFI_FETCHED,
-# and creates LibFFI::LibFFI. Option FUSION_FETCH_LIBFFI (from root) enables
-# downloading and building libffi into the build tree. Include from runtime_c/CMakeLists.txt.
+# Find libffi. Sets FUSION_LIBFFI_FOUND and creates LibFFI::LibFFI.
+# Include from root CMakeLists.txt (so target is global) and runtime_c/CMakeLists.txt.
+# Install with: sudo apt install libffi-dev
+
+if(TARGET LibFFI::LibFFI)
+  set(FUSION_LIBFFI_FOUND TRUE)
+  set(FUSION_LIBFFI_FOUND TRUE PARENT_SCOPE)
+  return()
+endif()
 
 find_package(PkgConfig QUIET)
 set(FUSION_LIBFFI_FOUND FALSE)
-set(FUSION_LIBFFI_FETCHED FALSE)
 if(PkgConfig_FOUND)
   pkg_check_modules(LibFFI QUIET libffi)
   if(LibFFI_FOUND)
-    set(FUSION_LIBFFI_FOUND TRUE)
-    set(FUSION_LIBFFI_FOUND TRUE PARENT_SCOPE)
+    find_library(_LibFFI_LIBRARY_PC ffi PATHS ${LibFFI_LIBRARY_DIRS} NO_DEFAULT_PATH)
+    if(_LibFFI_LIBRARY_PC)
+      set(LibFFI_LIBRARY "${_LibFFI_LIBRARY_PC}")
+    else()
+      find_library(LibFFI_LIBRARY ffi)
+    endif()
+    unset(_LibFFI_LIBRARY_PC CACHE)
+    if(LibFFI_LIBRARY)
+      set(FUSION_LIBFFI_FOUND TRUE)
+      set(FUSION_LIBFFI_FOUND TRUE PARENT_SCOPE)
+      add_library(LibFFI::LibFFI UNKNOWN IMPORTED)
+      set_target_properties(LibFFI::LibFFI PROPERTIES
+        IMPORTED_LOCATION "${LibFFI_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${LibFFI_INCLUDE_DIRS}")
+    endif()
   endif()
 endif()
 if(NOT FUSION_LIBFFI_FOUND)
@@ -26,7 +44,7 @@ if(NOT FUSION_LIBFFI_FOUND)
   endif()
 endif()
 # If we "found" libffi (e.g. from cache) but ffi.h is not actually there, use stub
-if(FUSION_LIBFFI_FOUND AND NOT FUSION_LIBFFI_FETCHED)
+if(FUSION_LIBFFI_FOUND)
   if(LibFFI_FOUND)
     set(_ffi_search_dirs ${LibFFI_INCLUDE_DIRS})
   else()
@@ -42,37 +60,5 @@ if(FUSION_LIBFFI_FOUND AND NOT FUSION_LIBFFI_FETCHED)
   unset(_ffi_search_dirs)
 endif()
 if(NOT FUSION_LIBFFI_FOUND)
-  if(FUSION_FETCH_LIBFFI)
-    # Download and build libffi into the build tree (Option A via CMake).
-    set(LIBFFI_VERSION "3.4.6")
-    set(LIBFFI_INSTALL_DIR "${CMAKE_BINARY_DIR}/_deps/libffi-install")
-    file(MAKE_DIRECTORY "${LIBFFI_INSTALL_DIR}/include" "${LIBFFI_INSTALL_DIR}/lib")
-    include(ExternalProject)
-    ExternalProject_Add(libffi
-      URL "https://github.com/libffi/libffi/releases/download/v${LIBFFI_VERSION}/libffi-${LIBFFI_VERSION}.tar.gz"
-      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-      PREFIX "${CMAKE_BINARY_DIR}/_deps/libffi"
-      CONFIGURE_COMMAND env CFLAGS=-fPIC <SOURCE_DIR>/configure --prefix=${LIBFFI_INSTALL_DIR} --disable-docs --disable-multi-os-directory
-      BUILD_COMMAND $(MAKE)
-      INSTALL_COMMAND $(MAKE) install
-      BUILD_IN_SOURCE TRUE
-      BUILD_BYPRODUCTS "${LIBFFI_INSTALL_DIR}/lib/libffi.a"
-    )
-    set(LibFFI_INCLUDE_DIR "${LIBFFI_INSTALL_DIR}/include")
-    # Use static lib to match BUILD_BYPRODUCTS; some builds only produce .a
-    set(LibFFI_LIBRARY "${LIBFFI_INSTALL_DIR}/lib/libffi.a")
-    add_library(LibFFI::LibFFI STATIC IMPORTED GLOBAL)
-    set_target_properties(LibFFI::LibFFI PROPERTIES
-      IMPORTED_LOCATION "${LibFFI_LIBRARY}"
-      INTERFACE_INCLUDE_DIRECTORIES "${LibFFI_INCLUDE_DIR}"
-    )
-    add_dependencies(LibFFI::LibFFI libffi)
-    set(FUSION_LIBFFI_FOUND TRUE)
-    set(FUSION_LIBFFI_FOUND TRUE PARENT_SCOPE)
-    set(FUSION_LIBFFI_FETCHED TRUE)
-    set(FUSION_LIBFFI_FETCHED TRUE PARENT_SCOPE)
-    message(STATUS "libffi will be fetched and built into ${LIBFFI_INSTALL_DIR}")
-  else()
-    message(STATUS "libffi not found: FFI will use stub (install to ~/.local and source env_local_deps.sh, or set FUSION_FETCH_LIBFFI=ON)")
-  endif()
+  message(STATUS "libffi not found: FFI will use stub (install with: sudo apt install libffi-dev)")
 endif()

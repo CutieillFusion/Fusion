@@ -5,8 +5,9 @@
 #include "parser.hpp"
 #include "sema.hpp"
 #include <gtest/gtest.h>
-#include <cstdlib>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -1677,6 +1678,47 @@ TEST(JitTests, ExecutesReadLineFile) {
   unlink(out_path);
   /* read_line_file strips trailing newline; print re-adds it */
   EXPECT_STREQ(buf, "hello_line\n") << "read_line_file + print should output the line";
+}
+
+TEST(JitTests, ExecutesHttpRequestGet) {
+  /* Requires libcurl and network. GET example.com, check status 200 and non-null body. */
+  const char* out_path = "/tmp/fusion_jit_http_out.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(out_path, "w", stdout));
+  auto tokens = fusion::lex(
+      "let body = http_request(\"GET\", \"https://example.com\", \"\"); "
+      "let code = http_status(); "
+      "print(code); "
+      "print(\"ok\");");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  /* best-effort restore of stdout FILE*; fd already restored by dup2 */
+  if (!freopen("/dev/fd/1", "w", stdout)) { (void)0; }
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(out_path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[64];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  if (strcmp(buf, "200\n") != 0) {
+    fclose(cap);
+    unlink(out_path);
+    GTEST_SKIP() << "http_request to example.com failed (no network or non-200); skipping";
+  }
+  EXPECT_STREQ(buf, "200\n") << "http_status() should be 200 for example.com";
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  EXPECT_TRUE(std::string(buf).find("ok") != std::string::npos) << "expected ok line";
+  fclose(cap);
+  unlink(out_path);
 }
 
 TEST(JitTests, ExecutesLineCountFile) {

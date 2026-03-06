@@ -21,7 +21,13 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/DynamicLibrary.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/MC/TargetRegistry.h"
+#include "llvm/Target/TargetMachine.h"
+#include "llvm/Target/TargetOptions.h"
+#include "llvm/IR/LegacyPassManager.h"
+#include "llvm/TargetParser/Host.h"
 #include <algorithm>
 #include <cstring>
 #include <dlfcn.h>
@@ -785,6 +791,24 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         Function* fn = M->getFunction("rt_read_line_file");
         if (!fn) return nullptr;
         return B.CreateCall(fn, h, "read_line_file");
+      }
+      if (expr->callee == "http_request") {
+        Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+        Value* method = emit_expr(env, expr->args[0].get());
+        Value* url = emit_expr(env, expr->args[1].get());
+        Value* body = emit_expr(env, expr->args[2].get());
+        if (!method || !url || !body) return nullptr;
+        if (method->getType() != i8ptr) method = B.CreatePointerCast(method, i8ptr);
+        if (url->getType() != i8ptr) url = B.CreatePointerCast(url, i8ptr);
+        if (body->getType() != i8ptr) body = B.CreatePointerCast(body, i8ptr);
+        Function* fn = M->getFunction("rt_http_request");
+        if (!fn) return nullptr;
+        return B.CreateCall(fn, {method, url, body}, "http_request");
+      }
+      if (expr->callee == "http_status") {
+        Function* fn = M->getFunction("rt_http_status");
+        if (!fn) return nullptr;
+        return B.CreateCall(fn, {}, "http_status");
       }
       if (expr->callee == "write_file") {
         Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
@@ -2058,6 +2082,8 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
   Function::Create(FunctionType::get(builder.getInt64Ty(), {i8ptr, i8ptr, builder.getInt64Ty()}, false), GlobalValue::ExternalLinkage, "rt_read_bytes", module.get());
   Function::Create(FunctionType::get(builder.getInt64Ty(), i8ptr, false), GlobalValue::ExternalLinkage, "rt_eof_file", module.get());
   Function::Create(FunctionType::get(builder.getInt64Ty(), i8ptr, false), GlobalValue::ExternalLinkage, "rt_line_count_file", module.get());
+  Function::Create(FunctionType::get(i8ptr, {i8ptr, i8ptr, i8ptr}, false), GlobalValue::ExternalLinkage, "rt_http_request", module.get());
+  Function::Create(FunctionType::get(builder.getInt64Ty(), false), GlobalValue::ExternalLinkage, "rt_http_status", module.get());
   Function::Create(panic_ty, GlobalValue::ExternalLinkage, "rt_panic", module.get());
   Function::Create(dlopen_ty, GlobalValue::ExternalLinkage, "rt_dlopen", module.get());
   Function::Create(dlsym_ty, GlobalValue::ExternalLinkage, "rt_dlsym", module.get());
@@ -2296,8 +2322,16 @@ CodegenResult run_jit(std::unique_ptr<llvm::Module> module,
   }
   JIT->getMainJITDylib().addGenerator(std::move(*genOrErr));
 
+  /* Resolve runtime symbols: RTLD_DEFAULT can miss main-exe symbols on some PIE setups; try main exe explicitly. */
+  void* main_handle = nullptr;
   auto add_sym = [&](const char* name) {
     void* addr = dlsym(RTLD_DEFAULT, name);
+    if (!addr && !main_handle) {
+      main_handle = dlopen(nullptr, RTLD_NOW);
+    }
+    if (!addr && main_handle) {
+      addr = dlsym(main_handle, name);
+    }
     if (!addr) return false;
     SymbolMap syms;
     syms[JIT->mangleAndIntern(name)] = ExecutorSymbolDef(
@@ -2305,16 +2339,28 @@ CodegenResult run_jit(std::unique_ptr<llvm::Module> module,
     if (auto err = JIT->getMainJITDylib().define(absoluteSymbols(std::move(syms)))) return false;
     return true;
   };
-  if (!add_sym("rt_print_i64") || !add_sym("rt_print_f64") || !add_sym("rt_print_cstring") || !add_sym("rt_panic") ||
-      !add_sym("rt_read_line") || !add_sym("rt_to_str_i64") || !add_sym("rt_to_str_f64") ||
-      !add_sym("rt_from_str_i64") || !add_sym("rt_from_str_f64") || !add_sym("rt_str_concat") || !add_sym("rt_str_dup") ||
-      !add_sym("rt_open") || !add_sym("rt_close") || !add_sym("rt_read_line_file") ||
-      !add_sym("rt_write_file_i64") || !add_sym("rt_write_file_f64") || !add_sym("rt_write_file_ptr") ||
-      !add_sym("rt_write_bytes") || !add_sym("rt_read_bytes") ||
-      !add_sym("rt_eof_file") || !add_sym("rt_line_count_file") ||
-      !add_sym("rt_dlopen") || !add_sym("rt_dlsym") || !add_sym("rt_dlerror_last") ||
-      !add_sym("rt_ffi_sig_create") || !add_sym("rt_ffi_call") || !add_sym("rt_ffi_error_last")) {
+  const char* first_missing = nullptr;
+  auto check_sym = [&](const char* name) {
+    if (!add_sym(name)) {
+      if (!first_missing) first_missing = name;
+      return false;
+    }
+    return true;
+  };
+  if (!check_sym("rt_print_i64") || !check_sym("rt_print_f64") || !check_sym("rt_print_cstring") || !check_sym("rt_panic") ||
+      !check_sym("rt_read_line") || !check_sym("rt_to_str_i64") || !check_sym("rt_to_str_f64") ||
+      !check_sym("rt_from_str_i64") || !check_sym("rt_from_str_f64") || !check_sym("rt_str_concat") || !check_sym("rt_str_dup") ||
+      !check_sym("rt_open") || !check_sym("rt_close") || !check_sym("rt_read_line_file") ||
+      !check_sym("rt_write_file_i64") || !check_sym("rt_write_file_f64") || !check_sym("rt_write_file_ptr") ||
+      !check_sym("rt_write_bytes") || !check_sym("rt_read_bytes") ||
+      !check_sym("rt_eof_file") || !check_sym("rt_line_count_file") ||
+      !check_sym("rt_http_request") || !check_sym("rt_http_status") ||
+      !check_sym("rt_dlopen") || !check_sym("rt_dlsym") || !check_sym("rt_dlerror_last") ||
+      !check_sym("rt_ffi_sig_create") || !check_sym("rt_ffi_call") || !check_sym("rt_ffi_error_last")) {
     r.error = "runtime symbols not found (link runtime or use dlsym)";
+    if (first_missing) r.error += std::string("; first missing: ") + first_missing;
+    const char* err = dlerror();
+    if (err) r.error += std::string("; dlerror: ") + err;
     return r;
   }
 
@@ -2343,6 +2389,68 @@ CodegenResult run_jit(std::unique_ptr<llvm::Module> module,
     if (r.error.empty()) r.error = "failed to run JIT entry on big-stack thread";
     return r;
   }
+  r.ok = true;
+  return r;
+}
+
+CodegenResult emit_object(std::unique_ptr<llvm::Module> module,
+                           const std::string& output_path) {
+  CodegenResult r;
+  if (!module) { r.error = "no module"; return r; }
+  if (verifyModule(*module, &llvm::errs())) {
+    r.error = "module verification failed"; return r;
+  }
+  static bool init = []() {
+    llvm::InitializeNativeTarget();
+    llvm::InitializeNativeTargetAsmPrinter();
+    return true;
+  }();
+  (void)init;
+
+  auto triple = llvm::sys::getDefaultTargetTriple();
+  module->setTargetTriple(triple);
+
+  std::string err;
+  const llvm::Target* target = llvm::TargetRegistry::lookupTarget(triple, err);
+  if (!target) { r.error = "no target: " + err; return r; }
+
+  llvm::TargetOptions opt;
+  auto* tm = target->createTargetMachine(triple, "generic", "", opt,
+                                          std::optional<llvm::Reloc::Model>(llvm::Reloc::PIC_));
+  module->setDataLayout(tm->createDataLayout());
+
+  // Inject a C main() that calls rt_init → fusion_main → rt_shutdown → return 0
+  {
+    auto& ctx2 = module->getContext();
+    auto* voidTy = llvm::Type::getVoidTy(ctx2);
+    auto* i32Ty  = llvm::Type::getInt32Ty(ctx2);
+    auto* voidFnTy = llvm::FunctionType::get(voidTy, false);
+    auto* mainTy   = llvm::FunctionType::get(i32Ty, false);
+
+    auto* rtInit     = llvm::Function::Create(voidFnTy, llvm::Function::ExternalLinkage, "rt_init", module.get());
+    auto* rtShutdown = llvm::Function::Create(voidFnTy, llvm::Function::ExternalLinkage, "rt_shutdown", module.get());
+    auto* fusionMain = module->getFunction("fusion_main");
+
+    auto* mainFn = llvm::Function::Create(mainTy, llvm::Function::ExternalLinkage, "main", module.get());
+    auto* bb = llvm::BasicBlock::Create(ctx2, "entry", mainFn);
+    llvm::IRBuilder<> B(bb);
+    B.CreateCall(rtInit);
+    if (fusionMain) B.CreateCall(fusionMain);
+    B.CreateCall(rtShutdown);
+    B.CreateRet(llvm::ConstantInt::get(i32Ty, 0));
+  }
+
+  std::error_code ec;
+  llvm::raw_fd_ostream dest(output_path, ec, llvm::sys::fs::OF_None);
+  if (ec) { r.error = "cannot open output: " + ec.message(); return r; }
+
+  llvm::legacy::PassManager pass;
+  if (tm->addPassesToEmitFile(pass, dest, nullptr, llvm::CodeGenFileType::ObjectFile)) {
+    r.error = "cannot emit object file for this target"; return r;
+  }
+  pass.run(*module);
+  dest.flush();
+  delete tm;
   r.ok = true;
   return r;
 }

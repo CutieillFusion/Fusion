@@ -39,6 +39,9 @@ const char *rt_str_concat(const char *a, const char *b);
  */
 const char *rt_str_dup(const char *s);
 
+/* Register a heap-allocated string for rt_shutdown() to free. For use by runtime modules (e.g. http.c). */
+void rt_track_string(char *p);
+
 /* File I/O. Handle is opaque ptr; NULL = invalid. */
 void *rt_open(const char *path, const char *mode);
 void rt_close(void *handle);
@@ -51,6 +54,12 @@ int64_t rt_write_bytes(void *handle, const void *buf, int64_t count);
 int64_t rt_read_bytes(void *handle, void *buf, int64_t count);
 int64_t rt_eof_file(void *handle);
 int64_t rt_line_count_file(void *handle);
+
+/* HTTP (libcurl). method/url/body are NUL-terminated; body may be NULL or "" for bodyless methods.
+ * Returns response body (runtime-owned; reclaimed by rt_shutdown()) or NULL on failure. */
+const char *rt_http_request(const char *method, const char *url, const char *body);
+/* Last HTTP status code from rt_http_request (0 if no request made yet). Not thread-safe; Fusion is single-threaded. */
+int64_t rt_http_status(void);
 
 /* Print message to stderr and abort. Used when dlopen/dlsym/ffi_call fails. */
 void rt_panic(const char *msg);

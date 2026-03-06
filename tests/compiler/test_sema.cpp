@@ -818,3 +818,55 @@ TEST(SemaTests, RejectsBarePtr) {
   auto parse_result = fusion::parse(tokens);
   EXPECT_FALSE(parse_result.ok()) << "expected parse failure for bare ptr param";
 }
+
+TEST(SemaTests, HttpRequestExpectsThreeArgs) {
+  auto tokens = fusion::lex("http_request(\"GET\")");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_FALSE(sema_result.ok);
+  EXPECT_TRUE(sema_result.error.message.find("http_request") != std::string::npos);
+}
+
+TEST(SemaTests, HttpRequestRejectsWrongArity) {
+  auto tokens = fusion::lex("http_request(\"GET\", \"https://x.com\", \"\", 1)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_FALSE(sema_result.ok);
+}
+
+TEST(SemaTests, HttpRequestRejectsWrongType) {
+  auto tokens = fusion::lex("http_request(\"GET\", \"https://x.com\", 42)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_FALSE(sema_result.ok);
+  EXPECT_TRUE(sema_result.error.message.find("http_request") != std::string::npos ||
+              sema_result.error.message.find("pointer") != std::string::npos);
+}
+
+TEST(SemaTests, AcceptsHttpRequestGet) {
+  auto tokens = fusion::lex("let b = http_request(\"GET\", \"https://x\", \"\"); print(1)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, AcceptsHttpStatus) {
+  auto tokens = fusion::lex("let c = http_status(); print(c)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_TRUE(sema_result.ok) << sema_result.error.message;
+}
+
+TEST(SemaTests, HttpStatusRejectsArgs) {
+  auto tokens = fusion::lex("http_status(1)");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok());
+  auto sema_result = fusion::check(parse_result.program.get());
+  EXPECT_FALSE(sema_result.ok);
+  EXPECT_TRUE(sema_result.error.message.find("http_status") != std::string::npos);
+}

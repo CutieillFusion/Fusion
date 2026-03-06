@@ -4,38 +4,21 @@ project(Fusion LANGUAGES C CXX)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
-option(FUSION_FETCH_LIBFFI "If libffi is not found, download and build it into the build tree (enables full FFI)" ON)
-
-find_package(LLVM QUIET CONFIG)
-if(NOT LLVM_FOUND)
-  include(cmake/DownloadLLVM.cmake)
-  if(LLVM_DIR)
-    unset(LLVM_FOUND)
-    find_package(LLVM QUIET CONFIG)
-  endif()
-endif()
-if(NOT LLVM_FOUND)
-  message(FATAL_ERROR "LLVM is required but was not found. Install LLVM or enable download (Linux: FUSION_DOWNLOAD_LLVM is ON by default).")
-endif()
+# Hint for apt-installed LLVM 18 (cmake won't find it without this)
+set(LLVM_DIR "/usr/lib/llvm-18/lib/cmake/llvm" CACHE PATH "Path to LLVMConfig.cmake (apt: llvm-18-dev installs here)")
+find_package(LLVM 18.1 REQUIRED CONFIG)
 message(STATUS "LLVM ${LLVM_VERSION} found - fusion will support --version")
 include(cmake/FusionLLVMExtraLibs.cmake)
 
 include(CTest)
 enable_testing()
 
-# nlohmann/json — header-only, fetched from GitHub (no system install required)
-include(FetchContent)
-FetchContent_Declare(
-  nlohmann_json
-  GIT_REPOSITORY https://github.com/nlohmann/json.git
-  GIT_TAG        v3.11.3
-  GIT_SHALLOW    TRUE
-)
-set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
-set(JSON_Install   OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(nlohmann_json)
+# nlohmann/json — installed via apt (nlohmann-json3-dev)
+find_package(nlohmann_json 3 REQUIRED)
 
-# runtime_c first so FUSION_LIBFFI_FOUND and LibFFI::LibFFI exist for compiler/tests
+# CURL (for runtime HTTP) and LibFFI so FUSION_* and LibFFI::LibFFI exist for compiler/tests
+include("${CMAKE_SOURCE_DIR}/cmake/FindFusionCURL.cmake")
+include("${CMAKE_SOURCE_DIR}/cmake/FindFusionLibFFI.cmake")
 add_subdirectory(runtime_c)
 add_subdirectory(compiler)
 add_subdirectory(tests)

@@ -601,6 +601,26 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
         expr->inferred_ptr_element = "char";
         return true;
       }
+      if (expr->callee == "http_request") {
+        if (expr->args.size() != 3) {
+          ctx.err->message = "http_request expects (method, url, body)";
+          return false;
+        }
+        if (!check_expr(expr->args[0].get(), ctx) || !check_expr(expr->args[1].get(), ctx) || !check_expr(expr->args[2].get(), ctx)) return false;
+        if (expr_type(expr->args[0].get(), &ctx) != FfiType::Ptr || expr_type(expr->args[1].get(), &ctx) != FfiType::Ptr || expr_type(expr->args[2].get(), &ctx) != FfiType::Ptr) {
+          ctx.err->message = "http_request expects three pointer (string) arguments; use \"\" for body when no body";
+          return false;
+        }
+        expr->inferred_ptr_element = "char";
+        return true;
+      }
+      if (expr->callee == "http_status") {
+        if (expr->args.size() != 0) {
+          ctx.err->message = "http_status expects no arguments";
+          return false;
+        }
+        return true;
+      }
       if (expr->callee == "write_file") {
         if (expr->args.size() != 2) {
           ctx.err->message = "write_file expects (handle, value)";
