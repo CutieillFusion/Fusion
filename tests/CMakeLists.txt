@@ -32,14 +32,23 @@ foreach(src IN LISTS FUSION_COMPILER_TEST_SOURCES)
   get_filename_component(name_we ${src} NAME_WE)
   string(REPLACE "test_" "" suite ${name_we})
   add_executable(fusion_test_compiler_${suite} ${src})
-  add_dependencies(fusion_test_compiler_${suite} fusion_phase6_so)
+  add_dependencies(fusion_test_compiler_${suite} fusion_phase6_so runtime_static)
   target_link_libraries(fusion_test_compiler_${suite} PRIVATE GTest::gtest_main fusion_compiler ${CMAKE_DL_LIBS})
-  target_link_options(fusion_test_compiler_${suite} PRIVATE
-    "LINKER:--whole-archive,$<TARGET_FILE:runtime_static>,--no-whole-archive"
-    "LINKER:--export-dynamic"
+  # Embed static runtime so JIT can dlsym(RTLD_DEFAULT, "rt_*"). -Wl form works with all Unix linkers and CMake generators.
+  target_link_libraries(fusion_test_compiler_${suite} PRIVATE
+    -Wl,--whole-archive
+    $<TARGET_FILE:runtime_static>
+    -Wl,--no-whole-archive
+    -Wl,--export-dynamic
   )
   if(FUSION_LIBFFI_FOUND)
     target_link_libraries(fusion_test_compiler_${suite} PRIVATE LibFFI::LibFFI)
+  endif()
+  if(FUSION_CURL_FOUND)
+    target_link_libraries(fusion_test_compiler_${suite} PRIVATE ${FUSION_CURL_TARGET})
+    if(FUSION_CURL_INCLUDE_DIR)
+      target_include_directories(fusion_test_compiler_${suite} PRIVATE ${FUSION_CURL_INCLUDE_DIR})
+    endif()
   endif()
   target_include_directories(fusion_test_compiler_${suite} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../compiler ${CMAKE_CURRENT_SOURCE_DIR}/../compiler/src)
   fusion_target_link_llvm(fusion_test_compiler_${suite})

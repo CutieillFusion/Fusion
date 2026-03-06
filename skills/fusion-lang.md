@@ -82,6 +82,17 @@ let x: i64 = from_str(s, i64);     // string to i64
 let f: f64 = from_str(s, f64);     // string to f64
 ```
 
+### HTTP
+```fusion
+// All methods: GET, POST, PUT, PATCH, DELETE, HEAD. Body must be "" for bodyless methods.
+let body: str = http_request("GET", "https://example.com", "");
+let code: i64 = http_status();   // last response status (e.g. 200); 0 if no request yet
+if body != 0 {
+    print(body);
+}
+// Response string is runtime-owned (reclaimed at shutdown). NULL on failure.
+```
+
 ### Memory
 ```fusion
 // Stack allocation

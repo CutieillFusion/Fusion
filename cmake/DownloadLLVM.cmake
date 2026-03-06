@@ -28,6 +28,14 @@ set(_fusion_expected_root "${_fusion_deps_dir}/clang+llvm-${FUSION_LLVM_VERSION}
 
 # Prefer exact expected directory (deterministic); fall back to GLOB only for older layouts.
 if(EXISTS "${_fusion_expected_root}/lib/cmake/llvm/LLVMConfig.cmake")
+  set(_fusion_llvm_cmake "${_fusion_expected_root}/lib/cmake/llvm")
+  if(EXISTS "${_fusion_llvm_cmake}/LLVMExports.cmake")
+    execute_process(
+      COMMAND "${CMAKE_COMMAND}" -D "PATCH_FILE=${_fusion_llvm_cmake}/LLVMExports.cmake" -P "${CMAKE_CURRENT_LIST_DIR}/PatchLLVMExportsMissingFiles.cmake"
+      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+      RESULT_VARIABLE _fusion_patch_result
+    )
+  endif()
   set(LLVM_DIR "${_fusion_expected_root}/lib/cmake/llvm" CACHE PATH "LLVM config (auto-downloaded)" FORCE)
   message(STATUS "Using previously downloaded LLVM at ${_fusion_expected_root}")
   return()
@@ -37,6 +45,13 @@ if(_fusion_llvm_extracted)
   list(GET _fusion_llvm_extracted 0 _fusion_llvm_root)
   set(_fusion_llvm_cmake "${_fusion_llvm_root}/lib/cmake/llvm")
   if(EXISTS "${_fusion_llvm_cmake}/LLVMConfig.cmake")
+    if(EXISTS "${_fusion_llvm_cmake}/LLVMExports.cmake")
+      execute_process(
+        COMMAND "${CMAKE_COMMAND}" -D "PATCH_FILE=${_fusion_llvm_cmake}/LLVMExports.cmake" -P "${CMAKE_CURRENT_LIST_DIR}/PatchLLVMExportsMissingFiles.cmake"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        RESULT_VARIABLE _fusion_patch_result
+      )
+    endif()
     set(LLVM_DIR "${_fusion_llvm_cmake}" CACHE PATH "LLVM config (auto-downloaded)" FORCE)
     message(STATUS "Using previously downloaded LLVM at ${_fusion_llvm_root}")
     return()
@@ -106,6 +121,20 @@ set(_fusion_llvm_cmake "${_fusion_llvm_root}/lib/cmake/llvm")
 if(NOT EXISTS "${_fusion_llvm_cmake}/LLVMConfig.cmake")
   message(WARNING "LLVMConfig.cmake not found under ${_fusion_llvm_root}. Build will continue without LLVM.")
   return()
+endif()
+
+# Prebuilt LLVM 18+ may reference MLIR tools (e.g. mlir-linalg-ods-yaml-gen) that are not in the tarball.
+# Downgrade missing-file check to STATUS so configuration can continue; Fusion only needs LLVM libraries.
+set(_fusion_exports "${_fusion_llvm_cmake}/LLVMExports.cmake")
+if(EXISTS "${_fusion_exports}")
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" -D "PATCH_FILE=${_fusion_exports}" -P "${CMAKE_CURRENT_LIST_DIR}/PatchLLVMExportsMissingFiles.cmake"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    RESULT_VARIABLE _fusion_patch_result
+  )
+  if(NOT _fusion_patch_result EQUAL 0)
+    message(STATUS "LLVMExports patch skipped or failed (${_fusion_patch_result}); config may fail if tools are missing.")
+  endif()
 endif()
 
 set(LLVM_DIR "${_fusion_llvm_cmake}" CACHE PATH "LLVM config (auto-downloaded)" FORCE)

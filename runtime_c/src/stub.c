@@ -21,7 +21,7 @@ typedef struct RtStrNode {
 
 static RtStrNode *rt_str_head = NULL;
 
-static void rt_track_string(char *p) {
+void rt_track_string(char *p) {
   if (!p) return;
   RtStrNode *node = (RtStrNode *)malloc(sizeof(RtStrNode));
   if (!node) return;  /* Leak p rather than crashing on OOM. */

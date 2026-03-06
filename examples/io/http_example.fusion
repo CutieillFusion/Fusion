@@ -1,0 +1,8 @@
+# GET https://example.com and print the status code and response body.
+
+let body = http_request("GET", "https://example.com", "");
+let code = http_status();
+print("Status:");
+print(code);
+print("Body:");
+print(body);

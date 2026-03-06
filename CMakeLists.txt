@@ -35,7 +35,9 @@ set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
 set(JSON_Install   OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(nlohmann_json)
 
-# runtime_c first so FUSION_LIBFFI_FOUND and LibFFI::LibFFI exist for compiler/tests
+# CURL (for runtime HTTP) and runtime_c first so FUSION_* exist for compiler/tests
+option(FUSION_FETCH_CURL "If CURL is not found, download and build it in the build tree (for HTTP builtins)" ON)
+include("${CMAKE_SOURCE_DIR}/cmake/FindFusionCURL.cmake")
 add_subdirectory(runtime_c)
 add_subdirectory(compiler)
 add_subdirectory(tests)

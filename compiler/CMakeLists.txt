@@ -36,6 +36,12 @@ target_link_libraries(fusion PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
 if(FUSION_LIBFFI_FOUND)
   target_link_libraries(fusion PRIVATE LibFFI::LibFFI)
 endif()
+if(FUSION_CURL_FOUND)
+  target_link_libraries(fusion PRIVATE ${FUSION_CURL_TARGET})
+  if(FUSION_CURL_INCLUDE_DIR)
+    target_include_directories(fusion PRIVATE ${FUSION_CURL_INCLUDE_DIR})
+  endif()
+endif()
 target_link_options(fusion PRIVATE
   "LINKER:--whole-archive,$<TARGET_FILE:runtime_static>,--no-whole-archive"
   "LINKER:--export-dynamic"
