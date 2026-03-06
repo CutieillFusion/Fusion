@@ -46,3 +46,12 @@ target_link_options(fusion PRIVATE
   "LINKER:--whole-archive,$<TARGET_FILE:runtime_static>,--no-whole-archive"
   "LINKER:--export-dynamic"
 )
+target_compile_definitions(fusion PRIVATE
+  FUSION_RUNTIME_STATIC_PATH="$<TARGET_FILE:runtime_static>"
+)
+if(FUSION_LIBFFI_FOUND)
+  target_compile_definitions(fusion PRIVATE FUSION_HAVE_LIBFFI=1)
+endif()
+if(FUSION_CURL_FOUND)
+  target_compile_definitions(fusion PRIVATE FUSION_HAVE_LIBCURL=1)
+endif()

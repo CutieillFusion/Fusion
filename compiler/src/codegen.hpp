@@ -24,6 +24,8 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program);
 const std::string& codegen_last_error();
 CodegenResult run_jit(std::unique_ptr<llvm::Module> module,
                       std::unique_ptr<llvm::LLVMContext> ctx);
+CodegenResult emit_object(std::unique_ptr<llvm::Module> module,
+                           const std::string& output_path);
 #endif
 
 }  // namespace fusion

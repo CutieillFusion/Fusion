@@ -21,7 +21,13 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/DynamicLibrary.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/MC/TargetRegistry.h"
+#include "llvm/Target/TargetMachine.h"
+#include "llvm/Target/TargetOptions.h"
+#include "llvm/IR/LegacyPassManager.h"
+#include "llvm/TargetParser/Host.h"
 #include <algorithm>
 #include <cstring>
 #include <dlfcn.h>
@@ -2383,6 +2389,68 @@ CodegenResult run_jit(std::unique_ptr<llvm::Module> module,
     if (r.error.empty()) r.error = "failed to run JIT entry on big-stack thread";
     return r;
   }
+  r.ok = true;
+  return r;
+}
+
+CodegenResult emit_object(std::unique_ptr<llvm::Module> module,
+                           const std::string& output_path) {
+  CodegenResult r;
+  if (!module) { r.error = "no module"; return r; }
+  if (verifyModule(*module, &llvm::errs())) {
+    r.error = "module verification failed"; return r;
+  }
+  static bool init = []() {
+    llvm::InitializeNativeTarget();
+    llvm::InitializeNativeTargetAsmPrinter();
+    return true;
+  }();
+  (void)init;
+
+  auto triple = llvm::sys::getDefaultTargetTriple();
+  module->setTargetTriple(triple);
+
+  std::string err;
+  const llvm::Target* target = llvm::TargetRegistry::lookupTarget(triple, err);
+  if (!target) { r.error = "no target: " + err; return r; }
+
+  llvm::TargetOptions opt;
+  auto* tm = target->createTargetMachine(triple, "generic", "", opt,
+                                          std::optional<llvm::Reloc::Model>(llvm::Reloc::PIC_));
+  module->setDataLayout(tm->createDataLayout());
+
+  // Inject a C main() that calls rt_init → fusion_main → rt_shutdown → return 0
+  {
+    auto& ctx2 = module->getContext();
+    auto* voidTy = llvm::Type::getVoidTy(ctx2);
+    auto* i32Ty  = llvm::Type::getInt32Ty(ctx2);
+    auto* voidFnTy = llvm::FunctionType::get(voidTy, false);
+    auto* mainTy   = llvm::FunctionType::get(i32Ty, false);
+
+    auto* rtInit     = llvm::Function::Create(voidFnTy, llvm::Function::ExternalLinkage, "rt_init", module.get());
+    auto* rtShutdown = llvm::Function::Create(voidFnTy, llvm::Function::ExternalLinkage, "rt_shutdown", module.get());
+    auto* fusionMain = module->getFunction("fusion_main");
+
+    auto* mainFn = llvm::Function::Create(mainTy, llvm::Function::ExternalLinkage, "main", module.get());
+    auto* bb = llvm::BasicBlock::Create(ctx2, "entry", mainFn);
+    llvm::IRBuilder<> B(bb);
+    B.CreateCall(rtInit);
+    if (fusionMain) B.CreateCall(fusionMain);
+    B.CreateCall(rtShutdown);
+    B.CreateRet(llvm::ConstantInt::get(i32Ty, 0));
+  }
+
+  std::error_code ec;
+  llvm::raw_fd_ostream dest(output_path, ec, llvm::sys::fs::OF_None);
+  if (ec) { r.error = "cannot open output: " + ec.message(); return r; }
+
+  llvm::legacy::PassManager pass;
+  if (tm->addPassesToEmitFile(pass, dest, nullptr, llvm::CodeGenFileType::ObjectFile)) {
+    r.error = "cannot emit object file for this target"; return r;
+  }
+  pass.run(*module);
+  dest.flush();
+  delete tm;
   r.ok = true;
   return r;
 }

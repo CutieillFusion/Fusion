@@ -8,7 +8,18 @@
 set -e
 
 # Install system dependencies (idempotent)
-sudo apt install -y build-essential cmake llvm-18-dev libffi-dev libcurl4-openssl-dev nlohmann-json3-dev zlib1g-dev libncurses-dev libzstd-dev
+# Check if all required packages are missing
+MISSING_PKGS=()
+for pkg in build-essential cmake llvm-18-dev libffi-dev libcurl4-openssl-dev nlohmann-json3-dev zlib1g-dev libncurses-dev libzstd-dev; do
+    if ! dpkg -s "$pkg" &> /dev/null; then
+        MISSING_PKGS+=("$pkg")
+    fi
+done
+
+if [ "${#MISSING_PKGS[@]}" -eq 8 ]; then
+    echo "All required packages are missing. Installing..."
+    sudo apt install -y "${MISSING_PKGS[@]}"
+fi
 
 # Use system CMake/CTest when available so runtime is linked with --whole-archive/--export-dynamic.
 if [[ -x /usr/bin/cmake ]]; then
