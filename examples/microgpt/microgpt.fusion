@@ -1,0 +1,418 @@
+import lib "value" {
+    struct Value;
+    fn make_leaf(data: f64) -> ptr[Value];
+    fn free_value(v: ptr[Value]) -> void;
+    fn add_forward(a: ptr[Value], b: ptr[Value]) -> ptr[Value];
+    fn neg_forward(a: ptr[Value]) -> ptr[Value];
+    fn log_forward(a: ptr[Value]) -> ptr[Value];
+    fn scale_forward(a: ptr[Value], k: f64) -> ptr[Value];
+}
+
+import lib "autograd" {
+    fn backward_with_free(root: ptr[Value], weight_ptrs: ptr[Value], weight_count: i64) -> void;
+}
+
+import lib "rand" {
+    fn rand_gauss(std: f64) -> f64;
+    fn rand_0_1() -> f64;
+}
+
+import lib "names" {
+    struct Doc;
+    struct Dataset;
+    fn create_dataset(path: ptr[void]) -> ptr[Dataset];
+    fn free_dataset(ds: ptr[Dataset]) -> void;
+    fn char_to_idx(ch: i64, vocab: ptr[void], vocab_size: i64) -> i64;
+}
+
+import lib "gpt" {
+    struct GPTModel;
+    fn alloc_gpt_model(vocab_size: i64, n_embd: i64, n_head: i64, head_dim: i64, block_size: i64) -> ptr[GPTModel];
+    fn gpt_forward(model: ptr[GPTModel], token_id: i64, pos_id: i64, keys_cache: ptr[Value], vals_cache: ptr[Value]) -> ptr[Value];
+    fn softmax_v(logits: ptr[Value], n: i64) -> ptr[Value];
+}
+
+extern lib "libm.so.6" {
+    fn pow(x: f64, y: f64) -> f64;
+    fn sqrt(x: f64) -> f64;
+    fn exp(x: f64) -> f64;
+};
+
+# Hyperparameters
+let n_embd = 16;
+let n_head = 4;
+let head_dim = 4;
+let block_size = 16;
+let num_steps = 1000;
+let learning_rate = 0.01;
+let beta1 = 0.85;
+let beta2 = 0.99;
+let eps_adam = 0.00000001;
+let temperature = 0.5;
+let n_inference_samples = 20;
+
+# Load dataset
+let ds = create_dataset("examples/microgpt/input.txt");
+let docs = ds.docs;
+let n_docs = ds.n_docs;
+let vocab_buf = ds.vocab;
+let vocab_size = ds.vocab_size;
+let BOS = ds.BOS;
+
+# Allocate model
+let model = alloc_gpt_model(vocab_size, n_embd, n_head, head_dim, block_size);
+
+# Initialize weights with Gaussian
+let wte = model.wte;
+let wpe = model.wpe;
+let lm_head = model.lm_head;
+let attn_wq = model.attn_wq;
+let attn_wk = model.attn_wk;
+let attn_wv = model.attn_wv;
+let attn_wo = model.attn_wo;
+let mlp_fc1 = model.mlp_fc1;
+let mlp_fc2 = model.mlp_fc2;
+
+for (let i = 0; i < vocab_size * n_embd; i = i + 1) { wte[i] = make_leaf(rand_gauss(0.08)); }
+for (let i = 0; i < block_size * n_embd; i = i + 1) { wpe[i] = make_leaf(rand_gauss(0.08)); }
+for (let i = 0; i < vocab_size * n_embd; i = i + 1) { lm_head[i] = make_leaf(rand_gauss(0.08)); }
+for (let i = 0; i < n_embd * n_embd; i = i + 1) { attn_wq[i] = make_leaf(rand_gauss(0.08)); }
+for (let i = 0; i < n_embd * n_embd; i = i + 1) { attn_wk[i] = make_leaf(rand_gauss(0.08)); }
+for (let i = 0; i < n_embd * n_embd; i = i + 1) { attn_wv[i] = make_leaf(rand_gauss(0.08)); }
+for (let i = 0; i < n_embd * n_embd; i = i + 1) { attn_wo[i] = make_leaf(rand_gauss(0.08)); }
+for (let i = 0; i < 4 * n_embd * n_embd; i = i + 1) { mlp_fc1[i] = make_leaf(rand_gauss(0.08)); }
+for (let i = 0; i < n_embd * 4 * n_embd; i = i + 1) { mlp_fc2[i] = make_leaf(rand_gauss(0.08)); }
+
+# Build flat weight_ptrs for Adam and backward
+let n_params = vocab_size * n_embd + block_size * n_embd + vocab_size * n_embd + n_embd * n_embd * 4 + 4 * n_embd * n_embd + n_embd * 4 * n_embd;
+let weight_ptrs = heap_array(ptr[Value], n_params);
+let wp = 0;
+for (let i = 0; i < vocab_size * n_embd; i = i + 1) { weight_ptrs[wp] = wte[i]; wp = wp + 1; }
+for (let i = 0; i < block_size * n_embd; i = i + 1) { weight_ptrs[wp] = wpe[i]; wp = wp + 1; }
+for (let i = 0; i < vocab_size * n_embd; i = i + 1) { weight_ptrs[wp] = lm_head[i]; wp = wp + 1; }
+for (let i = 0; i < n_embd * n_embd; i = i + 1) { weight_ptrs[wp] = attn_wq[i]; wp = wp + 1; }
+for (let i = 0; i < n_embd * n_embd; i = i + 1) { weight_ptrs[wp] = attn_wk[i]; wp = wp + 1; }
+for (let i = 0; i < n_embd * n_embd; i = i + 1) { weight_ptrs[wp] = attn_wv[i]; wp = wp + 1; }
+for (let i = 0; i < n_embd * n_embd; i = i + 1) { weight_ptrs[wp] = attn_wo[i]; wp = wp + 1; }
+for (let i = 0; i < 4 * n_embd * n_embd; i = i + 1) { weight_ptrs[wp] = mlp_fc1[i]; wp = wp + 1; }
+for (let i = 0; i < n_embd * 4 * n_embd; i = i + 1) { weight_ptrs[wp] = mlp_fc2[i]; wp = wp + 1; }
+
+# Adam buffers
+let m_buf = heap_array(f64, n_params);
+let v_buf = heap_array(f64, n_params);
+for (let i = 0; i < n_params; i = i + 1) { m_buf[i] = 0.0; v_buf[i] = 0.0; }
+
+# Token buffer
+let tokens = heap_array(i64, block_size + 4);
+
+# Training loop
+for (let step = 0; step < num_steps; step = step + 1) {
+    let doc_idx = step - (step / n_docs) * n_docs;
+    let doc_ptr = docs[doc_idx];
+    let doc_bytes = doc_ptr.chars as ptr[char];
+    let doc_len = doc_ptr.len;
+
+    # Tokenize
+    tokens[0] = BOS;
+    for (let j = 0; j < doc_len; j = j + 1) {
+        let ch = doc_bytes[j] as i64;
+        tokens[j + 1] = char_to_idx(ch, vocab_buf, vocab_size);
+    }
+    tokens[doc_len + 1] = BOS;
+    let n_toks = doc_len + 2;
+
+    let n = n_toks - 1;
+    if (n > block_size) {
+        n = block_size;
+    }
+
+    let keys_cache = heap_array(ptr[Value], block_size * n_embd);
+    let vals_cache = heap_array(ptr[Value], block_size * n_embd);
+
+    let loss_sum = make_leaf(0.0);
+    for (let pos = 0; pos < n; pos = pos + 1) {
+        let logits = gpt_forward(model, tokens[pos], pos, keys_cache, vals_cache);
+        let probs = softmax_v(logits, vocab_size);
+        let target = tokens[pos + 1];
+        let loss_t = neg_forward(log_forward(probs[target]));
+        loss_sum = add_forward(loss_sum, loss_t);
+        free_array(as_array(logits, ptr));
+        free_array(as_array(probs, ptr));
+    }
+    let loss = scale_forward(loss_sum, 1.0 / (n as f64));
+
+    let loss_val = loss.data;
+
+    backward_with_free(loss, weight_ptrs, n_params);
+
+    free_array(as_array(keys_cache, ptr));
+    free_array(as_array(vals_cache, ptr));
+
+    # Adam update
+    let lr_t = learning_rate * (1.0 - (step as f64) / (num_steps as f64));
+    for (let i = 0; i < n_params; i = i + 1) {
+        let g = weight_ptrs[i].grad;
+        m_buf[i] = beta1 * m_buf[i] + (1.0 - beta1) * g;
+        v_buf[i] = beta2 * v_buf[i] + (1.0 - beta2) * g * g;
+        let step1 = step + 1;
+        let m_hat = m_buf[i] / (1.0 - pow(beta1, step1 as f64));
+        let v_hat = v_buf[i] / (1.0 - pow(beta2, step1 as f64));
+        weight_ptrs[i].data = weight_ptrs[i].data - lr_t * m_hat / (sqrt(v_hat) + eps_adam);
+        weight_ptrs[i].grad = 0.0;
+    }
+
+    print("Epoch: " + to_str(step + 1) + " Loss: " + to_str(loss_val));
+}
+
+# --- Inference (pure f64, fully inlined) ---
+
+let wte_f = heap_array(f64, vocab_size * n_embd);
+let wpe_f = heap_array(f64, block_size * n_embd);
+let lm_head_f = heap_array(f64, vocab_size * n_embd);
+let attn_wq_f = heap_array(f64, n_embd * n_embd);
+let attn_wk_f = heap_array(f64, n_embd * n_embd);
+let attn_wv_f = heap_array(f64, n_embd * n_embd);
+let attn_wo_f = heap_array(f64, n_embd * n_embd);
+let mlp_fc1_f = heap_array(f64, 4 * n_embd * n_embd);
+let mlp_fc2_f = heap_array(f64, n_embd * 4 * n_embd);
+
+for (let i = 0; i < vocab_size * n_embd; i = i + 1) { wte_f[i] = wte[i].data; }
+for (let i = 0; i < block_size * n_embd; i = i + 1) { wpe_f[i] = wpe[i].data; }
+for (let i = 0; i < vocab_size * n_embd; i = i + 1) { lm_head_f[i] = lm_head[i].data; }
+for (let i = 0; i < n_embd * n_embd; i = i + 1) { attn_wq_f[i] = attn_wq[i].data; }
+for (let i = 0; i < n_embd * n_embd; i = i + 1) { attn_wk_f[i] = attn_wk[i].data; }
+for (let i = 0; i < n_embd * n_embd; i = i + 1) { attn_wv_f[i] = attn_wv[i].data; }
+for (let i = 0; i < n_embd * n_embd; i = i + 1) { attn_wo_f[i] = attn_wo[i].data; }
+for (let i = 0; i < 4 * n_embd * n_embd; i = i + 1) { mlp_fc1_f[i] = mlp_fc1[i].data; }
+for (let i = 0; i < n_embd * 4 * n_embd; i = i + 1) { mlp_fc2_f[i] = mlp_fc2[i].data; }
+
+let logits_f = heap_array(f64, vocab_size);
+let probs_f = heap_array(f64, vocab_size);
+let infer_x = heap_array(f64, n_embd);
+let infer_tmp = heap_array(f64, n_embd);
+let infer_q = heap_array(f64, n_embd);
+let infer_k = heap_array(f64, n_embd);
+let infer_v = heap_array(f64, n_embd);
+let infer_xattn = heap_array(f64, n_embd);
+let infer_xattn_out = heap_array(f64, n_embd);
+let infer_x2 = heap_array(f64, n_embd);
+let infer_fc1 = heap_array(f64, 4 * n_embd);
+let infer_fc2 = heap_array(f64, n_embd);
+
+print("--- inference (new, hallucinated names) ---");
+for (let s = 0; s < n_inference_samples; s = s + 1) {
+    let keys_f = heap_array(f64, block_size * n_embd);
+    let vals_f = heap_array(f64, block_size * n_embd);
+    let token_id = BOS;
+    let out_chars = heap_array(i8, block_size + 2);
+    let out_len = 0;
+
+    for (let pos = 0; pos < block_size; pos = pos + 1) {
+        # tok_emb + pos_emb
+        for (let i = 0; i < n_embd; i = i + 1) {
+            infer_x[i] = wte_f[token_id * n_embd + i] + wpe_f[pos * n_embd + i];
+        }
+        # initial rmsnorm
+        let ms0 = 0.0;
+        for (let i = 0; i < n_embd; i = i + 1) { ms0 = ms0 + infer_x[i] * infer_x[i]; }
+        ms0 = ms0 / (n_embd as f64);
+        let sc0 = 1.0 / sqrt(ms0 + 0.00001);
+        for (let i = 0; i < n_embd; i = i + 1) { infer_x[i] = infer_x[i] * sc0; }
+        # save residual
+        for (let i = 0; i < n_embd; i = i + 1) { infer_x2[i] = infer_x[i]; }
+        # rmsnorm before attn
+        let ms1 = 0.0;
+        for (let i = 0; i < n_embd; i = i + 1) { ms1 = ms1 + infer_x[i] * infer_x[i]; }
+        ms1 = ms1 / (n_embd as f64);
+        let sc1 = 1.0 / sqrt(ms1 + 0.00001);
+        for (let i = 0; i < n_embd; i = i + 1) { infer_x[i] = infer_x[i] * sc1; }
+        # QKV projections
+        for (let j = 0; j < n_embd; j = j + 1) {
+            let aq = 0.0; let ak = 0.0; let av = 0.0;
+            for (let i = 0; i < n_embd; i = i + 1) {
+                aq = aq + attn_wq_f[j * n_embd + i] * infer_x[i];
+                ak = ak + attn_wk_f[j * n_embd + i] * infer_x[i];
+                av = av + attn_wv_f[j * n_embd + i] * infer_x[i];
+            }
+            infer_q[j] = aq; infer_k[j] = ak; infer_v[j] = av;
+        }
+        # store in cache
+        for (let i = 0; i < n_embd; i = i + 1) {
+            keys_f[pos * n_embd + i] = infer_k[i];
+            vals_f[pos * n_embd + i] = infer_v[i];
+        }
+        # multi-head attention
+        let n_past = pos + 1;
+        let sf = 1.0 / sqrt(head_dim as f64);
+        let attn_scores = heap_array(f64, n_past);
+        for (let h = 0; h < n_head; h = h + 1) {
+            let hs = h * head_dim;
+            for (let t = 0; t < n_past; t = t + 1) {
+                let dot = 0.0;
+                for (let j = 0; j < head_dim; j = j + 1) {
+                    dot = dot + infer_q[hs + j] * keys_f[t * n_embd + hs + j];
+                }
+                attn_scores[t] = dot * sf / temperature;
+            }
+            let max_s = attn_scores[0];
+            for (let t = 1; t < n_past; t = t + 1) { if (attn_scores[t] > max_s) { max_s = attn_scores[t]; } }
+            let sum_e = 0.0;
+            for (let t = 0; t < n_past; t = t + 1) {
+                attn_scores[t] = exp(attn_scores[t] - max_s);
+                sum_e = sum_e + attn_scores[t];
+            }
+            for (let t = 0; t < n_past; t = t + 1) { attn_scores[t] = attn_scores[t] / sum_e; }
+            for (let j = 0; j < head_dim; j = j + 1) {
+                let acc = 0.0;
+                for (let t = 0; t < n_past; t = t + 1) {
+                    acc = acc + attn_scores[t] * vals_f[t * n_embd + hs + j];
+                }
+                infer_xattn[hs + j] = acc;
+            }
+        }
+        free_array(as_array(attn_scores, f64));
+        # attn output projection
+        for (let j = 0; j < n_embd; j = j + 1) {
+            let acc = 0.0;
+            for (let i = 0; i < n_embd; i = i + 1) {
+                acc = acc + attn_wo_f[j * n_embd + i] * infer_xattn[i];
+            }
+            infer_xattn_out[j] = acc;
+        }
+        # residual
+        for (let i = 0; i < n_embd; i = i + 1) { infer_x[i] = infer_xattn_out[i] + infer_x2[i]; }
+        # MLP block
+        for (let i = 0; i < n_embd; i = i + 1) { infer_x2[i] = infer_x[i]; }
+        # rmsnorm
+        let ms2 = 0.0;
+        for (let i = 0; i < n_embd; i = i + 1) { ms2 = ms2 + infer_x[i] * infer_x[i]; }
+        ms2 = ms2 / (n_embd as f64);
+        let sc2 = 1.0 / sqrt(ms2 + 0.00001);
+        for (let i = 0; i < n_embd; i = i + 1) { infer_x[i] = infer_x[i] * sc2; }
+        # fc1 + relu
+        for (let j = 0; j < 4 * n_embd; j = j + 1) {
+            let acc = 0.0;
+            for (let i = 0; i < n_embd; i = i + 1) {
+                acc = acc + mlp_fc1_f[j * n_embd + i] * infer_x[i];
+            }
+            if (acc < 0.0) { acc = 0.0; }
+            infer_fc1[j] = acc;
+        }
+        # fc2
+        for (let j = 0; j < n_embd; j = j + 1) {
+            let acc = 0.0;
+            for (let i = 0; i < 4 * n_embd; i = i + 1) {
+                acc = acc + mlp_fc2_f[j * (4 * n_embd) + i] * infer_fc1[i];
+            }
+            infer_fc2[j] = acc;
+        }
+        # residual
+        for (let i = 0; i < n_embd; i = i + 1) { infer_x[i] = infer_fc2[i] + infer_x2[i]; }
+        # lm_head
+        for (let j = 0; j < vocab_size; j = j + 1) {
+            let acc = 0.0;
+            for (let i = 0; i < n_embd; i = i + 1) {
+                acc = acc + lm_head_f[j * n_embd + i] * infer_x[i];
+            }
+            logits_f[j] = acc;
+        }
+
+        # softmax with temperature on output logits
+        let max_l = logits_f[0];
+        for (let t = 1; t < vocab_size; t = t + 1) { if (logits_f[t] > max_l) { max_l = logits_f[t]; } }
+        let sum_e2 = 0.0;
+        for (let t = 0; t < vocab_size; t = t + 1) {
+            probs_f[t] = exp((logits_f[t] - max_l) / temperature);
+            sum_e2 = sum_e2 + probs_f[t];
+        }
+        for (let t = 0; t < vocab_size; t = t + 1) { probs_f[t] = probs_f[t] / sum_e2; }
+
+        # categorical sample
+        let u = rand_0_1();
+        let cumsum = 0.0;
+        let sampled = BOS;
+        for (let t = 0; t < vocab_size; t = t + 1) {
+            cumsum = cumsum + probs_f[t];
+            if (sampled == BOS) {
+                if (cumsum >= u) {
+                    sampled = t;
+                }
+            }
+        }
+        token_id = sampled;
+
+        if (token_id == BOS) {
+            pos = block_size;
+        } else {
+            let vocab_bytes = vocab_buf as ptr[char];
+            out_chars[out_len] = vocab_bytes[token_id];
+            out_len = out_len + 1;
+        }
+    }
+
+    # null-terminate and print as string
+    out_chars[out_len] = 0;
+    let sample_num = s + 1;
+    let pad = "";
+    if (sample_num < 10) { pad = " "; }
+    # As pointer to void to convert from i8 to char
+    print("sample " + pad + to_str(sample_num) + ": " + (out_chars as ptr[void]));
+
+    free_array(as_array(keys_f, f64));
+    free_array(as_array(vals_f, f64));
+    free_array(as_array(out_chars, ptr));
+}
+
+# Free inference buffers
+free_array(as_array(logits_f, f64));
+free_array(as_array(probs_f, f64));
+free_array(as_array(infer_x, f64));
+free_array(as_array(infer_tmp, f64));
+free_array(as_array(infer_q, f64));
+free_array(as_array(infer_k, f64));
+free_array(as_array(infer_v, f64));
+free_array(as_array(infer_xattn, f64));
+free_array(as_array(infer_xattn_out, f64));
+free_array(as_array(infer_x2, f64));
+free_array(as_array(infer_fc1, f64));
+free_array(as_array(infer_fc2, f64));
+free_array(as_array(wte_f, f64));
+free_array(as_array(wpe_f, f64));
+free_array(as_array(lm_head_f, f64));
+free_array(as_array(attn_wq_f, f64));
+free_array(as_array(attn_wk_f, f64));
+free_array(as_array(attn_wv_f, f64));
+free_array(as_array(attn_wo_f, f64));
+free_array(as_array(mlp_fc1_f, f64));
+free_array(as_array(mlp_fc2_f, f64));
+
+# Free Value weights
+for (let i = 0; i < vocab_size * n_embd; i = i + 1) { free_value(wte[i]); }
+for (let i = 0; i < block_size * n_embd; i = i + 1) { free_value(wpe[i]); }
+for (let i = 0; i < vocab_size * n_embd; i = i + 1) { free_value(lm_head[i]); }
+for (let i = 0; i < n_embd * n_embd; i = i + 1) { free_value(attn_wq[i]); }
+for (let i = 0; i < n_embd * n_embd; i = i + 1) { free_value(attn_wk[i]); }
+for (let i = 0; i < n_embd * n_embd; i = i + 1) { free_value(attn_wv[i]); }
+for (let i = 0; i < n_embd * n_embd; i = i + 1) { free_value(attn_wo[i]); }
+for (let i = 0; i < 4 * n_embd * n_embd; i = i + 1) { free_value(mlp_fc1[i]); }
+for (let i = 0; i < n_embd * 4 * n_embd; i = i + 1) { free_value(mlp_fc2[i]); }
+
+# Free model weight arrays
+free_array(as_array(wte, ptr));
+free_array(as_array(wpe, ptr));
+free_array(as_array(lm_head, ptr));
+free_array(as_array(attn_wq, ptr));
+free_array(as_array(attn_wk, ptr));
+free_array(as_array(attn_wv, ptr));
+free_array(as_array(attn_wo, ptr));
+free_array(as_array(mlp_fc1, ptr));
+free_array(as_array(mlp_fc2, ptr));
+free(as_heap(model));
+
+# Free training state
+free_array(as_array(weight_ptrs, ptr));
+free_array(as_array(m_buf, f64));
+free_array(as_array(v_buf, f64));
+free_array(tokens);
+
+free_dataset(ds);

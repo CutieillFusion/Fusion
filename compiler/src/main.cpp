@@ -47,7 +47,10 @@ static int run_file(const std::string& path) {
 
   auto sema_result = fusion::check(parse_result.program.get());
   if (!sema_result.ok) {
-    std::cerr << "fusion: " << sema_result.error.message << "\n";
+    if (sema_result.error.line != 0)
+      std::cerr << "fusion: " << sema_result.error.line << ":" << sema_result.error.column << " " << sema_result.error.message << "\n";
+    else
+      std::cerr << "fusion: " << sema_result.error.message << "\n";
     return 1;
   }
 
@@ -103,7 +106,10 @@ static int build_file(const std::string& path, const std::string& out_path) {
 
   auto sema_result = fusion::check(parse_result.program.get());
   if (!sema_result.ok) {
-    std::cerr << "fusion: " << sema_result.error.message << "\n";
+    if (sema_result.error.line != 0)
+      std::cerr << "fusion: " << sema_result.error.line << ":" << sema_result.error.column << " " << sema_result.error.message << "\n";
+    else
+      std::cerr << "fusion: " << sema_result.error.message << "\n";
     return 1;
   }
 

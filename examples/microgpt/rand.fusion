@@ -1,0 +1,25 @@
+extern lib "libc.so.6" {
+    fn rand() -> i32;
+};
+
+extern lib "libm.so.6" {
+    fn log(x: f64) -> f64;
+    fn sqrt(x: f64) -> f64;
+    fn cos(x: f64) -> f64;
+};
+
+export fn rand_0_1() -> f64 {
+    return rand() / 2147483647.0;
+}
+
+export fn rand_uniform_neg1_1() -> f64 {
+    return 2.0 * (rand() / 2147483647.0) - 1.0;
+}
+
+export fn rand_gauss(std: f64) -> f64 {
+    let pi = 3.14159265358979;
+    let u1 = rand_0_1();
+    let u2 = rand_0_1();
+    let z = sqrt((-2.0) * log(u1)) * cos(2.0 * pi * u2);
+    return std * z;
+}

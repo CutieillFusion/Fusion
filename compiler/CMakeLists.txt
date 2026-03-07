@@ -14,6 +14,9 @@ target_include_directories(fusion_frontend PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
+target_compile_definitions(fusion_frontend PRIVATE
+  FUSION_STDLIB_PATH="${CMAKE_SOURCE_DIR}/stdlib"
+)
 
 # Compiler library: codegen on top of frontend (requires LLVM headers at build time).
 add_library(fusion_compiler STATIC src/codegen.cpp)

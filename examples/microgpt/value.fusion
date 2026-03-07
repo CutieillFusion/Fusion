@@ -1,0 +1,191 @@
+export struct Value {
+  data: f64;
+  grad: f64;
+  prev: ptr[Value];
+  children_count: i64;
+  backward: ptr[void];
+  aux: f64;
+};
+
+extern lib "libm.so.6" {
+    fn exp(x: f64) -> f64;
+    fn log(x: f64) -> f64;
+    fn pow(x: f64, y: f64) -> f64;
+    fn sqrt(x: f64) -> f64;
+};
+
+export fn free_value(v: ptr[Value]) -> void {
+    free_array(as_array(v.prev, ptr));
+    free(as_heap(v));
+}
+
+export fn alloc_value(data: f64, prev: ptr[Value], children_count: i64, backward: ptr[void]) -> ptr[Value] {
+  let value = heap(Value);
+  value.data = data;
+  value.grad = 0.0;
+  value.prev = prev;
+  value.children_count = children_count;
+  value.backward = backward;
+  value.aux = 0.0;
+  return value;
+}
+
+export fn add_forward(a: ptr[Value], b: ptr[Value]) -> ptr[Value] {
+    let data = a.data + b.data;
+    let prev = heap_array(ptr[Value], 2);
+    prev[0] = a;
+    prev[1] = b;
+    let value = alloc_value(data, prev, 2, get_func_ptr(add_backward));
+    return value;
+}
+
+fn add_backward(out: ptr[Value]) -> void {
+    let a = out.prev[0];
+    let b = out.prev[1];
+    let grad = out.grad;
+    a.grad = a.grad + grad;
+    b.grad = b.grad + grad;
+}
+
+export fn mul_forward(a: ptr[Value], b: ptr[Value]) -> ptr[Value] {
+    let data = a.data * b.data;
+    let prev = heap_array(ptr[Value], 2);
+    prev[0] = a;
+    prev[1] = b;
+    let value = alloc_value(data, prev, 2, get_func_ptr(mul_backward));
+    return value;
+}
+
+fn mul_backward(out: ptr[Value]) -> void {
+    let a = out.prev[0];
+    let b = out.prev[1];
+    let grad = out.grad;
+    a.grad = a.grad + b.data * grad;
+    b.grad = b.grad + a.data * grad;
+}
+
+export fn relu_forward(x: ptr[Value]) -> ptr[Value] {
+    let data = x.data;
+    if (data <= 0.0) {
+        data = 0.0;
+    }
+    let prev = heap_array(ptr[Value], 1);
+    prev[0] = x;
+    let value = alloc_value(data, prev, 1, get_func_ptr(relu_backward));
+    return value;
+}
+
+fn relu_backward(out: ptr[Value]) -> void {
+    let x = out.prev[0];
+    let v = 0.0;
+    if (out.data > 0.0) {
+        v = 1.0;
+    }
+    x.grad = x.grad + v * out.grad;
+}
+
+fn leaf_backward(v: ptr[Value]) -> void {
+}
+
+export fn make_leaf(data: f64) -> ptr[Value] {
+    let prev = heap_array(ptr[Value], 0);
+    return alloc_value(data, prev, 0, get_func_ptr(leaf_backward));
+}
+
+export fn exp_forward(a: ptr[Value]) -> ptr[Value] {
+    let data = exp(a.data);
+    let prev = heap_array(ptr[Value], 1);
+    prev[0] = a;
+    let out = alloc_value(data, prev, 1, get_func_ptr(exp_backward));
+    return out;
+}
+
+fn exp_backward(out: ptr[Value]) -> void {
+    let a = out.prev[0];
+    a.grad = a.grad + out.data * out.grad;
+}
+
+export fn log_forward(a: ptr[Value]) -> ptr[Value] {
+    let data = log(a.data);
+    let prev = heap_array(ptr[Value], 1);
+    prev[0] = a;
+    let out = alloc_value(data, prev, 1, get_func_ptr(log_backward));
+    return out;
+}
+
+fn log_backward(out: ptr[Value]) -> void {
+    let a = out.prev[0];
+    a.grad = a.grad + (1.0 / a.data) * out.grad;
+}
+
+export fn pow_forward(a: ptr[Value], k: f64) -> ptr[Value] {
+    let data = pow(a.data, k);
+    let prev = heap_array(ptr[Value], 1);
+    prev[0] = a;
+    let out = alloc_value(data, prev, 1, get_func_ptr(pow_backward));
+    out.aux = k;
+    return out;
+}
+
+fn pow_backward(out: ptr[Value]) -> void {
+    let a = out.prev[0];
+    let k = out.aux;
+    a.grad = a.grad + k * pow(a.data, k - 1.0) * out.grad;
+}
+
+export fn neg_forward(a: ptr[Value]) -> ptr[Value] {
+    let data = 0.0 - a.data;
+    let prev = heap_array(ptr[Value], 1);
+    prev[0] = a;
+    let out = alloc_value(data, prev, 1, get_func_ptr(neg_backward));
+    return out;
+}
+
+fn neg_backward(out: ptr[Value]) -> void {
+    let a = out.prev[0];
+    a.grad = a.grad - out.grad;
+}
+
+export fn div_forward(a: ptr[Value], b: ptr[Value]) -> ptr[Value] {
+    let data = a.data / b.data;
+    let prev = heap_array(ptr[Value], 2);
+    prev[0] = a;
+    prev[1] = b;
+    let out = alloc_value(data, prev, 2, get_func_ptr(div_backward));
+    return out;
+}
+
+fn div_backward(out: ptr[Value]) -> void {
+    let a = out.prev[0];
+    let b = out.prev[1];
+    a.grad = a.grad + out.grad / b.data;
+    b.grad = b.grad - out.grad * a.data / (b.data * b.data);
+}
+
+export fn scale_forward(a: ptr[Value], k: f64) -> ptr[Value] {
+    let data = a.data * k;
+    let prev = heap_array(ptr[Value], 1);
+    prev[0] = a;
+    let out = alloc_value(data, prev, 1, get_func_ptr(scale_backward));
+    out.aux = k;
+    return out;
+}
+
+fn scale_backward(out: ptr[Value]) -> void {
+    let a = out.prev[0];
+    a.grad = a.grad + out.aux * out.grad;
+}
+
+export fn add_scalar_forward(a: ptr[Value], k: f64) -> ptr[Value] {
+    let data = a.data + k;
+    let prev = heap_array(ptr[Value], 1);
+    prev[0] = a;
+    let out = alloc_value(data, prev, 1, get_func_ptr(add_scalar_backward));
+    out.aux = k;
+    return out;
+}
+
+fn add_scalar_backward(out: ptr[Value]) -> void {
+    let a = out.prev[0];
+    a.grad = a.grad + out.grad;
+}

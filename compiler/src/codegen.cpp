@@ -3,6 +3,7 @@
 #include "layout.hpp"
 #include "sema.hpp"
 #include <variant>
+#include <unordered_set>
 
 #ifdef FUSION_HAVE_LLVM
 #include "llvm/IR/LLVMContext.h"
@@ -201,6 +202,8 @@ struct CodegenEnv {
   std::vector<std::unordered_map<std::string, std::string>> var_struct_scope_stack;
   /* Array element struct tracking: variable name -> struct name of elements */
   std::vector<std::unordered_map<std::string, std::string>> array_struct_scope_stack;
+  /* Raw pointer vars (from casts) — have elem type but no array header for bounds checking */
+  std::unordered_set<std::string> raw_ptr_vars;
   std::unordered_map<std::string, Function*> user_fns;
   const std::unordered_map<std::string, FfiType>* var_types = nullptr;
   std::unordered_map<std::string, FfiType>* fn_var_types = nullptr;
@@ -477,15 +480,7 @@ static std::string array_elem_type_name(Expr* expr, CodegenEnv& env) {
     if (t == FfiType::I64) return "i64";
     if (t == FfiType::F32) return "f32";
     if (t == FfiType::F64) return "f64";
-    if (t == FfiType::Ptr) {
-      for (auto it = env.array_struct_scope_stack.rbegin(); it != env.array_struct_scope_stack.rend(); ++it) {
-        auto fit = it->find(expr->var_name);
-        if (fit != it->end() && !fit->second.empty() &&
-            env.layout_map && env.layout_map->count(fit->second))
-          return fit->second;
-      }
-      return "ptr";
-    }
+    if (t == FfiType::Ptr) return "ptr";
   }
   return "i64";  /* fallback */
 }
@@ -791,6 +786,15 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         Function* fn = M->getFunction("rt_read_line_file");
         if (!fn) return nullptr;
         return B.CreateCall(fn, h, "read_line_file");
+      }
+      if (expr->callee == "str_dup") {
+        Value* s = emit_expr(env, expr->args[0].get());
+        if (!s) return nullptr;
+        Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+        if (s->getType() != i8ptr) s = B.CreatePointerCast(s, i8ptr);
+        Function* fn = M->getFunction("rt_str_dup");
+        if (!fn) return nullptr;
+        return B.CreateCall(fn, s, "str_dup");
       }
       if (expr->callee == "http_request") {
         Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
@@ -1325,30 +1329,41 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       std::string elem_name = array_elem_type_name(expr->left.get(), env);
       size_t H = array_header_size(elem_name, env.layout_map);
       size_t elem_size = elem_size_from_type(elem_name, env.layout_map);
-      Value* base = B.CreateGEP(B.getInt8Ty(), elem_base, B.getInt64(-static_cast<int64_t>(H)));
-      Value* len_ptr = B.CreatePointerCast(base, B.getInt64Ty()->getPointerTo());
-      Value* len = B.CreateLoad(B.getInt64Ty(), len_ptr, "arr.len");
       FfiType elem_ty = array_element_type_from_expr(expr->left.get(), env);
       if (elem_ty == FfiType::Void) elem_ty = FfiType::I64;
-      Function* rt_panic_fn = M->getFunction("rt_panic");
-      if (!rt_panic_fn) {
-        s_codegen_error = "array index: rt_panic not found in module";
-        return nullptr;
+      /* Only do bounds checking for tracked arrays (those with a header from
+         heap_array/stack_array).  Raw pointers from casts (e.g. `str as ptr[char]`)
+         have no header — reading ptr-8 would access invalid memory. */
+      bool is_tracked_array = (expr->left->kind == Expr::Kind::VarRef &&
+         array_elem_lookup(env, expr->left->var_name) != FfiType::Void &&
+         env.raw_ptr_vars.find(expr->left->var_name) == env.raw_ptr_vars.end()) ||
+         expr->left->kind == Expr::Kind::HeapArray ||
+         expr->left->kind == Expr::Kind::StackArray ||
+         expr->left->kind == Expr::Kind::FieldAccess;
+      if (is_tracked_array) {
+        Value* base = B.CreateGEP(B.getInt8Ty(), elem_base, B.getInt64(-static_cast<int64_t>(H)));
+        Value* len_ptr = B.CreatePointerCast(base, B.getInt64Ty()->getPointerTo());
+        Value* len = B.CreateLoad(B.getInt64Ty(), len_ptr, "arr.len");
+        Function* rt_panic_fn = M->getFunction("rt_panic");
+        if (!rt_panic_fn) {
+          s_codegen_error = "array index: rt_panic not found in module";
+          return nullptr;
+        }
+        Value* oob = B.CreateOr(
+          B.CreateICmpSLT(index_val, B.getInt64(0)),
+          B.CreateICmpSGE(index_val, len), "index.oob");
+        BasicBlock* cont_bb = BasicBlock::Create(ctx, "index.cont", B.GetInsertBlock()->getParent());
+        BasicBlock* panic_bb = BasicBlock::Create(ctx, "index.panic", B.GetInsertBlock()->getParent());
+        B.CreateCondBr(oob, panic_bb, cont_bb);
+        B.SetInsertPoint(panic_bb);
+        const char* msg = "index out of bounds";
+        Type* msg_ty = ArrayType::get(Type::getInt8Ty(ctx), strlen(msg) + 1);
+        Value* msg_buf = B.CreateAlloca(msg_ty, nullptr, "panic_msg");
+        B.CreateStore(ConstantDataArray::getString(ctx, msg, true), msg_buf);
+        B.CreateCall(rt_panic_fn, B.CreatePointerCast(msg_buf, i8ptr));
+        B.CreateUnreachable();
+        B.SetInsertPoint(cont_bb);
       }
-      Value* oob = B.CreateOr(
-        B.CreateICmpSLT(index_val, B.getInt64(0)),
-        B.CreateICmpSGE(index_val, len), "index.oob");
-      BasicBlock* cont_bb = BasicBlock::Create(ctx, "index.cont", B.GetInsertBlock()->getParent());
-      BasicBlock* panic_bb = BasicBlock::Create(ctx, "index.panic", B.GetInsertBlock()->getParent());
-      B.CreateCondBr(oob, panic_bb, cont_bb);
-      B.SetInsertPoint(panic_bb);
-      const char* msg = "index out of bounds";
-      Type* msg_ty = ArrayType::get(Type::getInt8Ty(ctx), strlen(msg) + 1);
-      Value* msg_buf = B.CreateAlloca(msg_ty, nullptr, "panic_msg");
-      B.CreateStore(ConstantDataArray::getString(ctx, msg, true), msg_buf);
-      B.CreateCall(rt_panic_fn, B.CreatePointerCast(msg_buf, i8ptr));
-      B.CreateUnreachable();
-      B.SetInsertPoint(cont_bb);
       Value* offset = B.CreateMul(index_val, B.getInt64(elem_size), "elem.offset");
       Value* elem_ptr = B.CreateGEP(B.getInt8Ty(), elem_base, offset);
       if (env.layout_map && env.layout_map->count(elem_name))
@@ -1402,6 +1417,7 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         if (v->getType() == B.getDoubleTy() || v->getType() == B.getFloatTy())
           return B.CreateFPToSI(v, B.getInt64Ty());
         if (v->getType() == B.getInt32Ty()) return B.CreateSExt(v, B.getInt64Ty());
+        if (v->getType() == B.getInt8Ty()) return B.CreateSExt(v, B.getInt64Ty());
         return nullptr;
       }
       if (to == "i32") {
@@ -1588,6 +1604,15 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
             }
           } else if (stmt->init->kind == Expr::Kind::Call && init_val->getType()->isPointerTy())
             env.array_element_scope_stack.back()[stmt->name] = FfiType::Ptr;
+          else if (stmt->init->kind == Expr::Kind::Cast && init_val->getType()->isPointerTy()) {
+            const std::string& ct = stmt->init->var_name;
+            if (ct == "char") env.array_element_scope_stack.back()[stmt->name] = FfiType::I8;
+            else if (ct == "i32") env.array_element_scope_stack.back()[stmt->name] = FfiType::I32;
+            else if (ct == "f32") env.array_element_scope_stack.back()[stmt->name] = FfiType::F32;
+            else if (ct == "f64") env.array_element_scope_stack.back()[stmt->name] = FfiType::F64;
+            else env.array_element_scope_stack.back()[stmt->name] = FfiType::Ptr;
+            env.raw_ptr_vars.insert(stmt->name);
+          }
           return true;
         }
         Value* init_val = emit_expr(env, stmt->init.get());
@@ -1618,6 +1643,15 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
         }
       } else if (let_ty == FfiType::Ptr && stmt->init->kind == Expr::Kind::Call)
         env.array_element_scope_stack.back()[stmt->name] = FfiType::Ptr;
+      else if (stmt->init->kind == Expr::Kind::Cast && let_ty == FfiType::Ptr) {
+        const std::string& ct = stmt->init->var_name;
+        if (ct == "char") env.array_element_scope_stack.back()[stmt->name] = FfiType::I8;
+        else if (ct == "i32") env.array_element_scope_stack.back()[stmt->name] = FfiType::I32;
+        else if (ct == "f32") env.array_element_scope_stack.back()[stmt->name] = FfiType::F32;
+        else if (ct == "f64") env.array_element_scope_stack.back()[stmt->name] = FfiType::F64;
+        else env.array_element_scope_stack.back()[stmt->name] = FfiType::Ptr;
+        env.raw_ptr_vars.insert(stmt->name);
+      }
       if (let_ty == FfiType::Ptr && (stmt->init->kind == Expr::Kind::HeapArray || stmt->init->kind == Expr::Kind::StackArray) &&
           env.layout_map && !stmt->init->var_name.empty() && env.layout_map->count(stmt->init->var_name))
         env.array_struct_scope_stack.back()[stmt->name] = stmt->init->var_name;
@@ -1735,31 +1769,40 @@ static bool emit_stmt(CodegenEnv& env, FnDef& def, Function* fn, Stmt* stmt) {
         std::string elem_name = array_elem_type_name(base_expr, env);
         size_t H = array_header_size(elem_name, env.layout_map);
         size_t elem_size = elem_size_from_type(elem_name, env.layout_map);
-        Value* base = B.CreateGEP(B.getInt8Ty(), elem_base, B.getInt64(-static_cast<int64_t>(H)));
-        Value* len_ptr = B.CreatePointerCast(base, B.getInt64Ty()->getPointerTo());
-        Value* len = B.CreateLoad(B.getInt64Ty(), len_ptr, "arr.len");
         FfiType elem_ty = array_element_type_from_expr(base_expr, env);
         if (elem_ty == FfiType::Void) elem_ty = FfiType::I64;
-        Function* rt_panic_fn = env.module->getFunction("rt_panic");
-        if (!rt_panic_fn) {
-          if (s_codegen_error.empty())
-            s_codegen_error = "assign to array element: rt_panic not found in module";
-          return false;
+        /* Only bounds-check tracked arrays with headers */
+        bool is_tracked_array = (base_expr->kind == Expr::Kind::VarRef &&
+           array_elem_lookup(env, base_expr->var_name) != FfiType::Void &&
+           env.raw_ptr_vars.find(base_expr->var_name) == env.raw_ptr_vars.end()) ||
+           base_expr->kind == Expr::Kind::HeapArray ||
+           base_expr->kind == Expr::Kind::StackArray ||
+           base_expr->kind == Expr::Kind::FieldAccess;
+        if (is_tracked_array) {
+          Value* base = B.CreateGEP(B.getInt8Ty(), elem_base, B.getInt64(-static_cast<int64_t>(H)));
+          Value* len_ptr = B.CreatePointerCast(base, B.getInt64Ty()->getPointerTo());
+          Value* len = B.CreateLoad(B.getInt64Ty(), len_ptr, "arr.len");
+          Function* rt_panic_fn = env.module->getFunction("rt_panic");
+          if (!rt_panic_fn) {
+            if (s_codegen_error.empty())
+              s_codegen_error = "assign to array element: rt_panic not found in module";
+            return false;
+          }
+          Value* oob = B.CreateOr(
+            B.CreateICmpSLT(index_val, B.getInt64(0)),
+            B.CreateICmpSGE(index_val, len), "assign.oob");
+          BasicBlock* cont_bb = BasicBlock::Create(ctx, "assign.cont", fn);
+          BasicBlock* panic_bb = BasicBlock::Create(ctx, "assign.panic", fn);
+          B.CreateCondBr(oob, panic_bb, cont_bb);
+          B.SetInsertPoint(panic_bb);
+          const char* msg = "index out of bounds";
+          Type* msg_ty = ArrayType::get(Type::getInt8Ty(ctx), strlen(msg) + 1);
+          Value* msg_buf = B.CreateAlloca(msg_ty, nullptr, "panic_msg");
+          B.CreateStore(ConstantDataArray::getString(ctx, msg, true), msg_buf);
+          B.CreateCall(rt_panic_fn, B.CreatePointerCast(msg_buf, i8ptr));
+          B.CreateUnreachable();
+          B.SetInsertPoint(cont_bb);
         }
-        Value* oob = B.CreateOr(
-          B.CreateICmpSLT(index_val, B.getInt64(0)),
-          B.CreateICmpSGE(index_val, len), "assign.oob");
-        BasicBlock* cont_bb = BasicBlock::Create(ctx, "assign.cont", fn);
-        BasicBlock* panic_bb = BasicBlock::Create(ctx, "assign.panic", fn);
-        B.CreateCondBr(oob, panic_bb, cont_bb);
-        B.SetInsertPoint(panic_bb);
-        const char* msg = "index out of bounds";
-        Type* msg_ty = ArrayType::get(Type::getInt8Ty(ctx), strlen(msg) + 1);
-        Value* msg_buf = B.CreateAlloca(msg_ty, nullptr, "panic_msg");
-        B.CreateStore(ConstantDataArray::getString(ctx, msg, true), msg_buf);
-        B.CreateCall(rt_panic_fn, B.CreatePointerCast(msg_buf, i8ptr));
-        B.CreateUnreachable();
-        B.SetInsertPoint(cont_bb);
         Value* offset = B.CreateMul(index_val, B.getInt64(elem_size), "elem.offset");
         Value* elem_ptr = B.CreateGEP(B.getInt8Ty(), elem_base, offset);
         if (elem_name == "i8") {
@@ -1973,10 +2016,12 @@ static bool emit_user_fn_body(CodegenEnv& env, FnDef& def, Function* fn) {
   std::vector<std::unordered_map<std::string, FfiType>> saved_array_stack = std::move(env.array_element_scope_stack);
   std::vector<std::unordered_map<std::string, std::string>> saved_array_struct_stack = std::move(env.array_struct_scope_stack);
   std::vector<std::unordered_map<std::string, FnPtrSig>> saved_fnptr_stack = std::move(env.fnptr_scope_stack);
+  std::unordered_set<std::string> saved_raw_ptr_vars = std::move(env.raw_ptr_vars);
   env.vars_scope_stack.push_back({});
   env.array_element_scope_stack.push_back({});
   env.array_struct_scope_stack.push_back({});
   env.fnptr_scope_stack.push_back({});
+  env.raw_ptr_vars.clear();
   std::unordered_map<std::string, FfiType> fn_var_types;
   for (const auto& p : def.params)
     fn_var_types[p.first] = p.second;
@@ -2008,6 +2053,7 @@ static bool emit_user_fn_body(CodegenEnv& env, FnDef& def, Function* fn) {
   env.array_element_scope_stack = std::move(saved_array_stack);
   env.array_struct_scope_stack = std::move(saved_array_struct_stack);
   env.fnptr_scope_stack = std::move(saved_fnptr_stack);
+  env.raw_ptr_vars = std::move(saved_raw_ptr_vars);
   return true;
 }
 
@@ -2186,9 +2232,10 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
         Type* llvm_ty;
         if (ty == FfiType::F64) llvm_ty = builder.getDoubleTy();
         else if (ty == FfiType::Ptr) llvm_ty = i8ptr;
-        else if (ty != FfiType::Void) llvm_ty = builder.getInt64Ty();
+        else if (ty != FfiType::Void && !init_val->getType()->isPointerTy()) llvm_ty = builder.getInt64Ty();
         else llvm_ty = init_val->getType();
-        if (ty == FfiType::Void) ty = (llvm_ty == builder.getDoubleTy()) ? FfiType::F64 : (llvm_ty == i8ptr) ? FfiType::Ptr : FfiType::I64;
+        if (ty == FfiType::Void || (ty == FfiType::I64 && init_val->getType()->isPointerTy()))
+          ty = (llvm_ty == builder.getDoubleTy()) ? FfiType::F64 : (llvm_ty->isPointerTy()) ? FfiType::Ptr : FfiType::I64;
         top_var_types[binding->name] = ty;
         Value* slot = builder.CreateAlloca(llvm_ty, nullptr, binding->name);
         if (ty == FfiType::F64 && init_val->getType() != builder.getDoubleTy())
@@ -2209,6 +2256,15 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
           env.array_element_scope_stack.back()[binding->name] = elem_ty;
         else if (ty == FfiType::Ptr && binding->init->kind == Expr::Kind::Call)
           env.array_element_scope_stack.back()[binding->name] = FfiType::Ptr;
+        else if (binding->init->kind == Expr::Kind::Cast && init_val->getType()->isPointerTy()) {
+          const std::string& ct = binding->init->var_name;
+          if (ct == "char") env.array_element_scope_stack.back()[binding->name] = FfiType::I8;
+          else if (ct == "i32") env.array_element_scope_stack.back()[binding->name] = FfiType::I32;
+          else if (ct == "f32") env.array_element_scope_stack.back()[binding->name] = FfiType::F32;
+          else if (ct == "f64") env.array_element_scope_stack.back()[binding->name] = FfiType::F64;
+          else env.array_element_scope_stack.back()[binding->name] = FfiType::Ptr;
+          env.raw_ptr_vars.insert(binding->name);
+        }
       } else if (const StmtPtr* stmt = std::get_if<StmtPtr>(&item)) {
         if (!emit_stmt(env, dummy_main, main_fn, stmt->get())) {
           if (s_codegen_error.empty()) {
@@ -2297,6 +2353,8 @@ CodegenResult run_jit(std::unique_ptr<llvm::Module> module,
     r.error = "no module";
     return r;
   }
+  if (getenv("FUSION_DUMP_IR"))
+    module->print(llvm::errs(), nullptr);
   if (verifyModule(*module, &llvm::errs())) {
     r.error = "module verification failed";
     return r;

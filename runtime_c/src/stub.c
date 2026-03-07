@@ -186,6 +186,7 @@ int64_t rt_line_count_file(void *handle) {
 }
 
 void rt_panic(const char *msg) {
+  fflush(stdout);
   if (msg)
     fprintf(stderr, "fusion panic: %s\n", msg);
   else

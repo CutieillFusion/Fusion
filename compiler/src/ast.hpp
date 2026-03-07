@@ -259,6 +259,7 @@ inline std::optional<FfiType> builtin_fixed_return_type(const std::string& calle
     {"read_bytes",      FfiType::I64},
     {"http_request",    FfiType::Ptr},
     {"http_status",     FfiType::I64},
+    {"str_dup",         FfiType::Ptr},
   };
   auto it = table.find(callee);
   if (it != table.end()) return it->second;

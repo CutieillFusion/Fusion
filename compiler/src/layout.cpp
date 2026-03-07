@@ -16,9 +16,10 @@ StructLayout compute_layout(const StructDef& def, const LayoutMap& known_layouts
 
     if (!struct_type.empty()) {
       // Embedded struct field only when the type is a known struct with layout
+      // and the field is not a pointer (ptr[Doc] must stay Ptr, not embedded).
       auto it = known_layouts.find(struct_type);
-      bool is_embedded = (it != known_layouts.end() && it->second.size > 0 &&
-                          it->second.alignment != 0);
+      bool is_embedded = (ty != FfiType::Ptr && it != known_layouts.end() &&
+                          it->second.size > 0 && it->second.alignment != 0);
       if (is_embedded) {
         size_t align = it->second.alignment;
         size_t size = it->second.size;
