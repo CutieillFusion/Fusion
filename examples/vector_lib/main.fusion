@@ -14,9 +14,9 @@ let v = make_vec(3.0, 4.0);
 let w = add_vec(u, v);
 let z = cos_vec(0.0);
 
-print("Vector w: ");
-print(w.x);
-print(w.y);
-print("Cosine vector: ");
-print(z.x);
-print(z.y);
+println("Vector w: ");
+println(w.x);
+println(w.y);
+println("Cosine vector: ");
+println(z.x);
+println(z.y);

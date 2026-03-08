@@ -9,20 +9,20 @@ let f_count = open(path, mode);
 let total_lines = line_count_file(f_count);
 close(f_count);
 
-print("Total lines in file:");
-print(total_lines);
+println("Total lines in file:");
+println(total_lines);
 
 # Now open again and read each line.
 let f = open(path, mode);
 
 for (let i = 0; i < total_lines; i = i + 1) {
   let line = read_line_file(f);
-  print(line);
+  println(line);
 }
 
 # Demonstrate eof_file (0 = not EOF, non-zero = EOF).
 let at_eof = eof_file(f);
-print(at_eof);
+println(at_eof);
 
 close(f);
-print("Done.");
+println("Done.");

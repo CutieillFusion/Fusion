@@ -87,7 +87,7 @@ export fn create_dataset(path: ptr[void]) -> ptr[Dataset] {
     ds.vocab = vocab;
     ds.vocab_size = vocab_size;
     ds.BOS = BOS;
-    print("vocab size: " + to_str(vocab_size));
+    println("vocab size: " + to_str(vocab_size));
     return ds;
 }
 
@@ -105,9 +105,9 @@ fn test_tokenization() -> void {
 
     # vocab_size should be ~27 (26 letters + newline/space + BOS), not 7
     if (ds.vocab_size < 20) {
-        print("FAIL: vocab_size too small: ");
-        print(to_str(ds.vocab_size));
-        print("\n");
+        println("FAIL: vocab_size too small: ");
+        println(to_str(ds.vocab_size));
+        println("\n");
         errors = errors + 1;
     }
 
@@ -120,21 +120,21 @@ fn test_tokenization() -> void {
         let ch = doc_bytes[j] as i64;
         let tok = char_to_idx(ch, ds.vocab, ds.vocab_size);
         if (tok == -1) {
-            print("FAIL: unmapped token at position ");
-            print(to_str(j));
-            print("\n");
+            println("FAIL: unmapped token at position ");
+            println(to_str(j));
+            println("\n");
             errors = errors + 1;
         }
         if (tok >= ds.vocab_size - 1) {
-            print("FAIL: token out of range at position ");
-            print(to_str(j));
-            print("\n");
+            println("FAIL: token out of range at position ");
+            println(to_str(j));
+            println("\n");
             errors = errors + 1;
         }
     }
 
     if (errors == 0) {
-        print("names: all tests passed\n");
+        println("names: all tests passed\n");
     }
 
     free_dataset(ds);

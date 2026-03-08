@@ -32,8 +32,8 @@ op_mul.func = get_func_ptr(mul);
 op_mul.x = 3.0;
 op_mul.y = 4.0;
 
-print(perform_operation(op_add));
-print(perform_operation(op_mul));
+println(perform_operation(op_add));
+println(perform_operation(op_mul));
 
 # Get pointers to the functions
 let fp_add = get_func_ptr(add);

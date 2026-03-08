@@ -75,6 +75,15 @@ std::vector<Token> lex(const std::string& source) {
           else if (source[i] == 't') str_val += '\t';
           else if (source[i] == '"') str_val += '"';
           else if (source[i] == '\\') str_val += '\\';
+          else if (source[i] >= '0' && source[i] <= '7') {
+            // Octal escape: \0, \033, \177, etc.
+            int val = source[i] - '0';
+            while (i + 1 < source.size() && source[i + 1] >= '0' && source[i + 1] <= '7') {
+              advance();
+              val = val * 8 + (source[i] - '0');
+            }
+            str_val += static_cast<char>(val);
+          }
           else str_val += source[i];
           advance();
         } else {

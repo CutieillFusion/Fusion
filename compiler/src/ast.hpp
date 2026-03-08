@@ -246,6 +246,7 @@ inline std::optional<FfiType> builtin_fixed_return_type(const std::string& calle
   static const std::unordered_map<std::string, FfiType> table = {
     {"get_func_ptr",    FfiType::Ptr},
     {"print",           FfiType::Void},
+    {"println",         FfiType::Void},
     {"len",             FfiType::I64},
     {"read_line",       FfiType::Ptr},
     {"read_line_file",  FfiType::Ptr},

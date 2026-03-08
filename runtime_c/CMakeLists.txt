@@ -1,9 +1,6 @@
 include("${CMAKE_SOURCE_DIR}/cmake/FindFusionLibFFI.cmake")
 
-set(RUNTIME_FFI_SOURCES src/ffi_stub.c)
-if(FUSION_LIBFFI_FOUND)
-  set(RUNTIME_FFI_SOURCES src/ffi.c)
-endif()
+set(RUNTIME_FFI_SOURCES src/ffi.c)
 
 include("${CMAKE_SOURCE_DIR}/cmake/FusionRuntime.cmake")
 

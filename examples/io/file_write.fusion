@@ -8,4 +8,4 @@ write_file(f, 3.14);
 write_file(f, "hello");
 
 close(f);
-print("Done.");
+println("Done.");

@@ -161,7 +161,7 @@ for (let step = 0; step < num_steps; step = step + 1) {
         weight_ptrs[i].grad = 0.0;
     }
 
-    print("Epoch: " + to_str(step + 1) + " Loss: " + to_str(loss_val));
+    println("Epoch: " + to_str(step + 1) + " Loss: " + to_str(loss_val));
 }
 
 # --- Inference (pure f64, fully inlined) ---
@@ -199,7 +199,7 @@ let infer_x2 = heap_array(f64, n_embd);
 let infer_fc1 = heap_array(f64, 4 * n_embd);
 let infer_fc2 = heap_array(f64, n_embd);
 
-print("--- inference (new, hallucinated names) ---");
+println("--- inference (new, hallucinated names) ---");
 for (let s = 0; s < n_inference_samples; s = s + 1) {
     let keys_f = heap_array(f64, block_size * n_embd);
     let vals_f = heap_array(f64, block_size * n_embd);
@@ -356,7 +356,7 @@ for (let s = 0; s < n_inference_samples; s = s + 1) {
     let pad = "";
     if (sample_num < 10) { pad = " "; }
     # As pointer to void to convert from i8 to char
-    print("sample " + pad + to_str(sample_num) + ": " + (out_chars as ptr[void]));
+    println("sample " + pad + to_str(sample_num) + ": " + (out_chars as ptr[void]));
 
     free_array(as_array(keys_f, f64));
     free_array(as_array(vals_f, f64));

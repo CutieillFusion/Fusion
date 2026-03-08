@@ -290,7 +290,8 @@ static FfiType array_element_type_from_expr(Expr* expr, CodegenEnv& env) {
   if (expr->kind == Expr::Kind::VarRef) {
     return array_elem_lookup(env, expr->var_name);
   }
-  if (expr->kind == Expr::Kind::StackArray || expr->kind == Expr::Kind::HeapArray) {
+  if (expr->kind == Expr::Kind::StackArray || expr->kind == Expr::Kind::HeapArray ||
+      expr->kind == Expr::Kind::AsArray) {
     const std::string& raw = expr->var_name;
     const std::string& t = (raw.size() > 4 && raw.substr(0,4) == "ptr[") ? std::string("ptr") : raw;
     if (t == "i8") return FfiType::I8;
@@ -470,7 +471,8 @@ static size_t elem_size_from_type(const std::string& elem_type_name, LayoutMap* 
 
 /* Get elem type name from array expr (for StackArray/HeapArray) or from VarRef via env. */
 static std::string array_elem_type_name(Expr* expr, CodegenEnv& env) {
-  if (expr->kind == Expr::Kind::StackArray || expr->kind == Expr::Kind::HeapArray)
+  if (expr->kind == Expr::Kind::StackArray || expr->kind == Expr::Kind::HeapArray ||
+      expr->kind == Expr::Kind::AsArray)
     return expr->var_name;
   if (expr->kind == Expr::Kind::VarRef) {
     /* VarRef: we don't store type name in env; use FfiType to infer. For structs use array_struct_scope. */
@@ -704,24 +706,71 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         }
         if (arg_ty == FfiType::Void)
           arg_ty = expr_type(expr->args[0].get(), prog, env.var_types);
-        Function* rt_print = nullptr;
+        Function* rt_print = M->getFunction("rt_print_cstring");
+        if (!rt_print) return nullptr;
         if (arg_ty == FfiType::F64) {
-          rt_print = M->getFunction("rt_print_f64");
-          if (!rt_print) return nullptr;
-          return B.CreateCall(rt_print, {arg_val, stream_val});
+          Function* to_str = M->getFunction("rt_to_str_f64");
+          if (!to_str) return nullptr;
+          if (arg_val->getType() != B.getDoubleTy())
+            arg_val = B.CreateSIToFP(arg_val, B.getDoubleTy());
+          Value* s = B.CreateCall(to_str, arg_val, "to_str");
+          return B.CreateCall(rt_print, {s, stream_val});
         }
         if (arg_ty == FfiType::Ptr) {
-          rt_print = M->getFunction("rt_print_cstring");
-          if (!rt_print) return nullptr;
           Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
           if (arg_val->getType() != i8ptr) arg_val = B.CreatePointerCast(arg_val, i8ptr);
           return B.CreateCall(rt_print, {arg_val, stream_val});
         }
-        rt_print = M->getFunction("rt_print_i64");
-        if (!rt_print) return nullptr;
-        if (arg_val->getType() != B.getInt64Ty())
-          arg_val = B.CreateFPToSI(arg_val, B.getInt64Ty());
-        return B.CreateCall(rt_print, {arg_val, stream_val});
+        {
+          Function* to_str = M->getFunction("rt_to_str_i64");
+          if (!to_str) return nullptr;
+          if (arg_val->getType() != B.getInt64Ty())
+            arg_val = B.CreateFPToSI(arg_val, B.getInt64Ty());
+          Value* s = B.CreateCall(to_str, arg_val, "to_str");
+          return B.CreateCall(rt_print, {s, stream_val});
+        }
+      }
+      if (expr->callee == "println") {
+        if (expr->args.size() != 1 && expr->args.size() != 2) return nullptr;
+        Value* arg_val = emit_expr(env, expr->args[0].get());
+        if (!arg_val) return nullptr;
+        Value* stream_val = expr->args.size() >= 2 ? emit_expr(env, expr->args[1].get()) : B.getInt64(0);
+        if (!stream_val) return nullptr;
+        if (stream_val->getType() != B.getInt64Ty()) stream_val = B.CreateIntCast(stream_val, B.getInt64Ty(), true);
+        FfiType arg_ty = FfiType::Void;
+        if (expr->args[0]->kind == Expr::Kind::Index) {
+          arg_ty = array_element_type_from_expr(expr->args[0]->left.get(), env);
+        }
+        if (arg_ty == FfiType::Void)
+          arg_ty = expr_type(expr->args[0].get(), prog, env.var_types);
+        Function* rt_print = M->getFunction("rt_print_cstring");
+        Function* rt_concat = M->getFunction("rt_str_concat");
+        if (!rt_print || !rt_concat) return nullptr;
+        Value* newline = B.CreateGlobalStringPtr("\n", "newline");
+        if (arg_ty == FfiType::F64) {
+          Function* to_str = M->getFunction("rt_to_str_f64");
+          if (!to_str) return nullptr;
+          if (arg_val->getType() != B.getDoubleTy())
+            arg_val = B.CreateSIToFP(arg_val, B.getDoubleTy());
+          Value* s = B.CreateCall(to_str, arg_val, "to_str");
+          Value* with_nl = B.CreateCall(rt_concat, {s, newline}, "with_nl");
+          return B.CreateCall(rt_print, {with_nl, stream_val});
+        }
+        if (arg_ty == FfiType::Ptr) {
+          Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+          if (arg_val->getType() != i8ptr) arg_val = B.CreatePointerCast(arg_val, i8ptr);
+          Value* with_nl = B.CreateCall(rt_concat, {arg_val, newline}, "with_nl");
+          return B.CreateCall(rt_print, {with_nl, stream_val});
+        }
+        {
+          Function* to_str = M->getFunction("rt_to_str_i64");
+          if (!to_str) return nullptr;
+          if (arg_val->getType() != B.getInt64Ty())
+            arg_val = B.CreateFPToSI(arg_val, B.getInt64Ty());
+          Value* s = B.CreateCall(to_str, arg_val, "to_str");
+          Value* with_nl = B.CreateCall(rt_concat, {s, newline}, "with_nl");
+          return B.CreateCall(rt_print, {with_nl, stream_val});
+        }
       }
       if (expr->callee == "read_line") {
         Function* fn = M->getFunction("rt_read_line");
@@ -820,19 +869,30 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         Value* x = emit_expr(env, expr->args[1].get());
         if (!h || !x) return nullptr;
         FfiType val_ty = expr_type(expr->args[1].get(), prog, env.var_types);
-        Function* fn = nullptr;
+        Function* fn_write = M->getFunction("rt_write_file_ptr");
+        if (!fn_write) return nullptr;
         if (val_ty == FfiType::I64) {
-          fn = M->getFunction("rt_write_file_i64");
-          if (fn && x->getType() != B.getInt64Ty()) x = B.CreateFPToSI(x, B.getInt64Ty());
+          Function* to_str = M->getFunction("rt_to_str_i64");
+          Function* concat = M->getFunction("rt_str_concat");
+          if (!to_str || !concat) return nullptr;
+          if (x->getType() != B.getInt64Ty()) x = B.CreateFPToSI(x, B.getInt64Ty());
+          Value* s = B.CreateCall(to_str, x, "to_str");
+          Value* nl = B.CreateGlobalStringPtr("\n", "newline");
+          Value* with_nl = B.CreateCall(concat, {s, nl}, "with_nl");
+          return B.CreateCall(fn_write, {h, with_nl});
         } else if (val_ty == FfiType::F64) {
-          fn = M->getFunction("rt_write_file_f64");
-          if (fn && x->getType() != B.getDoubleTy()) x = B.CreateSIToFP(x, B.getDoubleTy());
+          Function* to_str = M->getFunction("rt_to_str_f64");
+          Function* concat = M->getFunction("rt_str_concat");
+          if (!to_str || !concat) return nullptr;
+          if (x->getType() != B.getDoubleTy()) x = B.CreateSIToFP(x, B.getDoubleTy());
+          Value* s = B.CreateCall(to_str, x, "to_str");
+          Value* nl = B.CreateGlobalStringPtr("\n", "newline");
+          Value* with_nl = B.CreateCall(concat, {s, nl}, "with_nl");
+          return B.CreateCall(fn_write, {h, with_nl});
         } else {
-          fn = M->getFunction("rt_write_file_ptr");
-          if (fn && x->getType() != i8ptr) x = B.CreatePointerCast(x, i8ptr);
+          if (x->getType() != i8ptr) x = B.CreatePointerCast(x, i8ptr);
+          return B.CreateCall(fn_write, {h, x});
         }
-        if (!fn) return nullptr;
-        return B.CreateCall(fn, {h, x});
       }
       if (expr->callee == "write_bytes") {
         Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
@@ -2095,8 +2155,6 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
 
   /* Declare runtime functions */
   FunctionType* void_ty = FunctionType::get(builder.getVoidTy(), false);
-  FunctionType* print_i64_ty = FunctionType::get(builder.getVoidTy(), {builder.getInt64Ty(), builder.getInt64Ty()}, false);
-  FunctionType* print_f64_ty = FunctionType::get(builder.getVoidTy(), {builder.getDoubleTy(), builder.getInt64Ty()}, false);
   FunctionType* print_cstring_ty = FunctionType::get(builder.getVoidTy(), {i8ptr, builder.getInt64Ty()}, false);
   FunctionType* panic_ty = FunctionType::get(builder.getVoidTy(), i8ptr, false);
   FunctionType* dlopen_ty = FunctionType::get(i8ptr, i8ptr, false);
@@ -2108,8 +2166,6 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
       {i8ptr, i8ptr, i8ptr, i8ptr}, false);
   FunctionType* ffi_error_ty = FunctionType::get(i8ptr, false);
 
-  Function::Create(print_i64_ty, GlobalValue::ExternalLinkage, "rt_print_i64", module.get());
-  Function::Create(print_f64_ty, GlobalValue::ExternalLinkage, "rt_print_f64", module.get());
   Function::Create(print_cstring_ty, GlobalValue::ExternalLinkage, "rt_print_cstring", module.get());
   Function::Create(FunctionType::get(i8ptr, false), GlobalValue::ExternalLinkage, "rt_read_line", module.get());
   Function::Create(FunctionType::get(i8ptr, builder.getInt64Ty(), false), GlobalValue::ExternalLinkage, "rt_to_str_i64", module.get());
@@ -2121,8 +2177,6 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
   Function::Create(FunctionType::get(i8ptr, {i8ptr, i8ptr}, false), GlobalValue::ExternalLinkage, "rt_open", module.get());
   Function::Create(FunctionType::get(builder.getVoidTy(), i8ptr, false), GlobalValue::ExternalLinkage, "rt_close", module.get());
   Function::Create(FunctionType::get(i8ptr, i8ptr, false), GlobalValue::ExternalLinkage, "rt_read_line_file", module.get());
-  Function::Create(FunctionType::get(builder.getVoidTy(), {i8ptr, builder.getInt64Ty()}, false), GlobalValue::ExternalLinkage, "rt_write_file_i64", module.get());
-  Function::Create(FunctionType::get(builder.getVoidTy(), {i8ptr, builder.getDoubleTy()}, false), GlobalValue::ExternalLinkage, "rt_write_file_f64", module.get());
   Function::Create(FunctionType::get(builder.getVoidTy(), {i8ptr, i8ptr}, false), GlobalValue::ExternalLinkage, "rt_write_file_ptr", module.get());
   Function::Create(FunctionType::get(builder.getInt64Ty(), {i8ptr, i8ptr, builder.getInt64Ty()}, false), GlobalValue::ExternalLinkage, "rt_write_bytes", module.get());
   Function::Create(FunctionType::get(builder.getInt64Ty(), {i8ptr, i8ptr, builder.getInt64Ty()}, false), GlobalValue::ExternalLinkage, "rt_read_bytes", module.get());
@@ -2405,11 +2459,11 @@ CodegenResult run_jit(std::unique_ptr<llvm::Module> module,
     }
     return true;
   };
-  if (!check_sym("rt_print_i64") || !check_sym("rt_print_f64") || !check_sym("rt_print_cstring") || !check_sym("rt_panic") ||
+  if (!check_sym("rt_print_cstring") || !check_sym("rt_panic") ||
       !check_sym("rt_read_line") || !check_sym("rt_to_str_i64") || !check_sym("rt_to_str_f64") ||
       !check_sym("rt_from_str_i64") || !check_sym("rt_from_str_f64") || !check_sym("rt_str_concat") || !check_sym("rt_str_dup") ||
       !check_sym("rt_open") || !check_sym("rt_close") || !check_sym("rt_read_line_file") ||
-      !check_sym("rt_write_file_i64") || !check_sym("rt_write_file_f64") || !check_sym("rt_write_file_ptr") ||
+      !check_sym("rt_write_file_ptr") ||
       !check_sym("rt_write_bytes") || !check_sym("rt_read_bytes") ||
       !check_sym("rt_eof_file") || !check_sym("rt_line_count_file") ||
       !check_sym("rt_http_request") || !check_sym("rt_http_status") ||

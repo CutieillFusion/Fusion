@@ -47,25 +47,17 @@ void rt_shutdown(void) {
   rt_str_head = NULL;
 }
 
-void rt_print_i64(int64_t value, int64_t stream) {
-  fprintf(stream_for(stream), "%lld\n", (long long)value);
-}
-
-void rt_print_f64(double value, int64_t stream) {
-  fprintf(stream_for(stream), "%g\n", value);
-}
-
 void rt_print_cstring(const char *s, int64_t stream) {
   if (!s) {
-    fprintf(stream_for(stream), "(null)\n");
+    fprintf(stream_for(stream), "(null)");
     return;
   }
   /* Avoid strlen on obviously invalid pointers (e.g. small integers passed as ptr). */
   if ((uintptr_t)s < 4096) {
-    fprintf(stream_for(stream), "(invalid)\n");
+    fprintf(stream_for(stream), "(invalid)");
     return;
   }
-  fprintf(stream_for(stream), "%s\n", s);
+  fprintf(stream_for(stream), "%s", s);
 }
 
 const char *rt_read_line(void) {
@@ -137,16 +129,6 @@ const char *rt_read_line_file(void *handle) {
   if (len > 0 && file_line_buf[len - 1] == '\n')
     file_line_buf[len - 1] = '\0';
   return file_line_buf;
-}
-
-void rt_write_file_i64(void *handle, int64_t value) {
-  if (!handle) return;
-  fprintf((FILE *)handle, "%lld\n", (long long)value);
-}
-
-void rt_write_file_f64(void *handle, double value) {
-  if (!handle) return;
-  fprintf((FILE *)handle, "%g\n", value);
 }
 
 void rt_write_file_ptr(void *handle, const char *s) {

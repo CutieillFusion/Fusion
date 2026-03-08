@@ -103,8 +103,8 @@ let h2 = heap_array(ptr[Value], output_size);
 let losses = heap_array(ptr[Value], output_size);
 
 for (let epoch = 0; epoch < num_epochs; epoch = epoch + 1) {
-	print("Epoch:");
-	print(epoch);
+	println("Epoch:");
+	println(epoch);
 
 	let running = make_leaf(0.0);
 	let running_correct = make_leaf(0.0);
@@ -212,8 +212,8 @@ for (let epoch = 0; epoch < num_epochs; epoch = epoch + 1) {
 	}
 
 	let accuracy = total_correct / (batch_size as f64);
-	print("accuracy:");
-	print(accuracy);
+	println("accuracy:");
+	println(accuracy);
 	
 	# break statement for early stopping
 	if (accuracy >= 1.0) {
@@ -226,36 +226,36 @@ let W2_trained = heap_array(f64, hidden_size * output_size);
 let b1_trained = heap_array(f64, hidden_size);
 let b2_trained = heap_array(f64, output_size);
 
-print("Weights for trained model:");
-print("W1:");
+println("Weights for trained model:");
+println("W1:");
 for (let i = 0; i < input_size; i = i + 1) {
 	for (let j = 0; j < hidden_size; j = j + 1) {
 		let data = W1[i * hidden_size + j].data;
-		print(data);
+		println(data);
 		W1_trained[i * hidden_size + j] = 0.0 + data;
 	}
 }
 
-print("W2:");
+println("W2:");
 for (let i = 0; i < hidden_size; i = i + 1) {
 	for (let j = 0; j < output_size; j = j + 1) {
 		let data = W2[i * output_size + j].data;
-		print(data);
+		println(data);
 		W2_trained[i * output_size + j] = 0.0 + data;
 	}
 }
 
-print("b1:");
+println("b1:");
 for (let i = 0; i < hidden_size; i = i + 1) {
 	let data = b1[i].data;
-	print(data);
+	println(data);
 	b1_trained[i] = 0.0 + data;
 }
 
-print("b2:");
+println("b2:");
 for (let i = 0; i < output_size; i = i + 1) {
 	let data = b2[i].data;
-	print(data);
+	println(data);
 	b2_trained[i] = 0.0 + data;
 }
 
@@ -376,7 +376,7 @@ let h = open(path, "wb");
 let n1 = write_bytes(h, header, 54);
 let n2 = write_bytes(h, pixels, pixel_size);
 close(h);
-print("Wrote examples/moons/out.bmp");
+println("Wrote examples/moons/out.bmp");
 
 # Free
 free_array(as_array(header, ptr));

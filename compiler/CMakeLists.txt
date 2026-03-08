@@ -33,8 +33,8 @@ target_link_libraries(fusion PRIVATE fusion_compiler)
 target_include_directories(fusion PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/runtime_c/include)
 include("${CMAKE_SOURCE_DIR}/cmake/LinkFusionLLVM.cmake")
 fusion_target_link_llvm(fusion)
-# Force-include static runtime so rt_print_i64 is in the binary (nothing references it at link time).
-# Export global symbols so dlsym(RTLD_DEFAULT, "rt_print_i64") finds it at JIT run time.
+# Force-include static runtime so rt_print_cstring is in the binary (nothing references it at link time).
+# Export global symbols so dlsym(RTLD_DEFAULT, "rt_print_cstring") finds it at JIT run time.
 target_link_libraries(fusion PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
 if(FUSION_LIBFFI_FOUND)
   target_link_libraries(fusion PRIVATE LibFFI::LibFFI)

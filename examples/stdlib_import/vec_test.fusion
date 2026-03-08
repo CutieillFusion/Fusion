@@ -1,0 +1,25 @@
+import lib "vec" {
+    struct VecI64;
+    fn vec_new() -> VecI64;
+    fn vec_push(v: VecI64, val: i64) -> void;
+    fn vec_pop(v: VecI64) -> i64;
+    fn vec_get(v: VecI64, idx: i64) -> i64;
+    fn vec_set(v: VecI64, idx: i64, val: i64) -> void;
+    fn vec_len(v: VecI64) -> i64;
+    fn vec_free(v: VecI64) -> void;
+};
+
+let v = vec_new();
+vec_push(v, 10);
+vec_push(v, 20);
+vec_push(v, 30);
+println(vec_len(v));
+println(vec_get(v, 0));
+println(vec_get(v, 1));
+println(vec_get(v, 2));
+vec_set(v, 1, 99);
+println(vec_get(v, 1));
+let popped = vec_pop(v);
+println(popped);
+println(vec_len(v));
+vec_free(v);

@@ -1,10 +1,10 @@
 # Read a line from the user, print it, and save it to a file.
 
-print("Enter something: ");
+println("Enter something: ");
 let line = read_line();
-print(line);
+println(line);
 
 let f = open("out.txt", "w");
 write_file(f, line);
 close(f);
-print("Done.");
+println("Done.");

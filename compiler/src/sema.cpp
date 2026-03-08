@@ -529,21 +529,21 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
         }
         return true;
       }
-      if (expr->callee == "print") {
+      if (expr->callee == "print" || expr->callee == "println") {
         if (expr->args.size() != 1 && expr->args.size() != 2) {
-          ctx.err->message = "print expects 1 or 2 arguments";
+          ctx.err->message = expr->callee + " expects 1 or 2 arguments";
           return false;
         }
         if (!check_expr(expr->args[0].get(), ctx)) return false;
         FfiType arg_ty = expr_type(expr->args[0].get(), &ctx);
         if (arg_ty != FfiType::I64 && arg_ty != FfiType::F64 && arg_ty != FfiType::Ptr) {
-          ctx.err->message = "print expects i64, f64, or pointer argument";
+          ctx.err->message = expr->callee + " expects i64, f64, or pointer argument";
           return false;
         }
         if (expr->args.size() == 2) {
           if (!check_expr(expr->args[1].get(), ctx)) return false;
           if (expr_type(expr->args[1].get(), &ctx) != FfiType::I64) {
-            ctx.err->message = "print stream argument must be i64";
+            ctx.err->message = expr->callee + " stream argument must be i64";
             return false;
           }
         }

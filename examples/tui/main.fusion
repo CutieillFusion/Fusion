@@ -1,0 +1,19 @@
+# \033[H          → move cursor to top-left
+# \033[2J         → clear screen
+# \033[{r};{c}H   → move cursor to row r, col c
+# \033[?25l       → hide cursor
+# \033[?25h       → show cursor
+# \033[1m         → bold
+# \033[31m        → red foreground
+# \033[0m         → reset all attributes
+
+# println("\033[2J");
+# println("\033[H");
+println("\033[2;2H");
+println("\033[31mHello, World!\033[0m");
+# println("\033[?25l");
+# println("\033[?25h");
+# println("\033[1m");
+# println("\033[31m");
+# println("\033[0m");
+read_line();

@@ -14,7 +14,7 @@ TEST(RuntimeBasicTests, PrintI64) {
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  rt_print_i64(3, 0);
+  rt_print_cstring(rt_to_str_i64(3), 0);
   fflush(stdout);
   dup2(saved_fd, STDOUT_FILENO);
   close(saved_fd);
@@ -23,8 +23,10 @@ TEST(RuntimeBasicTests, PrintI64) {
   FILE* cap = fopen(path, "r");
   ASSERT_NE(cap, nullptr);
   char buf[32];
-  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  memset(buf, 0, sizeof(buf));
+  size_t nread = fread(buf, 1, sizeof(buf) - 1, cap);
+  ASSERT_GT(nread, 0u);
   fclose(cap);
   unlink(path);
-  EXPECT_STREQ(buf, "3\n");
+  EXPECT_STREQ(buf, "3");
 }

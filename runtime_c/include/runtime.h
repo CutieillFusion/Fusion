@@ -11,8 +11,6 @@ void rt_init(void);
 /* Free runtime-owned resources (e.g., string arena for rt_str_*). Safe to call multiple times. */
 void rt_shutdown(void);
 
-void rt_print_i64(int64_t value, int64_t stream);
-void rt_print_f64(double value, int64_t stream);
 void rt_print_cstring(const char *s, int64_t stream);
 
 /* Read one line from stdin. Returns NUL-terminated buffer (Fusion-owned; invalid after next read_line). NULL on EOF/error. */
@@ -46,8 +44,6 @@ void rt_track_string(char *p);
 void *rt_open(const char *path, const char *mode);
 void rt_close(void *handle);
 const char *rt_read_line_file(void *handle);
-void rt_write_file_i64(void *handle, int64_t value);
-void rt_write_file_f64(void *handle, double value);
 void rt_write_file_ptr(void *handle, const char *s);
 /* Raw byte I/O. buf = buffer, count = number of bytes. Return bytes written/read, or -1 on error. */
 int64_t rt_write_bytes(void *handle, const void *buf, int64_t count);
