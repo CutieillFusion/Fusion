@@ -198,3 +198,65 @@ TEST(LexerTests, TokenizesTypeKeywords) {
   EXPECT_EQ(kw_void, 1u) << "expected KwVoid";
   EXPECT_EQ(kw_ptr, 1u) << "expected KwPtr";
 }
+
+TEST(LexerTests, OctalEscapeNull) {
+  auto tokens = fusion::lex("\"hello\\0world\"");
+  ASSERT_GE(tokens.size(), 1u);
+  EXPECT_EQ(tokens[0].kind, fusion::TokenKind::StringLiteral);
+  std::string expected = "hello";
+  expected += '\0';
+  expected += "world";
+  EXPECT_EQ(tokens[0].str_value, expected);
+}
+
+TEST(LexerTests, OctalEscapeESC) {
+  // \033 = 0x1B = ESC
+  auto tokens = fusion::lex("\"\\033[2J\"");
+  ASSERT_GE(tokens.size(), 1u);
+  EXPECT_EQ(tokens[0].kind, fusion::TokenKind::StringLiteral);
+  std::string expected;
+  expected += '\x1B';
+  expected += "[2J";
+  EXPECT_EQ(tokens[0].str_value, expected);
+}
+
+TEST(LexerTests, OctalEscapeSingleDigit) {
+  // \7 = 0x07 = BEL
+  auto tokens = fusion::lex("\"\\7\"");
+  ASSERT_GE(tokens.size(), 1u);
+  EXPECT_EQ(tokens[0].kind, fusion::TokenKind::StringLiteral);
+  EXPECT_EQ(tokens[0].str_value, std::string(1, '\x07'));
+}
+
+TEST(LexerTests, OctalEscapeMaxThreeDigits) {
+  // \0101 should parse as \010 (octal 10 = 8) followed by literal '1'
+  auto tokens = fusion::lex("\"\\0101\"");
+  ASSERT_GE(tokens.size(), 1u);
+  EXPECT_EQ(tokens[0].kind, fusion::TokenKind::StringLiteral);
+  std::string expected;
+  expected += '\x08'; // octal 010
+  expected += '1';
+  EXPECT_EQ(tokens[0].str_value, expected);
+}
+
+TEST(LexerTests, OctalEscapeStopsAtNonOctalDigit) {
+  // \09 should parse as \0 (null) followed by literal '9'
+  auto tokens = fusion::lex("\"\\09\"");
+  ASSERT_GE(tokens.size(), 1u);
+  EXPECT_EQ(tokens[0].kind, fusion::TokenKind::StringLiteral);
+  std::string expected;
+  expected += '\0';
+  expected += '9';
+  EXPECT_EQ(tokens[0].str_value, expected);
+}
+
+TEST(LexerTests, OctalEscapeMultipleInString) {
+  // Multiple octal escapes: \033[1;31m = red ANSI color
+  auto tokens = fusion::lex("\"\\033[1;31m\"");
+  ASSERT_GE(tokens.size(), 1u);
+  EXPECT_EQ(tokens[0].kind, fusion::TokenKind::StringLiteral);
+  std::string expected;
+  expected += '\x1B';
+  expected += "[1;31m";
+  EXPECT_EQ(tokens[0].str_value, expected);
+}

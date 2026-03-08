@@ -557,6 +557,30 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
         expr->inferred_ptr_element = "char";
         return true;
       }
+      if (expr->callee == "read_key") {
+        if (expr->args.size() != 0) {
+          ctx.err->message = "read_key expects no arguments";
+          return false;
+        }
+        return true;
+      }
+      if (expr->callee == "flush") {
+        if (expr->args.size() != 1) {
+          ctx.err->message = "flush expects one argument (stream: 0 or 1)";
+          return false;
+        }
+        if (!check_expr(expr->args[0].get(), ctx)) return false;
+        return true;
+      }
+      if (expr->callee == "chr") {
+        if (expr->args.size() != 1) {
+          ctx.err->message = "chr expects exactly one argument";
+          return false;
+        }
+        if (!check_expr(expr->args[0].get(), ctx)) return false;
+        expr->inferred_ptr_element = "char";
+        return true;
+      }
       if (expr->callee == "to_str") {
         if (expr->args.size() != 1) {
           ctx.err->message = "to_str expects exactly one argument";

@@ -16,6 +16,15 @@ void rt_print_cstring(const char *s, int64_t stream);
 /* Read one line from stdin. Returns NUL-terminated buffer (Fusion-owned; invalid after next read_line). NULL on EOF/error. */
 const char *rt_read_line(void);
 
+/* Read a single keypress (raw mode). Returns ASCII code (1-255), or 256=Up, 257=Down, 258=Right, 259=Left. 0 on EOF/error. */
+int64_t rt_read_key(void);
+
+/* Flush a stream: 0 = stdout, 1 = stderr. */
+void rt_flush(int64_t stream);
+
+/* Convert integer (0-255) to a single-character NUL-terminated string. Runtime-owned. */
+const char *rt_chr(int64_t code);
+
 /* Number to string. Returns NUL-terminated buffer (Fusion-owned; invalid after next to_str or read_line). */
 const char *rt_to_str_i64(int64_t value);
 const char *rt_to_str_f64(double value);

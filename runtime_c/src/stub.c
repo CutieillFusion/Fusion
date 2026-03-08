@@ -4,6 +4,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef _WIN32
+#include <termios.h>
+#include <unistd.h>
+#endif
+
 #define PRINT_BUF_SIZE 256
 #define LINE_BUF_SIZE 4096
 
@@ -165,6 +170,59 @@ int64_t rt_line_count_file(void *handle) {
   while ((c = fgetc((FILE *)handle)) != EOF)
     if (c == '\n') count++;
   return count;
+}
+
+static char chr_buf[2] = {0, 0};
+
+const char *rt_chr(int64_t code) {
+  chr_buf[0] = (char)(unsigned char)code;
+  return chr_buf;
+}
+
+void rt_flush(int64_t stream) {
+  fflush(stream_for(stream));
+}
+
+int64_t rt_read_key(void) {
+#ifndef _WIN32
+  struct termios saved, raw;
+  if (tcgetattr(STDIN_FILENO, &saved) < 0) return 0;
+  raw = saved;
+  raw.c_lflag &= ~(ICANON | ECHO);
+  raw.c_iflag &= ~(ICRNL);
+  raw.c_cc[VMIN] = 1;
+  raw.c_cc[VTIME] = 0;
+  tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+
+  unsigned char c;
+  ssize_t n = read(STDIN_FILENO, &c, 1);
+  if (n <= 0) { tcsetattr(STDIN_FILENO, TCSANOW, &saved); return 0; }
+
+  if (c == 27) { /* ESC - possible arrow key sequence */
+    unsigned char seq[2];
+    ssize_t n1 = read(STDIN_FILENO, &seq[0], 1);
+    if (n1 <= 0) { tcsetattr(STDIN_FILENO, TCSANOW, &saved); return 27; }
+    if (seq[0] == '[') {
+      ssize_t n2 = read(STDIN_FILENO, &seq[1], 1);
+      if (n2 <= 0) { tcsetattr(STDIN_FILENO, TCSANOW, &saved); return 27; }
+      tcsetattr(STDIN_FILENO, TCSANOW, &saved);
+      switch (seq[1]) {
+        case 'A': return 256; /* Up */
+        case 'B': return 257; /* Down */
+        case 'C': return 258; /* Right */
+        case 'D': return 259; /* Left */
+        default:  return 27;
+      }
+    }
+    tcsetattr(STDIN_FILENO, TCSANOW, &saved);
+    return 27;
+  }
+
+  tcsetattr(STDIN_FILENO, TCSANOW, &saved);
+  return (int64_t)c;
+#else
+  return 0; /* Not implemented on Windows */
+#endif
 }
 
 void rt_panic(const char *msg) {

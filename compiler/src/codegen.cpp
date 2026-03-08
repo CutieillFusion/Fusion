@@ -777,6 +777,28 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         if (!fn) return nullptr;
         return B.CreateCall(fn, {}, "read_line");
       }
+      if (expr->callee == "read_key") {
+        Function* fn = M->getFunction("rt_read_key");
+        if (!fn) return nullptr;
+        return B.CreateCall(fn, {}, "read_key");
+      }
+      if (expr->callee == "flush") {
+        Function* fn = M->getFunction("rt_flush");
+        if (!fn) return nullptr;
+        Value* stream_val = emit_expr(env, expr->args[0].get());
+        if (!stream_val) return nullptr;
+        if (stream_val->getType() != B.getInt64Ty())
+          stream_val = B.CreateIntCast(stream_val, B.getInt64Ty(), true);
+        B.CreateCall(fn, {stream_val});
+        return B.getInt64(0);
+      }
+      if (expr->callee == "chr") {
+        Value* arg_val = emit_expr(env, expr->args[0].get());
+        if (!arg_val) return nullptr;
+        Function* fn = M->getFunction("rt_chr");
+        if (!fn) return nullptr;
+        return B.CreateCall(fn, arg_val, "chr");
+      }
       if (expr->callee == "to_str") {
         FfiType t = FfiType::Void;
         if (expr->args[0]->kind == Expr::Kind::Index) {
@@ -2168,6 +2190,9 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
 
   Function::Create(print_cstring_ty, GlobalValue::ExternalLinkage, "rt_print_cstring", module.get());
   Function::Create(FunctionType::get(i8ptr, false), GlobalValue::ExternalLinkage, "rt_read_line", module.get());
+  Function::Create(FunctionType::get(builder.getInt64Ty(), false), GlobalValue::ExternalLinkage, "rt_read_key", module.get());
+  Function::Create(FunctionType::get(builder.getVoidTy(), {builder.getInt64Ty()}, false), GlobalValue::ExternalLinkage, "rt_flush", module.get());
+  Function::Create(FunctionType::get(i8ptr, builder.getInt64Ty(), false), GlobalValue::ExternalLinkage, "rt_chr", module.get());
   Function::Create(FunctionType::get(i8ptr, builder.getInt64Ty(), false), GlobalValue::ExternalLinkage, "rt_to_str_i64", module.get());
   Function::Create(FunctionType::get(i8ptr, builder.getDoubleTy(), false), GlobalValue::ExternalLinkage, "rt_to_str_f64", module.get());
   Function::Create(FunctionType::get(builder.getInt64Ty(), i8ptr, false), GlobalValue::ExternalLinkage, "rt_from_str_i64", module.get());
@@ -2460,7 +2485,7 @@ CodegenResult run_jit(std::unique_ptr<llvm::Module> module,
     return true;
   };
   if (!check_sym("rt_print_cstring") || !check_sym("rt_panic") ||
-      !check_sym("rt_read_line") || !check_sym("rt_to_str_i64") || !check_sym("rt_to_str_f64") ||
+      !check_sym("rt_read_line") || !check_sym("rt_read_key") || !check_sym("rt_flush") || !check_sym("rt_chr") || !check_sym("rt_to_str_i64") || !check_sym("rt_to_str_f64") ||
       !check_sym("rt_from_str_i64") || !check_sym("rt_from_str_f64") || !check_sym("rt_str_concat") || !check_sym("rt_str_dup") ||
       !check_sym("rt_open") || !check_sym("rt_close") || !check_sym("rt_read_line_file") ||
       !check_sym("rt_write_file_ptr") ||
