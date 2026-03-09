@@ -1,0 +1,158 @@
+export fn convert_key_str(key: i64) -> ptr[char] {
+    # Special key codes according to NCurses key values
+    if (key == 259) { return "up"; } # KEY_UP
+    if (key == 258) { return "down"; } # KEY_DOWN
+    if (key == 261) { return "right"; } # KEY_RIGHT
+    if (key == 260) { return "left"; } # KEY_LEFT
+    if (key == 27) { return "esc"; } # ESC
+    if (key == 32) { return "space"; }
+    if (key == 343) { return "enter"; } # KEY_ENTER
+    if (key == 10) { return "enter"; }  # newline - most terminals
+    if (key == 13) { return "enter"; }  # carriage return - some terminals
+    if (key == 263) { return "backspace"; } # KEY_BACKSPACE
+    if (key == 8) { return "backspace"; }   # Ctrl+H - some terminals
+    if (key == 127) { return "backspace"; } # DEL - some terminals send as backspace
+    if (key == 330) { return "delete_char"; } # KEY_DC
+    if (key == 9) { return "tab"; }
+    if (key == 353) { return "shift_tab"; } # KEY_BTAB
+
+    if (key == 360) { return "end"; } # KEY_END
+    if (key == 262) { return "home"; } # KEY_HOME
+
+    if (key == 338) { return "page_down"; } # KEY_NPAGE = Next Page
+    if (key == 339) { return "page_up"; }   # KEY_PPAGE = Previous Page
+
+    if (key == 331) { return "insert"; }  # KEY_IC
+
+    if (key == 409) { return "mouse"; } # KEY_MOUSE
+    if (key == 410) { return "resize"; } # KEY_RESIZE
+
+    if (key == 383) { return "shift_delete"; } # KEY_SDC
+    if (key == 336) { return "shift_down"; } # KEY_SF
+    if (key == 386) { return "shift_end"; } # KEY_SEND
+    if (key == 391) { return "shift_home"; } # KEY_SHOME
+    if (key == 393) { return "shift_left"; } # KEY_SLEFT
+    if (key == 396) { return "shift_page_down"; } # KEY_SNEXT
+    if (key == 398) { return "shift_page_up"; }   # KEY_SPREVIOUS
+    if (key == 402) { return "shift_right"; } # KEY_SRIGHT
+    if (key == 337) { return "shift_up"; } # KEY_SR
+
+    # Control characters (1-31) - real Ctrl+key from terminals
+    if (key == 1) { return "ctrl+a"; }
+    if (key == 2) { return "ctrl+b"; }
+    if (key == 3) { return "ctrl+c"; }
+    if (key == 4) { return "ctrl+d"; }
+    if (key == 5) { return "ctrl+e"; }
+    if (key == 6) { return "ctrl+f"; }
+    if (key == 7) { return "ctrl+g"; }
+    # 8 = backspace, 9 = tab, 10 = enter (above)
+    if (key == 11) { return "ctrl+k"; }
+    if (key == 12) { return "ctrl+l"; }
+    # 13 = enter (above)
+    if (key == 14) { return "ctrl+n"; }
+    if (key == 15) { return "ctrl+o"; }
+    if (key == 16) { return "ctrl+p"; }
+    if (key == 17) { return "ctrl+q"; }
+    if (key == 18) { return "ctrl+r"; }
+    if (key == 19) { return "ctrl+s"; }
+    if (key == 20) { return "ctrl+t"; }
+    if (key == 21) { return "ctrl+u"; }
+    if (key == 22) { return "ctrl+v"; }
+    if (key == 23) { return "ctrl+w"; }
+    if (key == 24) { return "ctrl+x"; }
+    if (key == 25) { return "ctrl+y"; }
+    if (key == 26) { return "ctrl+z"; }
+    # 27 = esc (above)
+    if (key == 28) { return "ctrl+\\"; }
+    if (key == 29) { return "ctrl+]"; }
+    if (key == 30) { return "ctrl+^"; }
+    if (key == 31) { return "ctrl+_"; }
+
+    # F0-F63 with explicit mapping
+    if (key >= 264) {
+        if (key <= 327) {
+            return "f" + to_str(key - 264);
+        }
+    }
+
+    if (key >= 32) {
+        if (key <= 127) {
+            return chr(key);
+        }
+    }
+
+    return "Unknown";
+}
+
+export fn clear_screen() -> void {
+    print("\033[2J");
+}
+
+export fn move_cursor(x: i64, y: i64) -> void {
+    print("\033[" + to_str(y) + ";" + to_str(x) + "H");
+}
+
+export fn hide_cursor() -> void {
+    print("\033[?25l");
+}
+
+export fn show_cursor() -> void {
+    print("\033[?25h");
+}
+
+export fn print_at(x: i64, y: i64, s: ptr[char]) -> void {
+    move_cursor(x, y);
+    print(s);
+}
+
+export fn get_width() -> i64 {
+    return terminal_width();
+}
+
+export fn get_height() -> i64 {
+    return terminal_height();
+}
+
+export fn set_colors(foreground: i64, background: i64) -> void {
+    print("\033[38;5;" + to_str(foreground) + "m" + "\033[48;5;" + to_str(background) + "m");
+}
+
+# Map common color names to 256-color palette indices (0-7 normal, 8-15 bright). Returns -1 for unknown.
+export fn color_name_to_index(name: ptr[char]) -> i64 {
+    # Normal colors (0-7)
+    if (name == "black") { return 0; }
+    if (name == "red") { return 1; }
+    if (name == "green") { return 2; }
+    if (name == "yellow") { return 3; }
+    if (name == "blue") { return 4; }
+    if (name == "magenta") { return 5; }
+    if (name == "cyan") { return 6; }
+    if (name == "white") { return 7; }
+    # Bright colors (8-15)
+    if (name == "bright_black") { return 8; }
+    if (name == "bright_red") { return 9; }
+    if (name == "bright_green") { return 10; }
+    if (name == "bright_yellow") { return 11; }
+    if (name == "bright_blue") { return 12; }
+    if (name == "bright_magenta") { return 13; }
+    if (name == "bright_cyan") { return 14; }
+    if (name == "bright_white") { return 15; }
+    return -1;
+}
+
+# Set foreground and background by name (e.g. "white", "black", "bright_red").
+export fn set_colors_by_name(foreground: ptr[char], background: ptr[char]) -> void {
+    let foreground_index = color_name_to_index(foreground);
+    let background_index = color_name_to_index(background);
+    if (foreground_index == -1) {
+        print("Unknown foreground color: " + foreground);
+    }
+    if (background_index == -1) {
+        print("Unknown background color: " + background);
+    }
+    set_colors(foreground_index, background_index);
+}
+
+export fn reset_color() -> void {
+    print("\033[0m");
+}

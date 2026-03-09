@@ -19,6 +19,10 @@ const char *rt_read_line(void);
 /* Read a single keypress (raw mode). Returns ASCII code (1-255), or 256=Up, 257=Down, 258=Right, 259=Left. 0 on EOF/error. */
 int64_t rt_read_key(void);
 
+/* Terminal dimensions. Returns 0 on failure or non-TTY. */
+int64_t rt_terminal_height(void);
+int64_t rt_terminal_width(void);
+
 /* Flush a stream: 0 = stdout, 1 = stderr. */
 void rt_flush(int64_t stream);
 
@@ -45,6 +49,15 @@ const char *rt_str_concat(const char *a, const char *b);
  * Used so left operand of + is preserved before right is evaluated (e.g. to_str(x) + to_str(y)).
  */
 const char *rt_str_dup(const char *s);
+
+/* String operations. All return runtime-owned memory (reclaimed by rt_shutdown()). */
+const char *rt_str_upper(const char *s);
+const char *rt_str_lower(const char *s);
+int64_t rt_str_contains(const char *haystack, const char *needle);
+const char *rt_str_strip(const char *s);
+int64_t rt_str_find(const char *haystack, const char *needle);
+const char *rt_str_split(const char *s, const char *delim);
+int64_t rt_str_eq(const char *a, const char *b);
 
 /* Register a heap-allocated string for rt_shutdown() to free. For use by runtime modules (e.g. http.c). */
 void rt_track_string(char *p);

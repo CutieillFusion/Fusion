@@ -72,6 +72,15 @@ let i: i64 = f as i64;
 print("hello");          // print string + newline
 print(42);               // print i64
 let s: str = read_line(); // read a line from stdin
+flush(0);                 // flush stdout (0) or stderr (1)
+```
+
+### Terminal / TUI
+```fusion
+let key: i64 = read_key();         // read single keypress (raw mode); returns ASCII or 256=Up 257=Down 258=Right 259=Left
+let h: i64 = terminal_height();    // terminal rows (0 if not a TTY)
+let w: i64 = terminal_width();     // terminal cols (0 if not a TTY)
+let c: str = chr(65);              // integer (0-255) to single-character string ("A")
 ```
 
 ### String Operations
@@ -80,6 +89,18 @@ let s: str = "hello" + " world";   // string concatenation
 let n: str = to_str(42);            // i64/f64 to string
 let x: i64 = from_str(s, i64);     // string to i64
 let f: f64 = from_str(s, f64);     // string to f64
+let u: str = str_upper("hello");   // "HELLO"
+let l: str = str_lower("HELLO");   // "hello"
+let c: i64 = str_contains("hello world", "world"); // 1 (true) or 0 (false)
+let t: str = str_strip("  hello  "); // "hello" (trim whitespace both ends)
+let i: i64 = str_find("hello world", "world");     // 6 (byte offset, or -1 if not found)
+let parts = str_split("a,b,c", ","); // array of strings: ["a", "b", "c"]
+println(len(parts));               // 3
+println(parts[0]);                 // "a"
+
+// String equality (== and != compare by content, not pointer address)
+if a == "hello" { print("match"); }
+if a != b { print("different"); }
 ```
 
 ### HTTP
@@ -195,6 +216,7 @@ Run from project root. This invokes cmake + ctest.
 - **`as i32` bug**: `print(y)` where `y = x as i32` may hit FPToSI. Workaround: `print(y as i64)`
 - **`addr_of`** only accepts a VarRef (variable name), not a literal
 - **`as ptr`** cast only works ptr→ptr, not int→ptr
+- **String `==`/`!=`**: compares by content (via `strcmp`) when both sides are `ptr[char]`/`str`. For other pointer types, `==`/`!=` compares pointer identity
 - **ptr ordering**: `ptr < ptr` is rejected; `ptr == ptr` and `ptr != ptr` are allowed
 - **`rt_read_line_file`** strips the trailing `\n` from input
 - **`rt_line_count_file`** consumes the file handle (reads the entire file)

@@ -564,6 +564,20 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
         }
         return true;
       }
+      if (expr->callee == "terminal_height") {
+        if (expr->args.size() != 0) {
+          ctx.err->message = "terminal_height expects no arguments";
+          return false;
+        }
+        return true;
+      }
+      if (expr->callee == "terminal_width") {
+        if (expr->args.size() != 0) {
+          ctx.err->message = "terminal_width expects no arguments";
+          return false;
+        }
+        return true;
+      }
       if (expr->callee == "flush") {
         if (expr->args.size() != 1) {
           ctx.err->message = "flush expects one argument (stream: 0 or 1)";
@@ -633,6 +647,29 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
       if (expr->callee == "str_dup") {
         if (!check_one_ptr_arg(expr, "str_dup", "string", ctx)) return false;
         expr->inferred_ptr_element = "char";
+        return true;
+      }
+      if (expr->callee == "str_upper" || expr->callee == "str_lower" || expr->callee == "str_strip") {
+        if (!check_one_ptr_arg(expr, expr->callee.c_str(), "string", ctx)) return false;
+        expr->inferred_ptr_element = "char";
+        return true;
+      }
+      if (expr->callee == "str_contains" || expr->callee == "str_find") {
+        if (expr->args.size() != 2) {
+          ctx.err->message = expr->callee + " expects (haystack, needle)";
+          return false;
+        }
+        for (auto& a : expr->args)
+          if (!check_expr(a.get(), ctx)) return false;
+        return true;
+      }
+      if (expr->callee == "str_split") {
+        if (expr->args.size() != 2) {
+          ctx.err->message = "str_split expects (string, delimiter)";
+          return false;
+        }
+        for (auto& a : expr->args)
+          if (!check_expr(a.get(), ctx)) return false;
         return true;
       }
       if (expr->callee == "http_request") {

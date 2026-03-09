@@ -3,10 +3,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 #ifndef _WIN32
 #include <termios.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
+#include <fcntl.h>
 #endif
 
 #define PRINT_BUF_SIZE 256
@@ -116,6 +119,100 @@ const char *rt_str_dup(const char *s) {
   return out;
 }
 
+const char *rt_str_upper(const char *s) {
+  if (!s) return NULL;
+  size_t n = strlen(s);
+  char *out = (char *)malloc(n + 1);
+  if (!out) return NULL;
+  for (size_t i = 0; i < n; i++) out[i] = (char)toupper((unsigned char)s[i]);
+  out[n] = '\0';
+  rt_track_string(out);
+  return out;
+}
+
+const char *rt_str_lower(const char *s) {
+  if (!s) return NULL;
+  size_t n = strlen(s);
+  char *out = (char *)malloc(n + 1);
+  if (!out) return NULL;
+  for (size_t i = 0; i < n; i++) out[i] = (char)tolower((unsigned char)s[i]);
+  out[n] = '\0';
+  rt_track_string(out);
+  return out;
+}
+
+int64_t rt_str_contains(const char *haystack, const char *needle) {
+  if (!haystack || !needle) return 0;
+  return strstr(haystack, needle) ? 1 : 0;
+}
+
+const char *rt_str_strip(const char *s) {
+  if (!s) return NULL;
+  while (*s && isspace((unsigned char)*s)) s++;
+  size_t n = strlen(s);
+  while (n > 0 && isspace((unsigned char)s[n - 1])) n--;
+  char *out = (char *)malloc(n + 1);
+  if (!out) return NULL;
+  memcpy(out, s, n);
+  out[n] = '\0';
+  rt_track_string(out);
+  return out;
+}
+
+int64_t rt_str_find(const char *haystack, const char *needle) {
+  if (!haystack || !needle) return -1;
+  const char *p = strstr(haystack, needle);
+  if (!p) return -1;
+  return (int64_t)(p - haystack);
+}
+
+const char *rt_str_split(const char *s, const char *delim) {
+  if (!s) return NULL;
+  /* Empty or NULL delimiter: return 1-element array with copy of s */
+  if (!delim || !*delim) {
+    char *block = (char *)malloc(8 + 8);
+    if (!block) return NULL;
+    *(int64_t *)block = 1;
+    char *copy = (char *)malloc(strlen(s) + 1);
+    if (!copy) { free(block); return NULL; }
+    strcpy(copy, s);
+    rt_track_string(copy);
+    ((char **)(block + 8))[0] = copy;
+    rt_track_string(block);
+    return (const char *)(block + 8);
+  }
+  size_t dlen = strlen(delim);
+  /* First pass: count splits */
+  int64_t count = 1;
+  const char *p = s;
+  while ((p = strstr(p, delim)) != NULL) { count++; p += dlen; }
+  /* Allocate: 8-byte header + count*8 bytes for pointers */
+  char *block = (char *)malloc(8 + (size_t)count * 8);
+  if (!block) return NULL;
+  *(int64_t *)block = count;
+  char **ptrs = (char **)(block + 8);
+  /* Second pass: extract pieces */
+  p = s;
+  for (int64_t i = 0; i < count; i++) {
+    const char *next = (i < count - 1) ? strstr(p, delim) : NULL;
+    size_t piece_len = next ? (size_t)(next - p) : strlen(p);
+    char *piece = (char *)malloc(piece_len + 1);
+    if (!piece) { piece = (char *)malloc(1); if (piece) piece[0] = '\0'; }
+    else { memcpy(piece, p, piece_len); piece[piece_len] = '\0'; }
+    rt_track_string(piece);
+    ptrs[i] = piece;
+    p = next ? next + dlen : p + piece_len;
+  }
+  rt_track_string(block);
+  return (const char *)(block + 8);
+}
+
+int64_t rt_str_eq(const char *a, const char *b) {
+    if (a == b) return 1;           // same pointer or both NULL
+    if (!a || !b) return 0;         // exactly one NULL
+    return strcmp(a, b) == 0 ? 1 : 0;
+}
+
 void *rt_open(const char *path, const char *mode) {
   if (!path || !mode) return NULL;
   return (void *)fopen(path, mode);
@@ -222,6 +319,34 @@ int64_t rt_read_key(void) {
   return (int64_t)c;
 #else
   return 0; /* Not implemented on Windows */
+#endif
+}
+
+int64_t rt_terminal_height(void) {
+#ifndef _WIN32
+  struct winsize ws;
+  int fd = open("/dev/tty", O_RDONLY);
+  if (fd < 0) fd = STDIN_FILENO;
+  int ok = ioctl(fd, TIOCGWINSZ, &ws);
+  if (fd != STDIN_FILENO) close(fd);
+  if (ok < 0) return 0;
+  return (int64_t)ws.ws_row;
+#else
+  return 0;
+#endif
+}
+
+int64_t rt_terminal_width(void) {
+#ifndef _WIN32
+  struct winsize ws;
+  int fd = open("/dev/tty", O_RDONLY);
+  if (fd < 0) fd = STDIN_FILENO;
+  int ok = ioctl(fd, TIOCGWINSZ, &ws);
+  if (fd != STDIN_FILENO) close(fd);
+  if (ok < 0) return 0;
+  return (int64_t)ws.ws_col;
+#else
+  return 0;
 #endif
 }
 

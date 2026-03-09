@@ -5,38 +5,9 @@
 #include <variant>
 #include <unordered_set>
 
-#ifdef FUSION_HAVE_LLVM
-#include "llvm/IR/LLVMContext.h"
-#include "llvm/IR/Module.h"
-#include "llvm/IR/IRBuilder.h"
-#include "llvm/IR/Function.h"
-#include "llvm/IR/Verifier.h"
-#include "llvm/IR/Constants.h"
-#include "llvm/IR/DerivedTypes.h"
-#include "llvm/IR/Type.h"
-#include "llvm/ExecutionEngine/Orc/LLJIT.h"
-#include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
-#include "llvm/ExecutionEngine/Orc/Core.h"
-#include "llvm/ExecutionEngine/Orc/Shared/ExecutorSymbolDef.h"
-#include "llvm/ExecutionEngine/Orc/Shared/ExecutorAddress.h"
-#include "llvm/Support/Error.h"
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/DynamicLibrary.h"
-#include "llvm/Support/FileSystem.h"
-#include "llvm/Support/TargetSelect.h"
-#include "llvm/MC/TargetRegistry.h"
-#include "llvm/Target/TargetMachine.h"
-#include "llvm/Target/TargetOptions.h"
-#include "llvm/IR/LegacyPassManager.h"
-#include "llvm/TargetParser/Host.h"
-#include <algorithm>
-#include <cstring>
-#include <dlfcn.h>
-#include <pthread.h>
-#include <string>
-#include <unordered_map>
-#include <vector>
+#include "codegen_pch.hpp"
 
+#ifdef FUSION_HAVE_LLVM
 using namespace llvm;
 using namespace llvm::orc;
 #endif
@@ -782,6 +753,16 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         if (!fn) return nullptr;
         return B.CreateCall(fn, {}, "read_key");
       }
+      if (expr->callee == "terminal_height") {
+        Function* fn = M->getFunction("rt_terminal_height");
+        if (!fn) return nullptr;
+        return B.CreateCall(fn, {}, "terminal_height");
+      }
+      if (expr->callee == "terminal_width") {
+        Function* fn = M->getFunction("rt_terminal_width");
+        if (!fn) return nullptr;
+        return B.CreateCall(fn, {}, "terminal_width");
+      }
       if (expr->callee == "flush") {
         Function* fn = M->getFunction("rt_flush");
         if (!fn) return nullptr;
@@ -866,6 +847,37 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         Function* fn = M->getFunction("rt_str_dup");
         if (!fn) return nullptr;
         return B.CreateCall(fn, s, "str_dup");
+      }
+      if (expr->callee == "str_upper" || expr->callee == "str_lower" || expr->callee == "str_strip") {
+        Value* s = emit_expr(env, expr->args[0].get());
+        if (!s) return nullptr;
+        Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+        if (s->getType() != i8ptr) s = B.CreatePointerCast(s, i8ptr);
+        Function* fn = M->getFunction("rt_" + expr->callee);
+        if (!fn) return nullptr;
+        return B.CreateCall(fn, s, expr->callee);
+      }
+      if (expr->callee == "str_contains" || expr->callee == "str_find") {
+        Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+        Value* a = emit_expr(env, expr->args[0].get());
+        Value* b = emit_expr(env, expr->args[1].get());
+        if (!a || !b) return nullptr;
+        if (a->getType() != i8ptr) a = B.CreatePointerCast(a, i8ptr);
+        if (b->getType() != i8ptr) b = B.CreatePointerCast(b, i8ptr);
+        Function* fn = M->getFunction("rt_" + expr->callee);
+        if (!fn) return nullptr;
+        return B.CreateCall(fn, {a, b}, expr->callee);
+      }
+      if (expr->callee == "str_split") {
+        Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
+        Value* a = emit_expr(env, expr->args[0].get());
+        Value* b = emit_expr(env, expr->args[1].get());
+        if (!a || !b) return nullptr;
+        if (a->getType() != i8ptr) a = B.CreatePointerCast(a, i8ptr);
+        if (b->getType() != i8ptr) b = B.CreatePointerCast(b, i8ptr);
+        Function* fn = M->getFunction("rt_str_split");
+        if (!fn) return nullptr;
+        return B.CreateCall(fn, {a, b}, "str_split");
       }
       if (expr->callee == "http_request") {
         Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
@@ -1526,9 +1538,22 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
       FfiType tyL = expr_type(expr->left.get(), prog, env.var_types);
       FfiType tyR = expr_type(expr->right.get(), prog, env.var_types);
       if (tyL == FfiType::Ptr && tyR == FfiType::Ptr) {
-        Type* i8ptr = PointerType::get(Type::getInt8Ty(ctx), 0);
-        if (L->getType() != i8ptr) L = B.CreatePointerCast(L, i8ptr);
-        if (R->getType() != i8ptr) R = B.CreatePointerCast(R, i8ptr);
+        Type* i8ptr_ty = PointerType::get(Type::getInt8Ty(ctx), 0);
+        if (L->getType() != i8ptr_ty) L = B.CreatePointerCast(L, i8ptr_ty);
+        if (R->getType() != i8ptr_ty) R = B.CreatePointerCast(R, i8ptr_ty);
+
+        // String content comparison when both sides are ptr[char]
+        if (expr->left->inferred_ptr_element == "char" &&
+            expr->right->inferred_ptr_element == "char") {
+            Function* fn = M->getFunction("rt_str_eq");
+            Value* result = B.CreateCall(fn, {L, R}, "str_eq");
+            if (expr->compare_op == CompareOp::Eq)
+                return B.CreateICmpNE(result, ConstantInt::get(B.getInt64Ty(), 0), "streq");
+            else
+                return B.CreateICmpEQ(result, ConstantInt::get(B.getInt64Ty(), 0), "strne");
+        }
+
+        // Pointer identity comparison for non-string pointers
         CmpInst::Predicate pred = (expr->compare_op == CompareOp::Eq) ? CmpInst::ICMP_EQ : CmpInst::ICMP_NE;
         return B.CreateICmp(pred, L, R, "cmp");
       }
@@ -2191,6 +2216,8 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
   Function::Create(print_cstring_ty, GlobalValue::ExternalLinkage, "rt_print_cstring", module.get());
   Function::Create(FunctionType::get(i8ptr, false), GlobalValue::ExternalLinkage, "rt_read_line", module.get());
   Function::Create(FunctionType::get(builder.getInt64Ty(), false), GlobalValue::ExternalLinkage, "rt_read_key", module.get());
+  Function::Create(FunctionType::get(builder.getInt64Ty(), false), GlobalValue::ExternalLinkage, "rt_terminal_height", module.get());
+  Function::Create(FunctionType::get(builder.getInt64Ty(), false), GlobalValue::ExternalLinkage, "rt_terminal_width", module.get());
   Function::Create(FunctionType::get(builder.getVoidTy(), {builder.getInt64Ty()}, false), GlobalValue::ExternalLinkage, "rt_flush", module.get());
   Function::Create(FunctionType::get(i8ptr, builder.getInt64Ty(), false), GlobalValue::ExternalLinkage, "rt_chr", module.get());
   Function::Create(FunctionType::get(i8ptr, builder.getInt64Ty(), false), GlobalValue::ExternalLinkage, "rt_to_str_i64", module.get());
@@ -2209,6 +2236,13 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
   Function::Create(FunctionType::get(builder.getInt64Ty(), i8ptr, false), GlobalValue::ExternalLinkage, "rt_line_count_file", module.get());
   Function::Create(FunctionType::get(i8ptr, {i8ptr, i8ptr, i8ptr}, false), GlobalValue::ExternalLinkage, "rt_http_request", module.get());
   Function::Create(FunctionType::get(builder.getInt64Ty(), false), GlobalValue::ExternalLinkage, "rt_http_status", module.get());
+  Function::Create(FunctionType::get(i8ptr, {i8ptr}, false), GlobalValue::ExternalLinkage, "rt_str_upper", module.get());
+  Function::Create(FunctionType::get(i8ptr, {i8ptr}, false), GlobalValue::ExternalLinkage, "rt_str_lower", module.get());
+  Function::Create(FunctionType::get(builder.getInt64Ty(), {i8ptr, i8ptr}, false), GlobalValue::ExternalLinkage, "rt_str_contains", module.get());
+  Function::Create(FunctionType::get(i8ptr, {i8ptr}, false), GlobalValue::ExternalLinkage, "rt_str_strip", module.get());
+  Function::Create(FunctionType::get(builder.getInt64Ty(), {i8ptr, i8ptr}, false), GlobalValue::ExternalLinkage, "rt_str_find", module.get());
+  Function::Create(FunctionType::get(i8ptr, {i8ptr, i8ptr}, false), GlobalValue::ExternalLinkage, "rt_str_split", module.get());
+  Function::Create(FunctionType::get(builder.getInt64Ty(), {i8ptr, i8ptr}, false), GlobalValue::ExternalLinkage, "rt_str_eq", module.get());
   Function::Create(panic_ty, GlobalValue::ExternalLinkage, "rt_panic", module.get());
   Function::Create(dlopen_ty, GlobalValue::ExternalLinkage, "rt_dlopen", module.get());
   Function::Create(dlsym_ty, GlobalValue::ExternalLinkage, "rt_dlsym", module.get());
@@ -2485,8 +2519,10 @@ CodegenResult run_jit(std::unique_ptr<llvm::Module> module,
     return true;
   };
   if (!check_sym("rt_print_cstring") || !check_sym("rt_panic") ||
-      !check_sym("rt_read_line") || !check_sym("rt_read_key") || !check_sym("rt_flush") || !check_sym("rt_chr") || !check_sym("rt_to_str_i64") || !check_sym("rt_to_str_f64") ||
+      !check_sym("rt_read_line") || !check_sym("rt_read_key") || !check_sym("rt_terminal_height") || !check_sym("rt_terminal_width") || !check_sym("rt_flush") || !check_sym("rt_chr") || !check_sym("rt_to_str_i64") || !check_sym("rt_to_str_f64") ||
       !check_sym("rt_from_str_i64") || !check_sym("rt_from_str_f64") || !check_sym("rt_str_concat") || !check_sym("rt_str_dup") ||
+      !check_sym("rt_str_upper") || !check_sym("rt_str_lower") || !check_sym("rt_str_contains") ||
+      !check_sym("rt_str_strip") || !check_sym("rt_str_find") || !check_sym("rt_str_split") || !check_sym("rt_str_eq") ||
       !check_sym("rt_open") || !check_sym("rt_close") || !check_sym("rt_read_line_file") ||
       !check_sym("rt_write_file_ptr") ||
       !check_sym("rt_write_bytes") || !check_sym("rt_read_bytes") ||

@@ -1,4 +1,16 @@
 cmake_minimum_required(VERSION 3.16)
+
+# ---------- optional accelerators (before project()) ----------
+option(FUSION_USE_CCACHE "Use ccache if available" ON)
+if(FUSION_USE_CCACHE)
+  find_program(CCACHE_PROGRAM ccache)
+  if(CCACHE_PROGRAM)
+    set(CMAKE_C_COMPILER_LAUNCHER   "${CCACHE_PROGRAM}")
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+    message(STATUS "ccache found – using ${CCACHE_PROGRAM}")
+  endif()
+endif()
+
 project(Fusion LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
@@ -59,4 +71,22 @@ add_custom_target(check-lsp
 )
 if(FUSION_LIBFFI_FOUND)
   target_link_libraries(fusion PRIVATE LibFFI::LibFFI)
+endif()
+
+# ---------- optional faster linker ----------
+option(FUSION_USE_FAST_LINKER "Use mold or lld if available" OFF)
+if(FUSION_USE_FAST_LINKER)
+  find_program(MOLD_LINKER mold)
+  if(MOLD_LINKER)
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fuse-ld=mold")
+    message(STATUS "Using mold linker")
+  else()
+    find_program(LLD_LINKER ld.lld)
+    if(LLD_LINKER)
+      set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fuse-ld=lld")
+      message(STATUS "Using lld linker")
+    else()
+      message(STATUS "Neither mold nor lld found – using default linker")
+    endif()
+  endif()
 endif()

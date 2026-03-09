@@ -27,6 +27,7 @@ target_include_directories(fusion_compiler PUBLIC
 )
 target_compile_definitions(fusion_compiler PUBLIC FUSION_HAVE_LLVM=1)
 target_link_libraries(fusion_compiler PUBLIC fusion_frontend)
+target_precompile_headers(fusion_compiler PRIVATE src/codegen_pch.hpp)
 
 add_executable(fusion src/main.cpp)
 target_link_libraries(fusion PRIVATE fusion_compiler)

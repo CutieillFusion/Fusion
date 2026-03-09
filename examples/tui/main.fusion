@@ -10,9 +10,7 @@ let done = 0;
 for (; done == 0;) {
     let key = read_key();
 
-    if (key == 27) {
-        done = 1;
-    }
+    print(key);
 
     if (key > 31) {
         if (key <= 127) {
