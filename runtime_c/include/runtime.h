@@ -26,6 +26,9 @@ int64_t rt_terminal_width(void);
 /* Flush a stream: 0 = stdout, 1 = stderr. */
 void rt_flush(int64_t stream);
 
+/* Sleep for the given number of milliseconds. */
+void rt_sleep(int64_t milliseconds);
+
 /* Convert integer (0-255) to a single-character NUL-terminated string. Runtime-owned. */
 const char *rt_chr(int64_t code);
 

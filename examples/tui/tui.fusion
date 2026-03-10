@@ -1,3 +1,7 @@
+# This file is a library of functions for working with the terminal.
+# It is used to convert key codes to human-readable strings.
+# It is also used to clear the screen, move the cursor, hide the cursor, show the cursor, print at a specific position, get the width and height of the terminal, set the colors, and reset the color.
+
 export fn convert_key_str(key: i64) -> ptr[char] {
     # Special key codes according to NCurses key values
     if (key == 259) { return "up"; } # KEY_UP

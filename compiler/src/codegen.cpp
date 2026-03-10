@@ -773,6 +773,16 @@ static Value* emit_expr(CodegenEnv& env, Expr* expr) {
         B.CreateCall(fn, {stream_val});
         return B.getInt64(0);
       }
+      if (expr->callee == "sleep") {
+        Function* fn = M->getFunction("rt_sleep");
+        if (!fn) return nullptr;
+        Value* ms_val = emit_expr(env, expr->args[0].get());
+        if (!ms_val) return nullptr;
+        if (ms_val->getType() != B.getInt64Ty())
+          ms_val = B.CreateIntCast(ms_val, B.getInt64Ty(), true);
+        B.CreateCall(fn, {ms_val});
+        return B.getInt64(0);
+      }
       if (expr->callee == "chr") {
         Value* arg_val = emit_expr(env, expr->args[0].get());
         if (!arg_val) return nullptr;
@@ -2219,6 +2229,7 @@ std::unique_ptr<llvm::Module> codegen(llvm::LLVMContext& ctx, Program* program) 
   Function::Create(FunctionType::get(builder.getInt64Ty(), false), GlobalValue::ExternalLinkage, "rt_terminal_height", module.get());
   Function::Create(FunctionType::get(builder.getInt64Ty(), false), GlobalValue::ExternalLinkage, "rt_terminal_width", module.get());
   Function::Create(FunctionType::get(builder.getVoidTy(), {builder.getInt64Ty()}, false), GlobalValue::ExternalLinkage, "rt_flush", module.get());
+  Function::Create(FunctionType::get(builder.getVoidTy(), {builder.getInt64Ty()}, false), GlobalValue::ExternalLinkage, "rt_sleep", module.get());
   Function::Create(FunctionType::get(i8ptr, builder.getInt64Ty(), false), GlobalValue::ExternalLinkage, "rt_chr", module.get());
   Function::Create(FunctionType::get(i8ptr, builder.getInt64Ty(), false), GlobalValue::ExternalLinkage, "rt_to_str_i64", module.get());
   Function::Create(FunctionType::get(i8ptr, builder.getDoubleTy(), false), GlobalValue::ExternalLinkage, "rt_to_str_f64", module.get());

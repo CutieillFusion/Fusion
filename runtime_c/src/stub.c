@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <fcntl.h>
+#include <time.h>
 #endif
 
 #define PRINT_BUF_SIZE 256
@@ -347,6 +348,16 @@ int64_t rt_terminal_width(void) {
   return (int64_t)ws.ws_col;
 #else
   return 0;
+#endif
+}
+
+void rt_sleep(int64_t ms) {
+#ifndef _WIN32
+  if (ms <= 0) return;
+  struct timespec ts;
+  ts.tv_sec = ms / 1000;
+  ts.tv_nsec = (ms % 1000) * 1000000L;
+  nanosleep(&ts, NULL);
 #endif
 }
 

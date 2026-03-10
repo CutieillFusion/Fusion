@@ -586,6 +586,14 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
         if (!check_expr(expr->args[0].get(), ctx)) return false;
         return true;
       }
+      if (expr->callee == "sleep") {
+        if (expr->args.size() != 1) {
+          ctx.err->message = "sleep expects exactly one argument (milliseconds: i64)";
+          return false;
+        }
+        if (!check_expr(expr->args[0].get(), ctx)) return false;
+        return true;
+      }
       if (expr->callee == "chr") {
         if (expr->args.size() != 1) {
           ctx.err->message = "chr expects exactly one argument";

@@ -260,6 +260,7 @@ inline std::optional<FfiType> builtin_fixed_return_type(const std::string& calle
     {"terminal_height", FfiType::I64},
     {"terminal_width",  FfiType::I64},
     {"flush",           FfiType::Void},
+    {"sleep",           FfiType::Void},
     {"chr",             FfiType::Ptr},
     {"write_bytes",     FfiType::I64},
     {"read_bytes",      FfiType::I64},
