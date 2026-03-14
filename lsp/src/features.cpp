@@ -162,6 +162,9 @@ static const char* const BUILTINS[] = {
     "stack", "heap", "stack_array", "heap_array",
     "free", "free_array", "as_heap", "as_array",
     "get_func_ptr", "call",
+    "read_key", "chr", "flush", "terminal_height", "terminal_width",
+    "write_bytes", "read_bytes",
+    "http_request", "http_status",
 };
 
 static bool is_builtin(const std::string& name) {

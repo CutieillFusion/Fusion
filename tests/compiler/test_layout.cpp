@@ -142,3 +142,26 @@ TEST(LayoutTests, BuildLayoutMapStructWithPtrChar) {
   EXPECT_EQ(layout.fields[1].second.offset, 8u);
   EXPECT_EQ(layout.fields[1].second.type, fusion::FfiType::I64);
 }
+
+/* ptr[KnownStruct] must be layout type Ptr (not embedded/Void) so Index yields Ptr for as_heap. */
+TEST(LayoutTests, BuildLayoutMapStructWithPtrToKnownStruct) {
+  fusion::StructDef inner;
+  inner.name = "Doc";
+  inner.fields = {{"chars", fusion::FfiType::Ptr}, {"len", fusion::FfiType::I64}};
+  inner.field_type_names = {"char", ""};
+
+  fusion::StructDef outer;
+  outer.name = "Dataset";
+  outer.fields = {{"docs", fusion::FfiType::Ptr}, {"n_docs", fusion::FfiType::I64}};
+  outer.field_type_names = {"Doc", ""};
+
+  fusion::LayoutMap map = fusion::build_layout_map({inner, outer});
+
+  ASSERT_EQ(map.count("Dataset"), 1u);
+  const fusion::StructLayout& layout = map.at("Dataset");
+  ASSERT_EQ(layout.fields.size(), 2u);
+  EXPECT_EQ(layout.fields[0].first, "docs");
+  EXPECT_EQ(layout.fields[0].second.type, fusion::FfiType::Ptr) << "ptr[Doc] field must be Ptr for Index/as_heap";
+  EXPECT_EQ(layout.fields[1].first, "n_docs");
+  EXPECT_EQ(layout.fields[1].second.type, fusion::FfiType::I64);
+}

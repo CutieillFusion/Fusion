@@ -1,0 +1,22 @@
+import lib "set" {
+    struct SetI64;
+    fn set_new() -> SetI64;
+    fn set_add(s: SetI64, key: i64) -> void;
+    fn set_contains(s: SetI64, key: i64) -> i64;
+    fn set_remove(s: SetI64, key: i64) -> void;
+    fn set_len(s: SetI64) -> i64;
+    fn set_free(s: SetI64) -> void;
+};
+
+let s = set_new();
+set_add(s, 10);
+set_add(s, 20);
+set_add(s, 30);
+set_add(s, 10);
+println(set_len(s));
+println(set_contains(s, 10));
+println(set_contains(s, 99));
+set_remove(s, 20);
+println(set_len(s));
+println(set_contains(s, 20));
+set_free(s);

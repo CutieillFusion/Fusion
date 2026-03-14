@@ -198,8 +198,8 @@ static bool parse_struct_def(const std::vector<Token>& tokens, size_t& i, Progra
         size_t pre = i;
         tname = consume_ptr_bracket(tokens, i);
         if (i == pre) return false;  // bare ptr: require [T]
-        // Only change ft to Void for struct pointer fields, not char (string ptr)
-        if (!tname.empty() && tname != "char") ft = FfiType::Void;
+        // Keep ft as Ptr for ptr[T] — layout distinguishes ptr vs embedded via the type
+        // (Ptr = pointer slot, Void = embedded struct)
       }
       def.fields.push_back({std::move(fname), ft});
       def.field_type_names.push_back(tname);

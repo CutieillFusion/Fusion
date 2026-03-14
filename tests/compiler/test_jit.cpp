@@ -19,7 +19,7 @@
 #include <llvm/IR/LLVMContext.h>
 
 TEST(JitTests, ExecutesPrintOnePlusTwo) {
-  auto tokens = fusion::lex("print(1+2)");
+  auto tokens = fusion::lex("println(1+2)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -32,7 +32,7 @@ TEST(JitTests, ExecutesPrintOnePlusTwo) {
 }
 
 TEST(JitTests, ExecutesSub) {
-  auto tokens = fusion::lex("print(5-2)");
+  auto tokens = fusion::lex("println(5-2)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -58,7 +58,7 @@ TEST(JitTests, ExecutesLetAndForOnly) {
 }
 
 TEST(JitTests, ExecutesMulAndDiv) {
-  auto tokens = fusion::lex("print(3*4); print(10/2)");
+  auto tokens = fusion::lex("println(3*4); println(10/2)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -71,7 +71,7 @@ TEST(JitTests, ExecutesMulAndDiv) {
 }
 
 TEST(JitTests, ExecutesCos) {
-  auto tokens = fusion::lex("extern lib \"libm.so.6\"; extern fn cos(x: f64) -> f64; print(cos(0.0))");
+  auto tokens = fusion::lex("extern lib \"libm.so.6\"; extern fn cos(x: f64) -> f64; println(cos(0.0))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -84,7 +84,7 @@ TEST(JitTests, ExecutesCos) {
 }
 
 TEST(JitTests, ExecutesLetPrint) {
-  auto tokens = fusion::lex("let x = 1 + 2; print(x)");
+  auto tokens = fusion::lex("let x = 1 + 2; println(x)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -97,7 +97,7 @@ TEST(JitTests, ExecutesLetPrint) {
 }
 
 TEST(JitTests, ExecutesLetCos) {
-  auto tokens = fusion::lex("extern lib \"libm.so.6\"; extern fn cos(x: f64) -> f64; let x = cos(0.0); print(x)");
+  auto tokens = fusion::lex("extern lib \"libm.so.6\"; extern fn cos(x: f64) -> f64; let x = cos(0.0); println(x)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -110,13 +110,13 @@ TEST(JitTests, ExecutesLetCos) {
 }
 
 TEST(JitTests, MixedFloatIntAdditionProducesF64) {
-  /* let z = cos(1.0); let x = z + 2; print(x) => result must be F64 (2.540302...), not truncated to 2 */
+  /* let z = cos(1.0); let x = z + 2; println(x) => result must be F64 (2.540302...), not truncated to 2 */
   const char* path = "/tmp/fusion_jit_mixed_add_test.txt";
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
   auto tokens = fusion::lex(
-      "extern lib \"libm.so.6\"; extern fn cos(x: f64) -> f64; let z = cos(1.0); let x = z + 2; print(x)");
+      "extern lib \"libm.so.6\"; extern fn cos(x: f64) -> f64; let z = cos(1.0); let x = z + 2; println(x)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -143,12 +143,12 @@ TEST(JitTests, MixedFloatIntAdditionProducesF64) {
 }
 
 TEST(JitTests, IntegerAdditionStillProducesI64) {
-  /* let a = 1; let b = 2; print(a + b) => must still print 3 (int+int unchanged) */
+  /* let a = 1; let b = 2; println(a + b) => must still print 3 (int+int unchanged) */
   const char* path = "/tmp/fusion_jit_int_add_test.txt";
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("let a = 1; let b = 2; print(a + b)");
+  auto tokens = fusion::lex("let a = 1; let b = 2; println(a + b)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -177,7 +177,7 @@ TEST(JitTests, ExecutesOutParam) {
   const char* so_path = "./fusion_phase6.so";
   std::string src = "extern lib \"";
   src += so_path;
-  src += "\"; extern fn set_int_out(out: ptr[void], v: i64) -> void; let p = heap(i64); store(p, 0); set_int_out(p, 42); print(load(p)); free(as_heap(p))";
+  src += "\"; extern fn set_int_out(out: ptr[void], v: i64) -> void; let p = heap(i64); store(p, 0); set_int_out(p, 42); println(load(p)); free(as_heap(p))";
   auto tokens = fusion::lex(src);
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << "parse failed: " << parse_result.error.message << " at " << parse_result.error.line << ":" << parse_result.error.column << " src=" << src;
@@ -194,7 +194,7 @@ TEST(JitTests, ExecutesStructByPointer) {
   const char* so_path = "./fusion_phase6.so";
   std::string src = "struct Point { x: f64; y: f64; }; extern lib \"";
   src += so_path;
-  src += "\"; extern fn point_set(p: Point, x: f64, y: f64) -> void; extern fn point_x(p: Point) -> f64; let p = heap(Point); point_set(p, 1.0, 2.0); print(point_x(p)); free(as_heap(p))";
+  src += "\"; extern fn point_set(p: Point, x: f64, y: f64) -> void; extern fn point_x(p: Point) -> f64; let p = heap(Point); point_set(p, 1.0, 2.0); println(point_x(p)); free(as_heap(p))";
   auto tokens = fusion::lex(src);
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << "parse failed: " << parse_result.error.message << " at " << parse_result.error.line << ":" << parse_result.error.column;
@@ -211,7 +211,7 @@ TEST(JitTests, ExecutesLoadField) {
   const char* so_path = "./fusion_phase6.so";
   std::string src = "struct Point { x: f64; y: f64; }; extern lib \"";
   src += so_path;
-  src += "\"; extern fn point_set(p: Point, x: f64, y: f64) -> void; let p = heap(Point); point_set(p, 3.0, 4.0); print(p.x); print(p.y); free(as_heap(p))";
+  src += "\"; extern fn point_set(p: Point, x: f64, y: f64) -> void; let p = heap(Point); point_set(p, 3.0, 4.0); println(p.x); println(p.y); free(as_heap(p))";
   auto tokens = fusion::lex(src);
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << "parse failed: " << parse_result.error.message << " at " << parse_result.error.line << ":" << parse_result.error.column;
@@ -248,8 +248,8 @@ TEST(JitTests, ExecutesCallThroughStructField) {
       "op_mul.func = get_func_ptr(mul); "
       "op_mul.x = 3.0; "
       "op_mul.y = 4.0; "
-      "print(perform_operation(op_add)); "
-      "print(perform_operation(op_mul)); "
+      "println(perform_operation(op_add)); "
+      "println(perform_operation(op_mul)); "
       "free(as_heap(op_add)); free(as_heap(op_mul))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
@@ -319,8 +319,8 @@ TEST(JitTests, AllocArrayHeapEscapesFunction) {
       "(c as Value).grad = 3.0; "
       "let c_backward = (c as Value).backward; "
       "call(c_backward, c); "
-      "print((a as Value).grad); "
-      "print((b as Value).grad); "
+      "println((a as Value).grad); "
+      "println((b as Value).grad); "
       "free_array(as_array((c as Value).prev, ptr)); free(as_heap(c)); "
       "free_array(as_array((a as Value).prev, ptr)); free(as_heap(a)); "
       "free_array(as_array((b as Value).prev, ptr)); free(as_heap(b))");
@@ -353,7 +353,7 @@ TEST(JitTests, ExecutesTwoLibsCosAndPointSet) {
   const char* so_path = "./fusion_phase6.so";
   std::string src = "struct Point { x: f64; y: f64; }; extern lib \"libm.so.6\"; extern fn cos(x: f64) -> f64; extern lib \"";
   src += so_path;
-  src += "\"; extern fn point_set(p: Point, x: f64, y: f64) -> void; extern fn point_x(p: Point) -> f64; let p = heap(Point); point_set(p, 1.0, 2.0); print(cos(0.0)); print(point_x(p)); free(as_heap(p))";
+  src += "\"; extern fn point_set(p: Point, x: f64, y: f64) -> void; extern fn point_x(p: Point) -> f64; let p = heap(Point); point_set(p, 1.0, 2.0); println(cos(0.0)); println(point_x(p)); free(as_heap(p))";
   auto tokens = fusion::lex(src);
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << "parse failed: " << parse_result.error.message;
@@ -367,8 +367,8 @@ TEST(JitTests, ExecutesTwoLibsCosAndPointSet) {
 }
 
 TEST(JitTests, ExecutesInterleavedLetAndExpr) {
-  /* Execution order must follow source order: print(1), then let x=2, print(x), let y=3, print(y). */
-  auto tokens = fusion::lex("print(1); let x = 2; print(x); let y = 3; print(y)");
+  /* Execution order must follow source order: println(1), then let x=2, println(x), let y=3, println(y). */
+  auto tokens = fusion::lex("println(1); let x = 2; println(x); let y = 3; println(y)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -384,7 +384,7 @@ TEST(JitTests, ExecutesIfWithComparison) {
   /* If/elif/else with comparisons: compile and run JIT. Verifies codegen for conditionals does not crash. */
   auto tokens = fusion::lex(
     "fn sign(x: i64) -> i64 { if (x > 0) { return 1; } elif (x < 0) { return 99; } else { return 0; } } "
-    "print(sign(5)); print(sign(0)); print(sign(3))");
+    "println(sign(5)); println(sign(0)); println(sign(3))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -398,7 +398,7 @@ TEST(JitTests, ExecutesIfWithComparison) {
 
 TEST(JitTests, ExecutesTopLevelIf) {
   /* Top-level if/else: compile and run JIT, capture stdout (fd 1) and expect "1" and "2". */
-  auto tokens = fusion::lex("if (1 > 0) { print(1); } else { print(0); } print(2)");
+  auto tokens = fusion::lex("if (1 > 0) { println(1); } else { println(0); } println(2)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -438,7 +438,7 @@ TEST(JitTests, ExecutesAllocArrayAndIndex) {
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
   auto tokens = fusion::lex(
-      "let a = heap_array(i64, 3); a[0] = 10; a[1] = 20; a[2] = 30; print(a[0]); print(a[1]); print(a[2]); free_array(a)");
+      "let a = heap_array(i64, 3); a[0] = 10; a[1] = 20; a[2] = 30; println(a[0]); println(a[1]); println(a[2]); free_array(a)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -466,7 +466,7 @@ TEST(JitTests, ExecutesAllocArrayAndIndex) {
 }
 
 TEST(JitTests, ExecutesHeapArrayF64Print) {
-  /* heap_array(f64, n); fill with 1.5; print(x[i]) must print 1.5, not truncated to 1 */
+  /* heap_array(f64, n); fill with 1.5; println(x[i]) must print 1.5, not truncated to 1 */
   const char* path = "/tmp/fusion_jit_heap_array_f64_print.txt";
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
@@ -474,7 +474,7 @@ TEST(JitTests, ExecutesHeapArrayF64Print) {
   auto tokens = fusion::lex(
       "let a = 1.5; let n = 3; let x = heap_array(f64, n); "
       "for (let i = 0; i < n; i = i + 1) { x[i] = a; } "
-      "print(x[0]); print(x[1]); print(x[2]); print(a); print(x[0]); "
+      "println(x[0]); println(x[1]); println(x[2]); println(a); println(x[0]); "
       "free_array(as_array(x, f64))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
@@ -501,14 +501,14 @@ TEST(JitTests, ExecutesHeapArrayF64Print) {
 }
 
 TEST(JitTests, ExecutesForOverF64Array) {
-  /* for (let i = 0; i < len(arr); i = i + 1) { print(arr[i]); } with f64 array => 1.5, 1.5, 1.5 */
+  /* for (let i = 0; i < len(arr); i = i + 1) { println(arr[i]); } with f64 array => 1.5, 1.5, 1.5 */
   const char* path = "/tmp/fusion_jit_for_f64_arr.txt";
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
   auto tokens = fusion::lex(
       "let arr = heap_array(f64, 3); arr[0] = 1.5; arr[1] = 1.5; arr[2] = 1.5; "
-      "for (let i = 0; i < len(arr); i = i + 1) { print(arr[i]); } "
+      "for (let i = 0; i < len(arr); i = i + 1) { println(arr[i]); } "
       "free_array(as_array(arr, f64))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
@@ -535,12 +535,12 @@ TEST(JitTests, ExecutesForOverF64Array) {
 }
 
 TEST(JitTests, ExecutesCStyleFor) {
-  /* for (let i = 0; i < 5; i = i + 1) { print(i); } print(0) => prints 0,1,2,3,4 then 0 */
+  /* for (let i = 0; i < 5; i = i + 1) { println(i); } println(0) => prints 0,1,2,3,4 then 0 */
   const char* path = "/tmp/fusion_jit_for_range_test.txt";
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("for (let i = 0; i < 5; i = i + 1) { print(i); } print(0)");
+  auto tokens = fusion::lex("for (let i = 0; i < 5; i = i + 1) { println(i); } println(0)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -562,19 +562,19 @@ TEST(JitTests, ExecutesCStyleFor) {
     EXPECT_EQ(std::atoi(buf), expected) << "line " << expected;
   }
   ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
-  EXPECT_EQ(std::atoi(buf), 0) << "trailing print(0)";
+  EXPECT_EQ(std::atoi(buf), 0) << "trailing println(0)";
   fclose(cap);
   unlink(path);
 }
 
 TEST(JitTests, ExecutesForOverArrayWithLen) {
-  /* let arr = heap_array(i64, 3); arr[0]=1; ... for (let i = 0; i < len(arr); i = i + 1) { print(arr[i]); } print(0) => 1,2,3,0 */
+  /* let arr = heap_array(i64, 3); arr[0]=1; ... for (let i = 0; i < len(arr); i = i + 1) { println(arr[i]); } println(0) => 1,2,3,0 */
   const char* path = "/tmp/fusion_jit_for_arr_test.txt";
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
   auto tokens = fusion::lex(
-      "let arr = heap_array(i64, 3); arr[0] = 1; arr[1] = 2; arr[2] = 3; for (let i = 0; i < len(arr); i = i + 1) { print(arr[i]); } print(0); free_array(arr)");
+      "let arr = heap_array(i64, 3); arr[0] = 1; arr[1] = 2; arr[2] = 3; for (let i = 0; i < len(arr); i = i + 1) { println(arr[i]); } println(0); free_array(arr)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -604,12 +604,12 @@ TEST(JitTests, ExecutesForOverArrayWithLen) {
 }
 
 TEST(JitTests, ExecutesCStyleForTwoArgs) {
-  /* for (let x = 2; x < 6; x = x + 1) { print(x); } print(0) => 2,3,4,5,0 */
+  /* for (let x = 2; x < 6; x = x + 1) { println(x); } println(0) => 2,3,4,5,0 */
   const char* path = "/tmp/fusion_jit_range_two_test.txt";
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("for (let x = 2; x < 6; x = x + 1) { print(x); } print(0)");
+  auto tokens = fusion::lex("for (let x = 2; x < 6; x = x + 1) { println(x); } println(0)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -637,12 +637,12 @@ TEST(JitTests, ExecutesCStyleForTwoArgs) {
 }
 
 TEST(JitTests, ExecutesCStyleForF64) {
-  /* for (let i = 0; i < 3; i = i + 1) { let x = i as f64; print(x); } print(0) => 0.0, 1.0, 2.0, 0 */
+  /* for (let i = 0; i < 3; i = i + 1) { let x = i as f64; println(x); } println(0) => 0.0, 1.0, 2.0, 0 */
   const char* path = "/tmp/fusion_jit_range_f64_test.txt";
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("for (let i = 0; i < 3; i = i + 1) { let x = i as f64; print(x); } print(0)");
+  auto tokens = fusion::lex("for (let i = 0; i < 3; i = i + 1) { let x = i as f64; println(x); } println(0)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -674,7 +674,7 @@ TEST(JitTests, ExecutesStackI64) {
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("let x = stack(i64); store(x, 42); print(load(x))");
+  auto tokens = fusion::lex("let x = stack(i64); store(x, 42); println(load(x))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -702,7 +702,7 @@ TEST(JitTests, ExecutesStackF64) {
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("let x = stack(f64); store(x, 3.14); print(load_f64(x))");
+  auto tokens = fusion::lex("let x = stack(f64); store(x, 3.14); println(load_f64(x))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -731,7 +731,7 @@ TEST(JitTests, ExecutesStackArray) {
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
   auto tokens = fusion::lex(
-      "let a = stack_array(i64, 3); a[0] = 1; a[1] = 2; a[2] = 3; print(a[0]); print(a[1]); print(a[2])");
+      "let a = stack_array(i64, 3); a[0] = 1; a[1] = 2; a[2] = 3; println(a[0]); println(a[1]); println(a[2])");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -761,7 +761,7 @@ TEST(JitTests, ExecutesStackArrayWithLen) {
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("let a = stack_array(i64, 5); print(len(a))");
+  auto tokens = fusion::lex("let a = stack_array(i64, 5); println(len(a))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -785,7 +785,7 @@ TEST(JitTests, ExecutesStackArrayWithLen) {
 }
 
 TEST(JitTests, ExecutesHeapAndFree) {
-  auto tokens = fusion::lex("let p = heap(i64); store(p, 99); print(load(p)); free(p)");
+  auto tokens = fusion::lex("let p = heap(i64); store(p, 99); println(load(p)); free(p)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -817,7 +817,7 @@ TEST(JitTests, ExecutesHeapArrayAndFreeArray) {
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("let a = heap_array(i64, 4); a[0] = 10; print(a[0]); free_array(a)");
+  auto tokens = fusion::lex("let a = heap_array(i64, 4); a[0] = 10; println(a[0]); free_array(a)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -865,7 +865,7 @@ TEST(JitTests, ExecutesFreeValueStyle) {
       "fn leaf_backward(v: ptr[void]) -> void { } "
       "let a = alloc_value(1.0, heap_array(ptr[void], 0), 0, get_func_ptr(leaf_backward)); "
       "(a as Value).grad = 7.0; "
-      "print((a as Value).grad); "
+      "println((a as Value).grad); "
       "free_value(a)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
@@ -933,7 +933,7 @@ TEST(JitTests, ExecutesHeapStruct) {
   ASSERT_TRUE(freopen(path, "w", stdout));
   auto tokens = fusion::lex(
       "struct P { x: f64; y: f64; }; "
-      "let p = heap(P); p.x = 1.0; p.y = 2.0; print(p.x); free(as_heap(p))");
+      "let p = heap(P); p.x = 1.0; p.y = 2.0; println(p.x); free(as_heap(p))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -963,7 +963,7 @@ TEST(JitTests, ExecutesStackStruct) {
   ASSERT_TRUE(freopen(path, "w", stdout));
   auto tokens = fusion::lex(
       "struct P { x: f64; y: f64; }; "
-      "let p = stack(P); p.x = 1.0; p.y = 2.0; print(p.x); print(p.y)");
+      "let p = stack(P); p.x = 1.0; p.y = 2.0; println(p.x); println(p.y)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -993,7 +993,7 @@ TEST(JitTests, ExecutesLenOnStackArray) {
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("let a = stack_array(i64, 7); print(len(a))");
+  auto tokens = fusion::lex("let a = stack_array(i64, 7); println(len(a))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1021,7 +1021,7 @@ TEST(JitTests, ExecutesLenOnHeapArray) {
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("let a = heap_array(i64, 11); print(len(a)); free_array(a)");
+  auto tokens = fusion::lex("let a = heap_array(i64, 11); println(len(a)); free_array(a)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok());
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1098,8 +1098,8 @@ TEST(JitTests, ExecutesEqNeq) {
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
   auto tokens = fusion::lex(
-      "if (2 == 2) { print(1); } else { print(0); } "
-      "if (3 != 3) { print(1); } else { print(0); }");
+      "if (2 == 2) { println(1); } else { println(0); } "
+      "if (3 != 3) { println(1); } else { println(0); }");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1130,7 +1130,7 @@ TEST(JitTests, ExecutesLeGe) {
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
   auto tokens = fusion::lex(
-      "for (let i = 0; i <= 3; i = i + 1) { print(i); }");
+      "for (let i = 0; i <= 3; i = i + 1) { println(i); }");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1161,7 +1161,7 @@ TEST(JitTests, ExecutesGeDecrement) {
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
   auto tokens = fusion::lex(
-      "for (let i = 3; i >= 0; i = i - 1) { print(i); }");
+      "for (let i = 3; i >= 0; i = i - 1) { println(i); }");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1191,7 +1191,7 @@ TEST(JitTests, ExecutesPrintString) {
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("print(\"hello\")");
+  auto tokens = fusion::lex("println(\"hello\")");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1211,7 +1211,7 @@ TEST(JitTests, ExecutesPrintString) {
   ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
   fclose(cap);
   unlink(path);
-  EXPECT_STREQ(buf, "hello\n") << "print(\"hello\") should output hello";
+  EXPECT_STREQ(buf, "hello\n") << "println(\"hello\") should output hello";
 }
 
 TEST(JitTests, ExecutesToStrI64) {
@@ -1219,7 +1219,7 @@ TEST(JitTests, ExecutesToStrI64) {
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("print(to_str(42))");
+  auto tokens = fusion::lex("println(to_str(42))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1247,7 +1247,7 @@ TEST(JitTests, ExecutesToStrF64) {
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("print(to_str(3.14))");
+  auto tokens = fusion::lex("println(to_str(3.14))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1275,7 +1275,7 @@ TEST(JitTests, ExecutesStringConcat) {
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("let s = \"a\" + \"b\"; print(s); free(as_heap(s))");
+  auto tokens = fusion::lex("let s = \"a\" + \"b\"; println(s); free(as_heap(s))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1304,7 +1304,7 @@ TEST(JitTests, ExecutesToStrConcat) {
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("let s = to_str(100) + to_str(2); print(s); free(as_heap(s))");
+  auto tokens = fusion::lex("let s = to_str(100) + to_str(2); println(s); free(as_heap(s))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1332,7 +1332,7 @@ TEST(JitTests, ExecutesFromStrI64) {
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("let s = to_str(123); let n = from_str(s, i64); print(n)");
+  auto tokens = fusion::lex("let s = to_str(123); let n = from_str(s, i64); println(n)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1365,7 +1365,7 @@ TEST(JitTests, ExecutesRecursiveFib) {
       "  if (n <= 1) { return n; } "
       "  return fib(n - 1) + fib(n - 2); "
       "} "
-      "print(fib(10))");
+      "println(fib(10))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1399,7 +1399,7 @@ TEST(JitTests, ExecutesLoadPtr) {
       "store(p, q); "
       "let r = load_ptr(p); "
       "store(r, 77); "
-      "print(load(q)); "
+      "println(load(q)); "
       "free(as_heap(p)); free(as_heap(q))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
@@ -1429,7 +1429,7 @@ TEST(JitTests, ExecutesLoadI32) {
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("let p = heap(i64); store(p, 300); print(load_i32(p)); free(as_heap(p))");
+  auto tokens = fusion::lex("let p = heap(i64); store(p, 300); println(load_i32(p)); free(as_heap(p))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1461,7 +1461,7 @@ TEST(JitTests, ExecutesAddrOf) {
       "let x = 5; "
       "let p = addr_of(x); "
       "store(p, 77); "
-      "print(load(p))");
+      "println(load(p))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1489,7 +1489,7 @@ TEST(JitTests, ExecutesCastF64ToI64) {
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("let x = 3.9; let y = x as i64; print(y)");
+  auto tokens = fusion::lex("let x = 3.9; let y = x as i64; println(y)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1518,7 +1518,7 @@ TEST(JitTests, ExecutesCastI64ToI32) {
   int saved_fd = dup(STDOUT_FILENO);
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
-  auto tokens = fusion::lex("let x = 300; let y = x as i32; print(y as i64)");
+  auto tokens = fusion::lex("let x = 300; let y = x as i32; println(y as i64)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1550,7 +1550,7 @@ TEST(JitTests, ExecutesStructI64Field) {
       "struct N { n: i64; }; "
       "let obj = heap(N); "
       "obj.n = 42; "
-      "print(obj.n); "
+      "println(obj.n); "
       "free(as_heap(obj))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
@@ -1571,12 +1571,12 @@ TEST(JitTests, ExecutesStructI64Field) {
   ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
   fclose(cap);
   unlink(path);
-  EXPECT_EQ(std::atoi(buf), 42) << "obj.n = 42 / print(obj.n) for i64 field should yield 42";
+  EXPECT_EQ(std::atoi(buf), 42) << "obj.n = 42 / println(obj.n) for i64 field should yield 42";
 }
 
 TEST(JitTests, ExecutesPrintTwoArgs) {
-  /* print(val, stream=2) writes to stderr; just verify jit_result.ok (no crash) */
-  auto tokens = fusion::lex("print(42, 2)");
+  /* println(val, stream=2) writes to stderr; just verify jit_result.ok (no crash) */
+  auto tokens = fusion::lex("println(42, 2)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1585,7 +1585,7 @@ TEST(JitTests, ExecutesPrintTwoArgs) {
   auto module = fusion::codegen(*ctx, parse_result.program.get());
   ASSERT_NE(module, nullptr);
   auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
-  EXPECT_TRUE(jit_result.ok) << "print(42, 2) to stderr should not crash: " << jit_result.error;
+  EXPECT_TRUE(jit_result.ok) << "println(42, 2) to stderr should not crash: " << jit_result.error;
 }
 
 TEST(JitTests, ExecutesWriteFile) {
@@ -1620,7 +1620,7 @@ TEST(JitTests, ExecutesFromStrF64) {
   ASSERT_GE(saved_fd, 0);
   ASSERT_TRUE(freopen(path, "w", stdout));
   auto tokens = fusion::lex(
-      "let s = to_str(3.14); let n = from_str(s, f64); let i = n as i64; print(i)");
+      "let s = to_str(3.14); let n = from_str(s, f64); let i = n as i64; println(i)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1654,7 +1654,7 @@ TEST(JitTests, ExecutesReadLineFile) {
   auto tokens = fusion::lex(
       std::string("let f = open(\"") + tmp + "\", \"r\"); "
       "let line = read_line_file(f); "
-      "print(line); "
+      "println(line); "
       "close(f)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
@@ -1680,6 +1680,235 @@ TEST(JitTests, ExecutesReadLineFile) {
   EXPECT_STREQ(buf, "hello_line\n") << "read_line_file + print should output the line";
 }
 
+TEST(JitTests, ExecutesStrUpper) {
+  const char* out_path = "/tmp/fusion_jit_str_upper.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(out_path, "w", stdout));
+  auto tokens = fusion::lex("println(str_upper(\"hello\"))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(out_path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[64];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(out_path);
+  EXPECT_STREQ(buf, "HELLO\n");
+}
+
+TEST(JitTests, ExecutesStrLower) {
+  const char* out_path = "/tmp/fusion_jit_str_lower.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(out_path, "w", stdout));
+  auto tokens = fusion::lex("println(str_lower(\"HELLO\"))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(out_path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[64];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(out_path);
+  EXPECT_STREQ(buf, "hello\n");
+}
+
+TEST(JitTests, ExecutesStrContains) {
+  const char* out_path = "/tmp/fusion_jit_str_contains.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(out_path, "w", stdout));
+  auto tokens = fusion::lex("println(str_contains(\"hello world\", \"world\"))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(out_path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[64];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(out_path);
+  EXPECT_STREQ(buf, "1\n");
+}
+
+TEST(JitTests, ExecutesStrContainsNeg) {
+  const char* out_path = "/tmp/fusion_jit_str_contains_neg.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(out_path, "w", stdout));
+  auto tokens = fusion::lex("println(str_contains(\"hello\", \"xyz\"))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(out_path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[64];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(out_path);
+  EXPECT_STREQ(buf, "0\n");
+}
+
+TEST(JitTests, ExecutesStrStrip) {
+  const char* out_path = "/tmp/fusion_jit_str_strip.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(out_path, "w", stdout));
+  auto tokens = fusion::lex("println(str_strip(\"  hello  \"))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(out_path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[64];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(out_path);
+  EXPECT_STREQ(buf, "hello\n");
+}
+
+TEST(JitTests, ExecutesStrFind) {
+  const char* out_path = "/tmp/fusion_jit_str_find.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(out_path, "w", stdout));
+  auto tokens = fusion::lex("println(str_find(\"hello world\", \"world\"))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(out_path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[64];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(out_path);
+  EXPECT_STREQ(buf, "6\n");
+}
+
+TEST(JitTests, ExecutesStrFindNeg) {
+  const char* out_path = "/tmp/fusion_jit_str_find_neg.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(out_path, "w", stdout));
+  auto tokens = fusion::lex("println(str_find(\"hello\", \"xyz\"))");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(out_path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[64];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  fclose(cap);
+  unlink(out_path);
+  EXPECT_STREQ(buf, "-1\n");
+}
+
+TEST(JitTests, ExecutesStrSplit) {
+  const char* out_path = "/tmp/fusion_jit_str_split.txt";
+  int saved_fd = dup(STDOUT_FILENO);
+  ASSERT_GE(saved_fd, 0);
+  ASSERT_TRUE(freopen(out_path, "w", stdout));
+  auto tokens = fusion::lex(
+      "let p = str_split(\"a,b,c\", \",\"); "
+      "println(len(p)); "
+      "println(p[0])");
+  auto parse_result = fusion::parse(tokens);
+  ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
+  auto sema_result = fusion::check(parse_result.program.get());
+  ASSERT_TRUE(sema_result.ok) << sema_result.error.message;
+  auto ctx = std::make_unique<llvm::LLVMContext>();
+  auto module = fusion::codegen(*ctx, parse_result.program.get());
+  ASSERT_NE(module, nullptr);
+  auto jit_result = fusion::run_jit(std::move(module), std::move(ctx));
+  fflush(stdout);
+  dup2(saved_fd, STDOUT_FILENO);
+  close(saved_fd);
+  ASSERT_TRUE(freopen("/dev/fd/1", "w", stdout));
+  ASSERT_TRUE(jit_result.ok) << jit_result.error;
+  FILE* cap = fopen(out_path, "r");
+  ASSERT_NE(cap, nullptr);
+  char buf[64];
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  EXPECT_STREQ(buf, "3\n");
+  ASSERT_NE(fgets(buf, sizeof(buf), cap), nullptr);
+  EXPECT_STREQ(buf, "a\n");
+  fclose(cap);
+  unlink(out_path);
+}
+
 TEST(JitTests, ExecutesHttpRequestGet) {
   /* Requires libcurl and network. GET example.com, check status 200 and non-null body. */
   const char* out_path = "/tmp/fusion_jit_http_out.txt";
@@ -1689,8 +1918,8 @@ TEST(JitTests, ExecutesHttpRequestGet) {
   auto tokens = fusion::lex(
       "let body = http_request(\"GET\", \"https://example.com\", \"\"); "
       "let code = http_status(); "
-      "print(code); "
-      "print(\"ok\");");
+      "println(code); "
+      "println(\"ok\");");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1733,7 +1962,7 @@ TEST(JitTests, ExecutesLineCountFile) {
       std::string("let f = open(\"") + tmp + "\", \"r\"); "
       "let n = line_count_file(f); "
       "close(f); "
-      "print(n)");
+      "println(n)");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
   auto sema_result = fusion::check(parse_result.program.get());
@@ -1776,7 +2005,7 @@ TEST(JitTests, ExecutesWriteBytesReadBytes) {
       "let fh2 = open(\"" + tmp + "\", \"r\"); "
       "read_bytes(fh2, buf2, 8); "
       "close(fh2); "
-      "print(buf2[0]); "
+      "println(buf2[0]); "
       "free_array(as_array(buf, i64)); "
       "free_array(as_array(buf2, i64))");
   auto parse_result = fusion::parse(tokens);
@@ -1821,8 +2050,8 @@ TEST(JitTests, TypedPtrArrayFieldRead) {
       "arr[1] = make_s(99); "
       "let val0 = arr[0].x; "
       "let val1 = arr[1].x; "
-      "print(val0); "
-      "print(val1); "
+      "println(val0); "
+      "println(val1); "
       "free(as_heap(arr[0])); "
       "free(as_heap(arr[1])); "
       "free_array(as_array(arr, ptr))");
@@ -1861,7 +2090,7 @@ TEST(JitTests, TypedPtrParamFieldAccess) {
       "fn get_data(v: ptr[Value]) -> f64 { return v.data; } "
       "let val = heap(Value); "
       "val.data = 3.14; "
-      "print(get_data(val)); "
+      "println(get_data(val)); "
       "free(as_heap(val))");
   auto parse_result = fusion::parse(tokens);
   ASSERT_TRUE(parse_result.ok()) << parse_result.error.message;
@@ -1908,8 +2137,8 @@ TEST(JitTests, CastIndexIntoBarePtrArrayThenFieldAccess) {
       "arr[1] = v1; "
       "let d0 = (arr[0] as Value).data; "
       "let d1 = (arr[1] as Value).data; "
-      "print(d0); "
-      "print(d1); "
+      "println(d0); "
+      "println(d1); "
       "free(as_heap(v0)); "
       "free(as_heap(v1)); "
       "free_array(as_array(arr, ptr))");
@@ -1952,7 +2181,7 @@ TEST(JitTests, LetBindingFromCastFieldAccess) {
       "arr[0] = v; "
       "let w = arr[0] as Value; "
       "let sum = w.data + w.grad; "
-      "print(sum); "
+      "println(sum); "
       "free(as_heap(v)); "
       "free_array(as_array(arr, ptr))");
   auto parse_result = fusion::parse(tokens);

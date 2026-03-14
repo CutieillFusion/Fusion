@@ -29,7 +29,8 @@ TEST(CodegenTests, EmitsModuleWithFusionMain) {
   auto module = fusion::codegen(ctx, parse_result.program.get());
   ASSERT_NE(module, nullptr);
   EXPECT_NE(module->getFunction("fusion_main"), nullptr);
-  EXPECT_NE(module->getFunction("rt_print_i64"), nullptr);
+  EXPECT_NE(module->getFunction("rt_print_cstring"), nullptr);
+  EXPECT_NE(module->getFunction("rt_to_str_i64"), nullptr);
 }
 
 TEST(CodegenTests, EmitsFreeAndFreeArray) {

@@ -1,0 +1,27 @@
+import lib "map" {
+    struct MapI64;
+    fn map_new() -> MapI64;
+    fn map_put(m: MapI64, key: i64, val: i64) -> void;
+    fn map_get(m: MapI64, key: i64) -> i64;
+    fn map_contains(m: MapI64, key: i64) -> i64;
+    fn map_remove(m: MapI64, key: i64) -> void;
+    fn map_len(m: MapI64) -> i64;
+    fn map_free(m: MapI64) -> void;
+};
+
+let m = map_new();
+map_put(m, 1, 100);
+map_put(m, 2, 200);
+map_put(m, 3, 300);
+println(map_len(m));
+println(map_get(m, 1));
+println(map_get(m, 2));
+println(map_get(m, 3));
+println(map_contains(m, 2));
+println(map_contains(m, 99));
+map_put(m, 2, 999);
+println(map_get(m, 2));
+map_remove(m, 1);
+println(map_len(m));
+println(map_contains(m, 1));
+map_free(m);

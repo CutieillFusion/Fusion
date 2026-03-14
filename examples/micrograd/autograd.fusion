@@ -173,28 +173,28 @@ fn test_backward_gradients() -> void {
     let out_grad = out.grad;
 
     if (out_grad != 1.0) {
-        print("ERROR: out.grad should be 1.0");
-        print(out_grad);
+        println("ERROR: out.grad should be 1.0");
+        println(out_grad);
     }
     if (s_grad != 1.0) {
-        print("ERROR: s.grad should be 1.0");
-        print(s_grad);
+        println("ERROR: s.grad should be 1.0");
+        println(s_grad);
     }
     if (p_grad != 1.0) {
-        print("ERROR: p.grad should be 1.0");
-        print(p_grad);
+        println("ERROR: p.grad should be 1.0");
+        println(p_grad);
     }
     if (b_grad != 1.0) {
-        print("ERROR: b.grad should be 1.0");
-        print(b_grad);
+        println("ERROR: b.grad should be 1.0");
+        println(b_grad);
     }
     if (x_grad != 3.0) {
-        print("ERROR: x.grad should be 3.0 (w.data * 1)");
-        print(x_grad);
+        println("ERROR: x.grad should be 3.0 (w.data * 1)");
+        println(x_grad);
     }
     if (w_grad != 2.0) {
-        print("ERROR: w.grad should be 2.0 (x.data * 1)");
-        print(w_grad);
+        println("ERROR: w.grad should be 2.0 (x.data * 1)");
+        println(w_grad);
     }
 }
 
@@ -205,8 +205,8 @@ fn test_backward_relu_zero() -> void {
     backward(out);
     let x_grad = x.grad;
     if (x_grad != 0.0) {
-        print("ERROR: x.grad should be 0.0 (ReLU zero branch)");
-        print(x_grad);
+        println("ERROR: x.grad should be 0.0 (ReLU zero branch)");
+        println(x_grad);
     }
 }
 
@@ -236,28 +236,28 @@ fn test_backward_diamond() -> void {
     let c_grad = c.grad;
 
     if (a_grad != 1.0) {
-        print("ERROR: a.grad should be 1.0");
-        print(a_grad);
+        println("ERROR: a.grad should be 1.0");
+        println(a_grad);
     }
     if (b_grad != 1.0) {
-        print("ERROR: b.grad should be 1.0");
-        print(b_grad);
+        println("ERROR: b.grad should be 1.0");
+        println(b_grad);
     }
     if (c_grad != 1.0) {
-        print("ERROR: c.grad should be 1.0");
-        print(c_grad);
+        println("ERROR: c.grad should be 1.0");
+        println(c_grad);
     }
     if (x_grad != 3.0) {
-        print("ERROR: x.grad should be 3.0 (y from a branch)");
-        print(x_grad);
+        println("ERROR: x.grad should be 3.0 (y from a branch)");
+        println(x_grad);
     }
     if (y_grad != 6.0) {
-        print("ERROR: y.grad should be 6.0 (x from a + z from b)");
-        print(y_grad);
+        println("ERROR: y.grad should be 6.0 (x from a + z from b)");
+        println(y_grad);
     }
     if (z_grad != 3.0) {
-        print("ERROR: z.grad should be 3.0 (y from b branch)");
-        print(z_grad);
+        println("ERROR: z.grad should be 3.0 (y from b branch)");
+        println(z_grad);
     }
 }
 

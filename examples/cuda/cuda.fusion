@@ -48,10 +48,10 @@ fn gpu_available() -> i64 {
 
 let avail_gpu = gpu_available();
 if (avail_gpu > 0) {
-    print("GPU available:");
-    print(avail_gpu);
+    println("GPU available:");
+    println(avail_gpu);
 } else {
-    print("No GPU available");
+    println("No GPU available");
 }
 
 # Driver init and context (needed for cuModuleLoadData / cuLaunchKernel)
@@ -116,7 +116,7 @@ let host_int_slot = heap(i32);
 cudaMemcpy(host_int_slot, load_ptr(dev_buf_slot), 4, 2);
 
 # Print result
-print(load_i32(host_int_slot));
+println(load_i32(host_int_slot));
 
 # Free device buffer
 cudaFree(load_ptr(dev_buf_slot));

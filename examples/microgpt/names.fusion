@@ -1,0 +1,143 @@
+export struct Doc {
+    chars: ptr[void];
+    len: i64;
+};
+
+export struct Dataset {
+    docs: ptr[Doc];
+    n_docs: i64;
+    vocab: ptr[void];
+    vocab_size: i64;
+    BOS: i64;
+};
+
+extern lib "libc.so.6" {
+    fn strlen(s: ptr[void]) -> i64;
+};
+
+export fn char_to_idx(ch: i64, vocab: ptr[void], vocab_size: i64) -> i64 {
+    let vocab_bytes = vocab as ptr[char];
+    for (let i = 0; i < vocab_size - 1; i = i + 1) {
+        if (vocab_bytes[i] as i64 == ch) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+export fn create_dataset(path: ptr[void]) -> ptr[Dataset] {
+    # Count lines
+    let f_count = open(path, "r");
+    let total_lines = line_count_file(f_count);
+    close(f_count);
+
+    # Load docs
+    let docs = heap_array(ptr[Doc], total_lines);
+    let f = open(path, "r");
+    for (let i = 0; i < total_lines; i = i + 1) {
+        let line = read_line_file(f);
+        let slen = strlen(line);
+        let bytes = line as ptr[char];
+        # Strip trailing newline
+        if (slen > 0) {
+            let last = bytes[slen - 1] as i64;
+            if (last == 10) {
+                bytes[slen - 1] = 0;
+                slen = slen - 1;
+            }
+        }
+        let d = heap(Doc);
+        d.chars = str_dup(line);
+        d.len = slen;
+        docs[i] = d;
+    }
+    close(f);
+
+    # Build vocab: presence array indexed by ASCII value
+    let presence = heap_array(i64, 256);
+    for (let i = 0; i < 256; i = i + 1) {
+        presence[i] = 0;
+    }
+    for (let i = 0; i < total_lines; i = i + 1) {
+        let bytes = docs[i].chars as ptr[char];
+        let slen = docs[i].len;
+        for (let j = 0; j < slen; j = j + 1) {
+            let ch = bytes[j] as i64;
+            if (ch >= 0) {
+                presence[ch] = 1;
+            }
+        }
+    }
+    let vocab = heap_array(i8, 256);
+    let count = 0;
+    for (let i = 0; i < 256; i = i + 1) {
+        if (presence[i] != 0) {
+            vocab[count] = i;
+            count = count + 1;
+        }
+    }
+    free_array(presence);
+
+    let vocab_size = count + 1;
+    let BOS = vocab_size - 1;
+
+    let ds = heap(Dataset);
+    ds.docs = docs;
+    ds.n_docs = total_lines;
+    ds.vocab = vocab;
+    ds.vocab_size = vocab_size;
+    ds.BOS = BOS;
+    println("vocab size: " + to_str(vocab_size));
+    return ds;
+}
+
+export fn free_dataset(ds: ptr[Dataset]) -> void {
+    for (let i = 0; i < ds.n_docs; i = i + 1) {
+        free(as_heap(ds.docs[i]));
+    }
+    free_array(as_array(ds.docs, ptr));
+    free(as_heap(ds));
+}
+
+fn test_tokenization() -> void {
+    let ds = create_dataset("examples/microgpt/input.txt");
+    let errors = 0;
+
+    # vocab_size should be ~27 (26 letters + newline/space + BOS), not 7
+    if (ds.vocab_size < 20) {
+        println("FAIL: vocab_size too small: ");
+        println(to_str(ds.vocab_size));
+        println("\n");
+        errors = errors + 1;
+    }
+
+    # Tokenize first doc ("emma") - check BOS and valid token IDs
+    let doc = ds.docs[0];
+    let doc_bytes = doc.chars as ptr[char];
+    let doc_len = doc.len;
+
+    for (let j = 0; j < doc_len; j = j + 1) {
+        let ch = doc_bytes[j] as i64;
+        let tok = char_to_idx(ch, ds.vocab, ds.vocab_size);
+        if (tok == -1) {
+            println("FAIL: unmapped token at position ");
+            println(to_str(j));
+            println("\n");
+            errors = errors + 1;
+        }
+        if (tok >= ds.vocab_size - 1) {
+            println("FAIL: token out of range at position ");
+            println(to_str(j));
+            println("\n");
+            errors = errors + 1;
+        }
+    }
+
+    if (errors == 0) {
+        println("names: all tests passed\n");
+    }
+
+    free_dataset(ds);
+}
+
+test_tokenization();

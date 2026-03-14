@@ -11,12 +11,26 @@ void rt_init(void);
 /* Free runtime-owned resources (e.g., string arena for rt_str_*). Safe to call multiple times. */
 void rt_shutdown(void);
 
-void rt_print_i64(int64_t value, int64_t stream);
-void rt_print_f64(double value, int64_t stream);
 void rt_print_cstring(const char *s, int64_t stream);
 
 /* Read one line from stdin. Returns NUL-terminated buffer (Fusion-owned; invalid after next read_line). NULL on EOF/error. */
 const char *rt_read_line(void);
+
+/* Read a single keypress (raw mode). Returns ASCII code (1-255), or 256=Up, 257=Down, 258=Right, 259=Left. 0 on EOF/error. */
+int64_t rt_read_key(void);
+
+/* Terminal dimensions. Returns 0 on failure or non-TTY. */
+int64_t rt_terminal_height(void);
+int64_t rt_terminal_width(void);
+
+/* Flush a stream: 0 = stdout, 1 = stderr. */
+void rt_flush(int64_t stream);
+
+/* Sleep for the given number of milliseconds. */
+void rt_sleep(int64_t milliseconds);
+
+/* Convert integer (0-255) to a single-character NUL-terminated string. Runtime-owned. */
+const char *rt_chr(int64_t code);
 
 /* Number to string. Returns NUL-terminated buffer (Fusion-owned; invalid after next to_str or read_line). */
 const char *rt_to_str_i64(int64_t value);
@@ -39,6 +53,15 @@ const char *rt_str_concat(const char *a, const char *b);
  */
 const char *rt_str_dup(const char *s);
 
+/* String operations. All return runtime-owned memory (reclaimed by rt_shutdown()). */
+const char *rt_str_upper(const char *s);
+const char *rt_str_lower(const char *s);
+int64_t rt_str_contains(const char *haystack, const char *needle);
+const char *rt_str_strip(const char *s);
+int64_t rt_str_find(const char *haystack, const char *needle);
+const char *rt_str_split(const char *s, const char *delim);
+int64_t rt_str_eq(const char *a, const char *b);
+
 /* Register a heap-allocated string for rt_shutdown() to free. For use by runtime modules (e.g. http.c). */
 void rt_track_string(char *p);
 
@@ -46,8 +69,6 @@ void rt_track_string(char *p);
 void *rt_open(const char *path, const char *mode);
 void rt_close(void *handle);
 const char *rt_read_line_file(void *handle);
-void rt_write_file_i64(void *handle, int64_t value);
-void rt_write_file_f64(void *handle, double value);
 void rt_write_file_ptr(void *handle, const char *s);
 /* Raw byte I/O. buf = buffer, count = number of bytes. Return bytes written/read, or -1 on error. */
 int64_t rt_write_bytes(void *handle, const void *buf, int64_t count);

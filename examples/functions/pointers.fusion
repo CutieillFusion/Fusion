@@ -14,17 +14,17 @@ let fp_add = get_func_ptr(add);
 let fp_mul = get_func_ptr(mul);
 
 # Call through pointers (same result as direct call)
-print("add via pointer: ");
-print(call(fp_add, 3.0, 4.0));
+println("add via pointer: ");
+println(call(fp_add, 3.0, 4.0));
 
-print("mul via pointer: ");
-print(call(fp_mul, 3.0, 4.0));
+println("mul via pointer: ");
+println(call(fp_mul, 3.0, 4.0));
 
 # Pass pointer through another binding and call
 let op = fp_add;
-print("through op (add): ");
-print(call(op, 1.0, 2.0));
+println("through op (add): ");
+println(call(op, 1.0, 2.0));
 
 # Argument coercion: call(fp, 1, 2) where function expects f64, f64
-print("call with int literals (coerced to f64): ");
-print(call(fp_add, 10, 20));
+println("call with int literals (coerced to f64): ");
+println(call(fp_add, 10, 20));

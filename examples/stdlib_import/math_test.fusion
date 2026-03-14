@@ -1,0 +1,21 @@
+import lib "math" {
+    fn abs_f64(x: f64) -> f64;
+    fn abs_i64(x: i64) -> i64;
+    fn min_f64(a: f64, b: f64) -> f64;
+    fn min_i64(a: i64, b: i64) -> i64;
+    fn max_f64(a: f64, b: f64) -> f64;
+    fn max_i64(a: i64, b: i64) -> i64;
+    fn clamp_f64(x: f64, lo: f64, hi: f64) -> f64;
+};
+
+println(abs_f64(-3.5));
+println(abs_f64(2.0));
+println(abs_i64(-7));
+println(abs_i64(4));
+println(min_f64(1.5, 2.5));
+println(min_i64(10, 3));
+println(max_f64(1.5, 2.5));
+println(max_i64(10, 3));
+println(clamp_f64(-5.0, 0.0, 10.0));
+println(clamp_f64(7.0, 0.0, 10.0));
+println(clamp_f64(15.0, 0.0, 10.0));

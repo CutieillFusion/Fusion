@@ -339,8 +339,13 @@ static FfiType get_array_element_type(Expr* expr, SemaContext* ctx) {
     auto it = ctx->layout_map->find(cur);
     if (it == ctx->layout_map->end()) return FfiType::Void;
     for (const auto& f : it->second.fields) {
-      if (f.first == expr->field_chain[0])
-        return f.second.type;
+      if (f.first == expr->field_chain[0]) {
+        FfiType ft = f.second.type;
+        /* Layout may mark ptr[Struct] as Void (embedded); indexing yields pointer. */
+        if (ft == FfiType::Void && !f.second.struct_name.empty())
+          return FfiType::Ptr;
+        return ft;
+      }
     }
     return FfiType::Void;
   }
@@ -524,21 +529,21 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
         }
         return true;
       }
-      if (expr->callee == "print") {
+      if (expr->callee == "print" || expr->callee == "println") {
         if (expr->args.size() != 1 && expr->args.size() != 2) {
-          ctx.err->message = "print expects 1 or 2 arguments";
+          ctx.err->message = expr->callee + " expects 1 or 2 arguments";
           return false;
         }
         if (!check_expr(expr->args[0].get(), ctx)) return false;
         FfiType arg_ty = expr_type(expr->args[0].get(), &ctx);
         if (arg_ty != FfiType::I64 && arg_ty != FfiType::F64 && arg_ty != FfiType::Ptr) {
-          ctx.err->message = "print expects i64, f64, or pointer argument";
+          ctx.err->message = expr->callee + " expects i64, f64, or pointer argument";
           return false;
         }
         if (expr->args.size() == 2) {
           if (!check_expr(expr->args[1].get(), ctx)) return false;
           if (expr_type(expr->args[1].get(), &ctx) != FfiType::I64) {
-            ctx.err->message = "print stream argument must be i64";
+            ctx.err->message = expr->callee + " stream argument must be i64";
             return false;
           }
         }
@@ -549,6 +554,52 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
           ctx.err->message = "read_line expects no arguments";
           return false;
         }
+        expr->inferred_ptr_element = "char";
+        return true;
+      }
+      if (expr->callee == "read_key") {
+        if (expr->args.size() != 0) {
+          ctx.err->message = "read_key expects no arguments";
+          return false;
+        }
+        return true;
+      }
+      if (expr->callee == "terminal_height") {
+        if (expr->args.size() != 0) {
+          ctx.err->message = "terminal_height expects no arguments";
+          return false;
+        }
+        return true;
+      }
+      if (expr->callee == "terminal_width") {
+        if (expr->args.size() != 0) {
+          ctx.err->message = "terminal_width expects no arguments";
+          return false;
+        }
+        return true;
+      }
+      if (expr->callee == "flush") {
+        if (expr->args.size() != 1) {
+          ctx.err->message = "flush expects one argument (stream: 0 or 1)";
+          return false;
+        }
+        if (!check_expr(expr->args[0].get(), ctx)) return false;
+        return true;
+      }
+      if (expr->callee == "sleep") {
+        if (expr->args.size() != 1) {
+          ctx.err->message = "sleep expects exactly one argument (milliseconds: i64)";
+          return false;
+        }
+        if (!check_expr(expr->args[0].get(), ctx)) return false;
+        return true;
+      }
+      if (expr->callee == "chr") {
+        if (expr->args.size() != 1) {
+          ctx.err->message = "chr expects exactly one argument";
+          return false;
+        }
+        if (!check_expr(expr->args[0].get(), ctx)) return false;
         expr->inferred_ptr_element = "char";
         return true;
       }
@@ -599,6 +650,34 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
       if (expr->callee == "read_line_file") {
         if (!check_one_ptr_arg(expr, "read_line_file", "file handle", ctx)) return false;
         expr->inferred_ptr_element = "char";
+        return true;
+      }
+      if (expr->callee == "str_dup") {
+        if (!check_one_ptr_arg(expr, "str_dup", "string", ctx)) return false;
+        expr->inferred_ptr_element = "char";
+        return true;
+      }
+      if (expr->callee == "str_upper" || expr->callee == "str_lower" || expr->callee == "str_strip") {
+        if (!check_one_ptr_arg(expr, expr->callee.c_str(), "string", ctx)) return false;
+        expr->inferred_ptr_element = "char";
+        return true;
+      }
+      if (expr->callee == "str_contains" || expr->callee == "str_find") {
+        if (expr->args.size() != 2) {
+          ctx.err->message = expr->callee + " expects (haystack, needle)";
+          return false;
+        }
+        for (auto& a : expr->args)
+          if (!check_expr(a.get(), ctx)) return false;
+        return true;
+      }
+      if (expr->callee == "str_split") {
+        if (expr->args.size() != 2) {
+          ctx.err->message = "str_split expects (string, delimiter)";
+          return false;
+        }
+        for (auto& a : expr->args)
+          if (!check_expr(a.get(), ctx)) return false;
         return true;
       }
       if (expr->callee == "http_request") {
@@ -683,6 +762,8 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
             return false;
           }
         }
+        if (ext.return_type == FfiType::Ptr && !ext.return_type_name.empty())
+          expr->inferred_ptr_element = ext.return_type_name;
         return true;
       }
       auto user_it = ctx.user_fn_by_name.find(expr->callee);
@@ -705,6 +786,8 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
             return false;
           }
         }
+        if (def.return_type == FfiType::Ptr && !def.return_type_name.empty())
+          expr->inferred_ptr_element = def.return_type_name;
         return true;
       }
       ctx.err->message = "unknown function '" + expr->callee + "'";
@@ -794,6 +877,8 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
       if (!check_expr(expr->left.get(), ctx)) return false;
       if (expr_type(expr->left.get(), &ctx) != FfiType::Ptr) {
         ctx.err->message = "as_heap/as_array: argument must be a pointer";
+        ctx.err->line = expr->left->line != 0 ? expr->left->line : expr->line;
+        ctx.err->column = expr->left->column != 0 ? expr->left->column : expr->column;
         return false;
       }
       if (expr->kind == Expr::Kind::AsArray && !is_alloc_type(expr->var_name, ctx.program)) {
@@ -949,7 +1034,7 @@ static bool check_expr(Expr* expr, SemaContext& ctx) {
         return true;
       }
       if (expr->var_name == "i64" || expr->var_name == "i32" || expr->var_name == "f64" || expr->var_name == "f32") {
-        bool from_numeric = (from == FfiType::I64 || from == FfiType::I32 || from == FfiType::F64 || from == FfiType::F32);
+        bool from_numeric = (from == FfiType::I64 || from == FfiType::I32 || from == FfiType::I8 || from == FfiType::F64 || from == FfiType::F32);
         if (!from_numeric) {
           ctx.err->message = "cast to numeric type: operand must be i64, i32, f64, or f32";
           return false;
@@ -1229,6 +1314,9 @@ static bool check_stmt(SemaContext& ctx, FnDef* def, Stmt* stmt) {
             if (!base_struct.empty()) sname = base_struct;
           }
         }
+        if (sname.empty() && stmt->init && !stmt->init->inferred_ptr_element.empty() &&
+            ctx.program && is_named_type_known(stmt->init->inferred_ptr_element, ctx.program))
+          sname = stmt->init->inferred_ptr_element;
         if (!sname.empty()) {
           ctx.var_struct_scope_stack.back()[stmt->name] = sname;
           if (stmt->init->kind == Expr::Kind::FieldAccess && !ctx.array_struct_scope_stack.empty())
@@ -1447,8 +1535,9 @@ static bool check_fn_def(SemaContext& ctx, FnDef& def) {
         param_struct[def.params[j].first] = def.param_type_names[j];
     }
   }
+  auto param_arr_struct = param_struct;  // copy before move
   fn_ctx.var_struct_scope_stack.push_back(std::move(param_struct));
-  fn_ctx.array_struct_scope_stack.push_back({});
+  fn_ctx.array_struct_scope_stack.push_back(std::move(param_arr_struct));
   std::unordered_map<std::string, std::string> param_ptr_element;
   for (size_t j = 0; j < def.params.size() && j < def.param_type_names.size(); ++j) {
     if (!def.param_type_names[j].empty())
@@ -1597,8 +1686,14 @@ SemaResult check(Program* program) {
         if (sname.empty() && binding->init->kind == Expr::Kind::Index && binding->init->left &&
             binding->init->left->kind == Expr::Kind::VarRef)
           sname = array_struct_lookup(&ctx, binding->init->left->var_name);
-        if (!sname.empty())
+        if (sname.empty() && binding->init && !binding->init->inferred_ptr_element.empty() &&
+            ctx.program && is_named_type_known(binding->init->inferred_ptr_element, ctx.program))
+          sname = binding->init->inferred_ptr_element;
+        if (!sname.empty()) {
           ctx.var_struct_scope_stack.back()[binding->name] = sname;
+          if (binding->init->kind == Expr::Kind::FieldAccess && !ctx.array_struct_scope_stack.empty())
+            ctx.array_struct_scope_stack.back()[binding->name] = sname;
+        }
       }
       // Track ptr element type for top-level bindings
       if (ty == FfiType::Ptr && !ctx.var_ptr_element_scope_stack.empty()) {

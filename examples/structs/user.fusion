@@ -33,7 +33,7 @@ fn free_users(users: ptr[User]) -> void {
 let users = create_users(10);
 
 for (let i = 0; i < len(users); i = i + 1) {
-    print(users[i].name);
+    println(users[i].name);
 }
 
 free_users(users);

@@ -778,14 +778,24 @@ Flags:
 - `./make.sh` — configure (if needed), build, and run all tests
 - `./make.sh -r` — clean rebuild from scratch (removes `build/` first)
 - `./make.sh -d` — debug build with AddressSanitizer (`-fsanitize=address -g`)
+- `./make.sh -n` — use Ninja instead of Make (requires `ninja-build`)
 
 Or manually:
 
 ```bash
 cmake -B build -S .
-cmake --build build
+cmake --build build -j$(nproc)
 ctest --test-dir build --output-on-failure
 ```
+
+### Faster builds
+
+Several options can speed up rebuilds:
+
+- **Ninja generator** — `./make.sh -n` or `cmake -B build -S . -G Ninja`. Faster incremental builds than Make.
+- **ccache** — Enabled by default (`-DFUSION_USE_CCACHE=ON`). Install with `sudo apt install ccache`. Run `ccache -s` to check hit rates.
+- **Faster linker (mold/lld)** — `cmake -B build -S . -DFUSION_USE_FAST_LINKER=ON`. Tries `mold` first, then `lld`. Install with `sudo apt install mold` or `sudo apt install lld`.
+- **Precompiled headers** — LLVM headers in `codegen.cpp` are precompiled automatically via CMake's `target_precompile_headers`, speeding up rebuilds of codegen.
 
 ### Exit criteria (Phase 0)
 

@@ -246,6 +246,7 @@ inline std::optional<FfiType> builtin_fixed_return_type(const std::string& calle
   static const std::unordered_map<std::string, FfiType> table = {
     {"get_func_ptr",    FfiType::Ptr},
     {"print",           FfiType::Void},
+    {"println",         FfiType::Void},
     {"len",             FfiType::I64},
     {"read_line",       FfiType::Ptr},
     {"read_line_file",  FfiType::Ptr},
@@ -255,10 +256,23 @@ inline std::optional<FfiType> builtin_fixed_return_type(const std::string& calle
     {"write_file",      FfiType::Void},
     {"eof_file",        FfiType::I64},
     {"line_count_file", FfiType::I64},
+    {"read_key",        FfiType::I64},
+    {"terminal_height", FfiType::I64},
+    {"terminal_width",  FfiType::I64},
+    {"flush",           FfiType::Void},
+    {"sleep",           FfiType::Void},
+    {"chr",             FfiType::Ptr},
     {"write_bytes",     FfiType::I64},
     {"read_bytes",      FfiType::I64},
     {"http_request",    FfiType::Ptr},
     {"http_status",     FfiType::I64},
+    {"str_dup",         FfiType::Ptr},
+    {"str_upper",       FfiType::Ptr},
+    {"str_lower",       FfiType::Ptr},
+    {"str_contains",    FfiType::I64},
+    {"str_strip",       FfiType::Ptr},
+    {"str_find",        FfiType::I64},
+    {"str_split",       FfiType::Ptr},
   };
   auto it = table.find(callee);
   if (it != table.end()) return it->second;

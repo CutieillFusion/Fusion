@@ -14,6 +14,9 @@ target_include_directories(fusion_frontend PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
+target_compile_definitions(fusion_frontend PRIVATE
+  FUSION_STDLIB_PATH="${CMAKE_SOURCE_DIR}/stdlib"
+)
 
 # Compiler library: codegen on top of frontend (requires LLVM headers at build time).
 add_library(fusion_compiler STATIC src/codegen.cpp)
@@ -24,14 +27,15 @@ target_include_directories(fusion_compiler PUBLIC
 )
 target_compile_definitions(fusion_compiler PUBLIC FUSION_HAVE_LLVM=1)
 target_link_libraries(fusion_compiler PUBLIC fusion_frontend)
+target_precompile_headers(fusion_compiler PRIVATE src/codegen_pch.hpp)
 
 add_executable(fusion src/main.cpp)
 target_link_libraries(fusion PRIVATE fusion_compiler)
 target_include_directories(fusion PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/runtime_c/include)
 include("${CMAKE_SOURCE_DIR}/cmake/LinkFusionLLVM.cmake")
 fusion_target_link_llvm(fusion)
-# Force-include static runtime so rt_print_i64 is in the binary (nothing references it at link time).
-# Export global symbols so dlsym(RTLD_DEFAULT, "rt_print_i64") finds it at JIT run time.
+# Force-include static runtime so rt_print_cstring is in the binary (nothing references it at link time).
+# Export global symbols so dlsym(RTLD_DEFAULT, "rt_print_cstring") finds it at JIT run time.
 target_link_libraries(fusion PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
 if(FUSION_LIBFFI_FOUND)
   target_link_libraries(fusion PRIVATE LibFFI::LibFFI)

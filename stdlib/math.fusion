@@ -1,0 +1,51 @@
+export fn abs_f64(x: f64) -> f64 {
+    if (x < 0.0) {
+        return -x;
+    }
+    return x;
+}
+
+export fn abs_i64(x: i64) -> i64 {
+    if (x < 0) {
+        return -x;
+    }
+    return x;
+}
+
+export fn min_f64(a: f64, b: f64) -> f64 {
+    if (a < b) {
+        return a;
+    }
+    return b;
+}
+
+export fn min_i64(a: i64, b: i64) -> i64 {
+    if (a < b) {
+        return a;
+    }
+    return b;
+}
+
+export fn max_f64(a: f64, b: f64) -> f64 {
+    if (a > b) {
+        return a;
+    }
+    return b;
+}
+
+export fn max_i64(a: i64, b: i64) -> i64 {
+    if (a > b) {
+        return a;
+    }
+    return b;
+}
+
+export fn clamp_f64(x: f64, lo: f64, hi: f64) -> f64 {
+    if (x < lo) {
+        return lo;
+    }
+    if (x > hi) {
+        return hi;
+    }
+    return x;
+}

@@ -2,6 +2,7 @@
 #include "ast.hpp"
 #include "lexer.hpp"
 #include "parser.hpp"
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -20,11 +21,34 @@ static std::string get_dir(const std::string& path) {
   return path.substr(0, slash);
 }
 
+static std::string get_stdlib_dir() {
+  const char* env = std::getenv("FUSION_STDLIB_PATH");
+  if (env && env[0] != '\0') return std::string(env);
+#ifdef FUSION_STDLIB_PATH
+  return FUSION_STDLIB_PATH;
+#else
+  return "";
+#endif
+}
+
+static bool file_exists(const std::string& path) {
+  std::ifstream f(path);
+  return f.good();
+}
+
 static std::string resolve_import(const std::string& dir, const std::string& name) {
   std::string p = dir + "/" + name;
   if (p.size() < 7 || p.substr(p.size() - 7) != ".fusion")
     p += ".fusion";
-  return p;
+  if (file_exists(p)) return p;
+  std::string stdlib = get_stdlib_dir();
+  if (!stdlib.empty()) {
+    std::string sp = stdlib + "/" + name;
+    if (sp.size() < 7 || sp.substr(sp.size() - 7) != ".fusion")
+      sp += ".fusion";
+    if (file_exists(sp)) return sp;
+  }
+  return p;  // return local path for existing error messages
 }
 
 static std::string canonical_path(const std::string& path) {

@@ -1,0 +1,57 @@
+# TUI demo: Hello World + read_key interactive loop
+# Arrow keys report direction, ESC quits
+
+print("\033[2J");
+print("\033[H");
+let header = "Hello, World!\n\nPress buttons. ESC twice to quit.\n\n";
+print(header);
+
+let done = 0;
+for (; done == 0;) {
+    let key = read_key();
+
+    print(key);
+
+    if (key > 31) {
+        if (key <= 127) {
+            print(chr(key));
+            flush(0);
+        }
+    }
+
+    if (key == 256) {
+        # Up
+        print("Up");
+        flush(0);
+    }
+
+    if (key == 257) {
+        # Down
+        print("Down");
+        flush(0);
+    }
+
+    if (key == 258) {
+        # Right
+        print("Right");
+        flush(0);
+    }
+
+    if (key == 259) {
+        # Left
+        print("Left");
+        flush(0);
+    }
+
+
+    if (key == 99) {
+        print("\033[2J");
+        print("\033[1;1H");
+        print("\033[2J");
+        print(header);
+        print("\033[5;1H");
+        flush(0);
+    }
+}
+
+print("\nBye!\n");

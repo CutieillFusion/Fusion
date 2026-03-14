@@ -1,0 +1,62 @@
+# vec.fusion - Dynamic array (ArrayList) of i64
+
+export struct VecI64 {
+    data: ptr[void];
+    len: i64;
+    cap: i64;
+};
+
+export fn vec_new() -> VecI64 {
+    let v = heap(VecI64);
+    v.cap = 4;
+    v.len = 0;
+    v.data = heap_array(i64, 4);
+    return v;
+}
+
+fn vec_grow(v: VecI64) -> void {
+    let old_cap = v.cap;
+    let new_cap = old_cap * 2;
+    let new_data = heap_array(i64, new_cap);
+    let old_data = as_array(v.data, i64);
+    for (let i = 0; i < v.len; i = i + 1) {
+        new_data[i] = old_data[i];
+    }
+    free_array(old_data);
+    v.data = new_data;
+    v.cap = new_cap;
+}
+
+export fn vec_push(v: VecI64, val: i64) -> void {
+    if (v.len == v.cap) {
+        vec_grow(v);
+    }
+    let d = as_array(v.data, i64);
+    d[v.len] = val;
+    v.len = v.len + 1;
+}
+
+export fn vec_pop(v: VecI64) -> i64 {
+    v.len = v.len - 1;
+    let d = as_array(v.data, i64);
+    return d[v.len];
+}
+
+export fn vec_get(v: VecI64, idx: i64) -> i64 {
+    let d = as_array(v.data, i64);
+    return d[idx];
+}
+
+export fn vec_set(v: VecI64, idx: i64, val: i64) -> void {
+    let d = as_array(v.data, i64);
+    d[idx] = val;
+}
+
+export fn vec_len(v: VecI64) -> i64 {
+    return v.len;
+}
+
+export fn vec_free(v: VecI64) -> void {
+    free_array(as_array(v.data, i64));
+    free(as_heap(v));
+}

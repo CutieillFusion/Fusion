@@ -1,0 +1,191 @@
+struct RenderParams {
+    sA: f64;
+    cA: f64;
+    sB: f64;
+    cB: f64;
+    sC: f64;
+    cC: f64;
+    halfW: f64;
+    halfH: f64;
+    hOff: f64;
+    K1: f64;
+    dist: f64;
+    width: i64;
+    size: i64;
+}
+
+struct Proj {
+    idx: i64;
+    ooz: f64;
+    valid: i64;
+}
+
+extern lib "libm.so.6" {
+    fn sin(x: f64) -> f64;
+    fn cos(x: f64) -> f64;
+};
+
+fn calc_surface(cubeX: f64, cubeY: f64, cubeZ: f64,
+                noescape rp: ptr[RenderParams], noescape p: ptr[Proj]) -> void {
+    let sA = rp.sA;
+    let cA = rp.cA;
+    let sB = rp.sB;
+    let cB = rp.cB;
+    let sC = rp.sC;
+    let cC = rp.cC;
+
+    let rx = cubeY*sA*sB*cC - cubeZ*cA*sB*cC + cubeY*cA*sC + cubeZ*sA*sC + cubeX*cB*cC;
+    let ry = cubeY*cA*cC + cubeZ*sA*cC - cubeY*sA*sB*sC + cubeZ*cA*sB*sC - cubeX*cB*sC;
+    let rz = cubeZ*cA*cB - cubeY*sA*cB + cubeX*sB + rp.dist;
+
+    let ooz = 1.0 / rz;
+    let xp = (rp.halfW + rp.hOff + rp.K1 * ooz * rx * 2.0) as i64;
+    let yp = (rp.halfH + rp.K1 * ooz * ry) as i64;
+    let idx = xp + yp * rp.width;
+
+    p.valid = 0;
+    if (idx >= 0) {
+        if (idx < rp.size) {
+            p.idx = idx;
+            p.ooz = ooz;
+            p.valid = 1;
+        }
+    }
+}
+
+let width = 160;
+let height = 44;
+let size = width * height;
+let incr = 0.6;
+
+let zBuf = heap_array(f64, size);
+let buf = heap_array(i64, size);
+
+let A = 0.0;
+let B = 0.0;
+let C = 0.0;
+let rp = stack(RenderParams);
+rp.halfW = 80.0;
+rp.halfH = 22.0;
+rp.K1 = 40.0;
+rp.dist = 100.0;
+rp.width = width;
+rp.size = size;
+
+let p = stack(Proj);
+
+let running = 1;
+
+print("\033[2J");
+
+for (; running == 1;) {
+    for (let i = 0; i < size; i = i + 1) {
+        buf[i] = 32;
+        zBuf[i] = 0.0;
+    }
+
+    rp.sA = sin(A);
+    rp.cA = cos(A);
+    rp.sB = sin(B);
+    rp.cB = cos(B);
+    rp.sC = sin(C);
+    rp.cC = cos(C);
+
+    let cw = 20.0;
+    rp.hOff = 0.0;
+
+    let cx = 0.0 - cw;
+    for (; cx < cw; cx = cx + incr) {
+        let cy = 0.0 - cw;
+        for (; cy < cw; cy = cy + incr) {
+            let idx = 0;
+
+            calc_surface(cx, cy, 0.0 - cw, rp, p);
+            if (p.valid == 1) {
+                idx = p.idx;
+                if (p.ooz > zBuf[idx]) {
+                    zBuf[idx] = p.ooz;
+                    buf[idx] = 64;
+                }
+            }
+
+            calc_surface(cw, cy, cx, rp, p);
+            if (p.valid == 1) {
+                idx = p.idx;
+                if (p.ooz > zBuf[idx]) {
+                    zBuf[idx] = p.ooz;
+                    buf[idx] = 36;
+                }
+            }
+
+            calc_surface(0.0 - cw, cy, 0.0 - cx, rp, p);
+            if (p.valid == 1) {
+                idx = p.idx;
+                if (p.ooz > zBuf[idx]) {
+                    zBuf[idx] = p.ooz;
+                    buf[idx] = 126;
+                }
+            }
+
+            calc_surface(0.0 - cx, cy, cw, rp, p);
+            if (p.valid == 1) {
+                idx = p.idx;
+                if (p.ooz > zBuf[idx]) {
+                    zBuf[idx] = p.ooz;
+                    buf[idx] = 35;
+                }
+            }
+
+            calc_surface(cx, 0.0 - cw, 0.0 - cy, rp, p);
+            if (p.valid == 1) {
+                idx = p.idx;
+                if (p.ooz > zBuf[idx]) {
+                    zBuf[idx] = p.ooz;
+                    buf[idx] = 59;
+                }
+            }
+
+            calc_surface(cx, cw, cy, rp, p);
+            if (p.valid == 1) {
+                idx = p.idx;
+                if (p.ooz > zBuf[idx]) {
+                    zBuf[idx] = p.ooz;
+                    buf[idx] = 43;
+                }
+            }
+        }
+    }
+
+    for (let row = 0; row < height; row = row + 1) {
+        let line = "";
+        if (row == 0) {
+            line = "\033[H";
+        }
+        for (let col = 0; col < width; col = col + 1) {
+            line = line + chr(buf[row * width + col]);
+        }
+        println(line);
+    }
+    flush(0);
+    sleep(200);
+
+    A = A + 0.05;
+    B = B + 0.05;
+    C = C + 0.01;
+
+    let key = read_key();
+    if (key == 259) {
+        A = A - 0.2;
+    }
+    if (key == 258) {
+        A = A + 0.2;
+    }
+    if (key == 113) {
+        running = 0;
+    }
+}
+
+print("\033[2J\033[H");
+flush(0);
+free_array(as_array(zBuf, f64));
+free_array(as_array(buf, i64));

@@ -2,7 +2,7 @@
 
 let body = http_request("GET", "https://example.com", "");
 let code = http_status();
-print("Status:");
-print(code);
-print("Body:");
-print(body);
+println("Status:");
+println(code);
+println("Body:");
+println(body);

@@ -116,16 +116,16 @@ fn test_forward() -> void {
     let c_grad = c.grad;
 
     if (c_grad != 3.0) {
-        print("ERROR: c_grad is not 3.0");
-        print(c_grad);
+        println("ERROR: c_grad is not 3.0");
+        println(c_grad);
     }
     if (a_grad != 3.0) {
-        print("ERROR: a_grad is not 3.0");
-        print(a_grad);
+        println("ERROR: a_grad is not 3.0");
+        println(a_grad);
     }
     if (b_grad != 3.0) {
-        print("ERROR: b_grad is not 3.0");
-        print(b_grad);
+        println("ERROR: b_grad is not 3.0");
+        println(b_grad);
     }
     free_value(c);
     free_value(a);
@@ -147,16 +147,16 @@ fn test_multiply() -> void {
     let c_grad = c.grad;
 
     if (c_grad != 3.0) {
-        print("ERROR: c_grad is not 3.0");
-        print(c_grad);
+        println("ERROR: c_grad is not 3.0");
+        println(c_grad);
     }
     if (a_grad != 6.0) {
-        print("ERROR: a_grad is not 6.0");
-        print(a_grad);
+        println("ERROR: a_grad is not 6.0");
+        println(a_grad);
     }
     if (b_grad != 3.0) {
-        print("ERROR: b_grad is not 3.0");
-        print(b_grad);
+        println("ERROR: b_grad is not 3.0");
+        println(b_grad);
     }
     free_value(c);
     free_value(a);
@@ -175,12 +175,12 @@ fn test_relu() -> void {
     let a_grad = a.grad;
     let b_grad = b.grad;
     if (b_grad != 3.0) {
-        print("ERROR: b_grad is not 3.0");
-        print(b_grad);
+        println("ERROR: b_grad is not 3.0");
+        println(b_grad);
     }
     if (a_grad != 3.0) {
-        print("ERROR: a_grad is not 3.0");
-        print(a_grad);
+        println("ERROR: a_grad is not 3.0");
+        println(a_grad);
     }
 
     let c = make_leaf(-1.0);
@@ -194,12 +194,12 @@ fn test_relu() -> void {
     let c_grad = c.grad;
     let d_grad = d.grad;
     if (d_grad != 3.0) {
-        print("ERROR: d_grad is not 3.0");
-        print(d_grad);
+        println("ERROR: d_grad is not 3.0");
+        println(d_grad);
     }
     if (c_grad != 0.0) {
-        print("ERROR: c_grad is not 0.0");
-        print(c_grad);
+        println("ERROR: c_grad is not 0.0");
+        println(c_grad);
     }
     free_value(d);
     free_value(c);

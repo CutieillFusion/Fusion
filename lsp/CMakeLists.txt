@@ -13,6 +13,10 @@ target_include_directories(fusion_lsp_core PUBLIC
   ${CMAKE_SOURCE_DIR}/compiler/src
 )
 
+target_compile_definitions(fusion_lsp_core PRIVATE
+  FUSION_STDLIB_PATH="${CMAKE_SOURCE_DIR}/stdlib"
+)
+
 target_link_libraries(fusion_lsp_core PUBLIC
   fusion_frontend
   nlohmann_json::nlohmann_json

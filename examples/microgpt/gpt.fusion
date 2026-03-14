@@ -1,0 +1,226 @@
+import lib "value" {
+    struct Value;
+    fn make_leaf(data: f64) -> ptr[Value];
+    fn free_value(v: ptr[Value]) -> void;
+    fn add_forward(a: ptr[Value], b: ptr[Value]) -> ptr[Value];
+    fn mul_forward(a: ptr[Value], b: ptr[Value]) -> ptr[Value];
+    fn relu_forward(x: ptr[Value]) -> ptr[Value];
+    fn exp_forward(a: ptr[Value]) -> ptr[Value];
+    fn div_forward(a: ptr[Value], b: ptr[Value]) -> ptr[Value];
+    fn scale_forward(a: ptr[Value], k: f64) -> ptr[Value];
+    fn add_scalar_forward(a: ptr[Value], k: f64) -> ptr[Value];
+    fn pow_forward(a: ptr[Value], k: f64) -> ptr[Value];
+}
+
+export struct GPTModel {
+    wte: ptr[Value];
+    wpe: ptr[Value];
+    lm_head: ptr[Value];
+    attn_wq: ptr[Value];
+    attn_wk: ptr[Value];
+    attn_wv: ptr[Value];
+    attn_wo: ptr[Value];
+    mlp_fc1: ptr[Value];
+    mlp_fc2: ptr[Value];
+    vocab_size: i64;
+    n_embd: i64;
+    n_head: i64;
+    head_dim: i64;
+    block_size: i64;
+};
+
+extern lib "libm.so.6" {
+    fn sqrt(x: f64) -> f64;
+};
+
+export fn alloc_gpt_model(vocab_size: i64, n_embd: i64, n_head: i64, head_dim: i64, block_size: i64) -> ptr[GPTModel] {
+    let m = heap(GPTModel);
+    m.vocab_size = vocab_size;
+    m.n_embd = n_embd;
+    m.n_head = n_head;
+    m.head_dim = head_dim;
+    m.block_size = block_size;
+    m.wte = heap_array(ptr[Value], vocab_size * n_embd);
+    m.wpe = heap_array(ptr[Value], block_size * n_embd);
+    m.lm_head = heap_array(ptr[Value], vocab_size * n_embd);
+    m.attn_wq = heap_array(ptr[Value], n_embd * n_embd);
+    m.attn_wk = heap_array(ptr[Value], n_embd * n_embd);
+    m.attn_wv = heap_array(ptr[Value], n_embd * n_embd);
+    m.attn_wo = heap_array(ptr[Value], n_embd * n_embd);
+    m.mlp_fc1 = heap_array(ptr[Value], 4 * n_embd * n_embd);
+    m.mlp_fc2 = heap_array(ptr[Value], n_embd * 4 * n_embd);
+    return m;
+}
+
+# out[j] = sum_i w[j*nin+i] * x[i]
+fn linear_vv(x: ptr[Value], w: ptr[Value], nout: i64, nin: i64) -> ptr[Value] {
+    let out = heap_array(ptr[Value], nout);
+    for (let j = 0; j < nout; j = j + 1) {
+        let acc = mul_forward(w[j * nin + 0], x[0]);
+        for (let i = 1; i < nin; i = i + 1) {
+            acc = add_forward(acc, mul_forward(w[j * nin + i], x[i]));
+        }
+        out[j] = acc;
+    }
+    return out;
+}
+
+fn rmsnorm_v(x: ptr[Value], n: i64) -> ptr[Value] {
+    let ms = mul_forward(x[0], x[0]);
+    for (let i = 1; i < n; i = i + 1) {
+        ms = add_forward(ms, mul_forward(x[i], x[i]));
+    }
+    ms = scale_forward(ms, 1.0 / (n as f64));
+    let ms_eps = add_scalar_forward(ms, 0.00001);
+    let scale_node = pow_forward(ms_eps, -0.5);
+    let out = heap_array(ptr[Value], n);
+    for (let i = 0; i < n; i = i + 1) {
+        out[i] = mul_forward(x[i], scale_node);
+    }
+    return out;
+}
+
+export fn softmax_v(logits: ptr[Value], n: i64) -> ptr[Value] {
+    let max_val = logits[0].data;
+    for (let i = 1; i < n; i = i + 1) {
+        let d = logits[i].data;
+        if (d > max_val) {
+            max_val = d;
+        }
+    }
+    let exps = heap_array(ptr[Value], n);
+    for (let i = 0; i < n; i = i + 1) {
+        exps[i] = exp_forward(add_scalar_forward(logits[i], 0.0 - max_val));
+    }
+    let total = exps[0];
+    for (let i = 1; i < n; i = i + 1) {
+        total = add_forward(total, exps[i]);
+    }
+    let probs = heap_array(ptr[Value], n);
+    for (let i = 0; i < n; i = i + 1) {
+        probs[i] = div_forward(exps[i], total);
+    }
+    free_array(as_array(exps, ptr));
+    return probs;
+}
+
+export fn gpt_forward(model: ptr[GPTModel], token_id: i64, pos_id: i64, keys_cache: ptr[Value], vals_cache: ptr[Value]) -> ptr[Value] {
+    let vocab_size = model.vocab_size;
+    let n_embd = model.n_embd;
+    let n_head = model.n_head;
+    let head_dim = model.head_dim;
+    let wte = model.wte;
+    let wpe = model.wpe;
+    let lm_head = model.lm_head;
+    let attn_wq = model.attn_wq;
+    let attn_wk = model.attn_wk;
+    let attn_wv = model.attn_wv;
+    let attn_wo = model.attn_wo;
+    let mlp_fc1 = model.mlp_fc1;
+    let mlp_fc2 = model.mlp_fc2;
+
+    # tok_emb + pos_emb
+    let x = heap_array(ptr[Value], n_embd);
+    for (let i = 0; i < n_embd; i = i + 1) {
+        x[i] = add_forward(wte[token_id * n_embd + i], wpe[pos_id * n_embd + i]);
+    }
+
+    # initial rmsnorm
+    let xn = rmsnorm_v(x, n_embd);
+    free_array(as_array(x, ptr));
+
+    # save residual
+    let x_residual = heap_array(ptr[Value], n_embd);
+    for (let i = 0; i < n_embd; i = i + 1) {
+        x_residual[i] = xn[i];
+    }
+
+    # rmsnorm before attn
+    let xn2 = rmsnorm_v(xn, n_embd);
+    free_array(as_array(xn, ptr));
+
+    # QKV projections
+    let q = linear_vv(xn2, attn_wq, n_embd, n_embd);
+    let k = linear_vv(xn2, attn_wk, n_embd, n_embd);
+    let v = linear_vv(xn2, attn_wv, n_embd, n_embd);
+    free_array(as_array(xn2, ptr));
+
+    # store k, v in cache
+    for (let i = 0; i < n_embd; i = i + 1) {
+        keys_cache[pos_id * n_embd + i] = k[i];
+        vals_cache[pos_id * n_embd + i] = v[i];
+    }
+    free_array(as_array(k, ptr));
+    free_array(as_array(v, ptr));
+
+    # multi-head attention
+    let x_attn = heap_array(ptr[Value], n_embd);
+    let scale_factor = 1.0 / sqrt(head_dim as f64);
+    let n_past = pos_id + 1;
+
+    for (let h = 0; h < n_head; h = h + 1) {
+        let hs = h * head_dim;
+        let attn_logits = heap_array(ptr[Value], n_past);
+        for (let t = 0; t < n_past; t = t + 1) {
+            let dot = mul_forward(q[hs], keys_cache[t * n_embd + hs]);
+            for (let j = 1; j < head_dim; j = j + 1) {
+                dot = add_forward(dot, mul_forward(q[hs + j], keys_cache[t * n_embd + hs + j]));
+            }
+            attn_logits[t] = scale_forward(dot, scale_factor);
+        }
+        let attn_weights = softmax_v(attn_logits, n_past);
+        free_array(as_array(attn_logits, ptr));
+
+        for (let j = 0; j < head_dim; j = j + 1) {
+            let head_out = mul_forward(attn_weights[0], vals_cache[hs + j]);
+            for (let t = 1; t < n_past; t = t + 1) {
+                head_out = add_forward(head_out, mul_forward(attn_weights[t], vals_cache[t * n_embd + hs + j]));
+            }
+            x_attn[hs + j] = head_out;
+        }
+        free_array(as_array(attn_weights, ptr));
+    }
+    free_array(as_array(q, ptr));
+
+    # attn output projection + residual
+    let attn_out = linear_vv(x_attn, attn_wo, n_embd, n_embd);
+    free_array(as_array(x_attn, ptr));
+
+    let x2 = heap_array(ptr[Value], n_embd);
+    for (let i = 0; i < n_embd; i = i + 1) {
+        x2[i] = add_forward(attn_out[i], x_residual[i]);
+    }
+    free_array(as_array(attn_out, ptr));
+    free_array(as_array(x_residual, ptr));
+
+    # MLP block
+    let x2_residual = heap_array(ptr[Value], n_embd);
+    for (let i = 0; i < n_embd; i = i + 1) {
+        x2_residual[i] = x2[i];
+    }
+
+    let xn3 = rmsnorm_v(x2, n_embd);
+    free_array(as_array(x2, ptr));
+
+    let fc1_out = linear_vv(xn3, mlp_fc1, 4 * n_embd, n_embd);
+    free_array(as_array(xn3, ptr));
+
+    for (let i = 0; i < 4 * n_embd; i = i + 1) {
+        fc1_out[i] = relu_forward(fc1_out[i]);
+    }
+
+    let fc2_out = linear_vv(fc1_out, mlp_fc2, n_embd, 4 * n_embd);
+    free_array(as_array(fc1_out, ptr));
+
+    let x3 = heap_array(ptr[Value], n_embd);
+    for (let i = 0; i < n_embd; i = i + 1) {
+        x3[i] = add_forward(fc2_out[i], x2_residual[i]);
+    }
+    free_array(as_array(fc2_out, ptr));
+    free_array(as_array(x2_residual, ptr));
+
+    let logits = linear_vv(x3, lm_head, vocab_size, n_embd);
+    free_array(as_array(x3, ptr));
+
+    return logits;
+}
